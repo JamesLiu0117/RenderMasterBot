@@ -1,0 +1,14 @@
+{
+  "schema_version": "0.1",
+  "asset_id": "studio_chair",
+  "engine": "unreal",
+  "engine_path": "/Game/Props/SM_StudioChair",
+  "display_name": "Studio Chair",
+  "asset_type": "static_mesh",
+  "description": "Neutral upholstered chair suitable for studio composition tests.",
+  "tags": ["chair", "furniture", "studio"],
+  "dimensions_cm": {"x": 62.0, "y": 70.0, "z": 94.0},
+  "pivot_offset_cm": {"x": 0.0, "y": 0.0, "z": 0.0},
+  "material_slots": ["M_ChairFabric", "M_ChairLegs"],
+  "license": "Project asset"
+}

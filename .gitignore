@@ -1,3 +1,32 @@
+# Python and local development
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Models, datasets, vector stores, experiments, and render outputs
+models/
+checkpoints/
+datasets/raw/
+data/
+chroma/
+outputs/
+runs/
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.gguf
+
 # Visual Studio 2015 user specific files
 .vs/
 

@@ -1,0 +1,21 @@
+{
+  "schema_version": "0.1",
+  "run_id": "baseline_004",
+  "status": "succeeded",
+  "started_at": "2026-08-13T16:00:00Z",
+  "finished_at": "2026-08-13T16:00:12Z",
+  "planner": {"provider": "ollama", "model": "gpt-oss:20b"},
+  "evaluator": {"provider": "ollama", "model": "qwen3.5:9b"},
+  "render_spec_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "input_artifacts": [
+    {"role": "render_spec", "path": "input/render_spec.json", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+  ],
+  "output_artifacts": [
+    {"role": "beauty", "path": "preview/beauty.png"}
+  ],
+  "timings": [
+    {"stage": "planning", "duration_seconds": 8.1},
+    {"stage": "preview", "duration_seconds": 3.9}
+  ],
+  "errors": []
+}

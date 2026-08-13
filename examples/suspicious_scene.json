@@ -1,0 +1,58 @@
+{
+  "schema_version": "0.1",
+  "source_prompt": "Create a two-light product shot of a chair.",
+  "scene_name": "suspicious_studio",
+  "objects": [
+    {
+      "object_id": "hero_chair",
+      "asset": {"asset_id": "studio_chair"},
+      "transform": {
+        "location_cm": {"x": 0, "y": 0, "z": 0},
+        "rotation_deg": {"x": 0, "y": 0, "z": 0},
+        "scale": {"x": 1, "y": 1, "z": 1}
+      },
+      "visible": true
+    }
+  ],
+  "camera": {
+    "camera_id": "main_camera",
+    "transform": {
+      "location_cm": {"x": 0, "y": 0, "z": 0},
+      "rotation_deg": {"x": 0, "y": 0, "z": 0},
+      "scale": {"x": 1, "y": 1, "z": 1}
+    },
+    "focal_length_mm": 50,
+    "aperture_f_stop": 5.6
+  },
+  "lights": [
+    {
+      "light_id": "key_light",
+      "kind": "point",
+      "transform": {
+        "location_cm": {"x": 0, "y": 0, "z": 0},
+        "rotation_deg": {"x": 0, "y": 0, "z": 0},
+        "scale": {"x": 1, "y": 1, "z": 1}
+      },
+      "intensity": 1500,
+      "intensity_unit": "lumens"
+    },
+    {
+      "light_id": "fill_light",
+      "kind": "point",
+      "transform": {
+        "location_cm": {"x": 0, "y": 0, "z": 0},
+        "rotation_deg": {"x": 0, "y": 0, "z": 0},
+        "scale": {"x": 1, "y": 1, "z": 1}
+      },
+      "intensity": 600,
+      "intensity_unit": "lumens"
+    }
+  ],
+  "render": {
+    "width_px": 1920,
+    "height_px": 1080,
+    "output_format": "png",
+    "quality": "preview",
+    "seed": 7
+  }
+}

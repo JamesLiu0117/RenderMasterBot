@@ -1,0 +1,29 @@
+{
+  "schema_version": "0.1",
+  "technique_id": "three_point_lighting",
+  "name": "Three-point lighting",
+  "summary": "A controllable key, fill, and rim-light arrangement for readable subjects.",
+  "problem_types": ["studio portrait", "product visualization"],
+  "assumptions": ["A primary subject and camera are already defined."],
+  "inputs": ["Subject bounds", "camera transform", "desired contrast ratio"],
+  "outputs": ["Key, fill, and rim light placements"],
+  "benefits": ["Separates the subject from the background."],
+  "failure_modes": ["Excessive fill produces a flat image."],
+  "engine_mappings": [
+    {
+      "engine": "unreal",
+      "component": "Rect Light",
+      "property_path": "intensity",
+      "guidance": "Use lumens and tune exposure before changing the ratio between lights."
+    }
+  ],
+  "sources": [
+    {
+      "source_id": "internal_lighting_note",
+      "source_type": "production_note",
+      "title": "RenderMaster curated studio-lighting note",
+      "license": "Project internal"
+    }
+  ],
+  "tags": ["lighting", "studio", "composition"]
+}

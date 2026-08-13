@@ -1,0 +1,29 @@
+{
+  "schema_version": "0.1",
+  "render_spec_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "evaluator": {"provider": "ollama", "model": "qwen3.5:9b"},
+  "evaluation_stage": "preview",
+  "verdict": "needs_review",
+  "summary": "The subject is visible, but the key light is too frontal.",
+  "preview_paths": ["preview/beauty.png"],
+  "issues": [
+    {
+      "issue_id": "flat_key_light",
+      "category": "lighting",
+      "severity": "warning",
+      "confidence": 0.91,
+      "message": "The current key light produces weak facial or object-form modeling.",
+      "object_ids": [],
+      "evidence_paths": ["preview/beauty.png"]
+    }
+  ],
+  "suggested_patch": {
+    "schema_version": "0.1",
+    "base_spec_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "rationale": "Move the key light laterally to create clearer form shadows.",
+    "proposed_by": {"provider": "ollama", "model": "qwen3.5:9b"},
+    "operations": [
+      {"op": "replace", "path": "/lights/0/transform/location_cm/x", "value": 180.0}
+    ]
+  }
+}

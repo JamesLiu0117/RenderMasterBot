@@ -1,0 +1,62 @@
+import unittest
+
+from render_master_bot.ollama import StructuredResponse
+from render_master_bot.planner import PlanningError, ScenePlanner
+
+
+class FakeClient:
+    def __init__(self, content):
+        self.content = content
+        self.last_request = None
+
+    def chat_structured(self, **kwargs):
+        self.last_request = kwargs
+        return StructuredResponse(content=self.content, model="fake")
+
+
+class PlannerTests(unittest.TestCase):
+    def test_planner_validates_model_json(self):
+        client = FakeClient("""{
+          "schema_version": "0.1",
+          "source_prompt": "test",
+          "scene_name": "test_scene",
+          "objects": [],
+          "camera": {"camera_id": "main_camera", "transform": {}},
+          "lights": [],
+          "render": {},
+          "notes": []
+        }""")
+        result = ScenePlanner(client).plan(model="fake", prompt="test")
+        self.assertEqual(result.spec.scene_name, "test_scene")
+        self.assertEqual(client.last_request["json_schema"]["title"], "RenderSpec")
+
+    def test_invalid_model_json_becomes_planning_error(self):
+        client = FakeClient('{"scene_name": "missing_required_fields"}')
+        with self.assertRaises(PlanningError) as raised:
+            ScenePlanner(client).plan(model="fake", prompt="test")
+        self.assertIsNotNone(raised.exception.response)
+
+    def test_assets_outside_catalog_are_rejected(self):
+        client = FakeClient("""{
+          "schema_version": "0.1",
+          "source_prompt": "test",
+          "scene_name": "test_scene",
+          "objects": [{
+            "object_id": "invented",
+            "asset": {"asset_id": "asset_not_in_catalog"}
+          }],
+          "camera": {"camera_id": "main_camera", "transform": {}},
+          "lights": [],
+          "render": {},
+          "notes": []
+        }""")
+        with self.assertRaisesRegex(PlanningError, "outside the available catalog"):
+            ScenePlanner(client).plan(
+                model="fake",
+                prompt="test",
+                asset_ids=["allowed_asset"],
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
