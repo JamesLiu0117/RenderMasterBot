@@ -16,6 +16,7 @@ from render_master_bot.planner import PlanningError, ScenePlanner
 from render_master_bot.preflight import run_preflight
 from render_master_bot.schemas import contract_model, contract_schema
 from render_master_bot.settings import Settings
+from render_master_bot.unreal_probe import UnrealProbeError, probe_unreal_project
 
 
 def _settings() -> Settings:
@@ -30,7 +31,9 @@ def _client(settings: Settings | None = None) -> OllamaClient:
 def _write_json(value: object, output: str | None) -> None:
     text = json.dumps(value, indent=2, ensure_ascii=False) + "\n"
     if output:
-        Path(output).write_text(text, encoding="utf-8")
+        path = Path(output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
         print(f"Wrote {output}")
     else:
         print(text, end="")
@@ -126,6 +129,25 @@ def cmd_preflight(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_unreal_probe(args: argparse.Namespace) -> int:
+    try:
+        manifest = probe_unreal_project(args.path, engine_root=args.engine_root)
+    except UnrealProbeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    _write_json(manifest.model_dump(mode="json"), args.output)
+    print(
+        "UNREAL PROBE: "
+        f"engine={manifest.engine_version} "
+        f"python={'yes' if manifest.python_available else 'no'} "
+        f"mrq={'yes' if manifest.movie_render_queue_available else 'no'} "
+        f"mrg={'yes' if manifest.movie_render_graph_available else 'no'} "
+        f"warnings={len(manifest.warnings)}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    return 0
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
     settings = _settings()
     model = args.model or settings.planner_model
@@ -197,6 +219,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="return exit code 2 when the verdict is needs_review",
     )
     preflight.set_defaults(handler=cmd_preflight)
+
+    unreal_probe = subparsers.add_parser(
+        "unreal-probe",
+        help="inspect an Unreal project and emit a CapabilityManifest",
+    )
+    unreal_probe.add_argument("path", help="path to a .uproject file")
+    unreal_probe.add_argument(
+        "--engine-root",
+        help="explicit Unreal installation root containing the Engine directory",
+    )
+    unreal_probe.add_argument("--output", "-o", help="write CapabilityManifest JSON")
+    unreal_probe.set_defaults(handler=cmd_unreal_probe)
 
     plan = subparsers.add_parser("plan", help="ask a local Ollama model for a RenderSpec")
     plan.add_argument("--model", help="override the configured planner model")

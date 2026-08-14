@@ -11,7 +11,8 @@ The first milestone intentionally stops at validated scene planning. A language 
 - Dual-model defaults: `gpt-oss:20b` planning and `qwen3.5:9b` visual evaluation
 - Ollama structured-output client over the local REST API
 - Deterministic semantic preflight with structured `EvaluationReport` output
-- Command-line doctor, schema, validate, preflight, and plan commands
+- Read-only Unreal project capability probing with evidence provenance
+- Command-line doctor, schema, validate, preflight, unreal-probe, and plan commands
 - Standard-library unit tests for contracts, planning, and scene preflight
 
 Unreal execution, Chroma asset retrieval, visual evaluation, and model fine-tuning are later milestones.
@@ -49,6 +50,14 @@ render-master preflight examples\simple_studio.json
 render-master preflight examples\suspicious_scene.json --output preflight-report.json
 ```
 
+Inspect a real Unreal project without modifying or launching it:
+
+```powershell
+render-master unreal-probe `
+  "E:\OptimizationPlugin\OptimizationPlugin.uproject" `
+  --output capability_manifest.json
+```
+
 Show the resolved dual-model configuration:
 
 ```powershell
@@ -82,6 +91,7 @@ python -m unittest discover -s tests -v
 See [docs/architecture.md](docs/architecture.md) for the design boundaries and next milestones.
 The public AI/engine contracts are documented in [docs/contracts.md](docs/contracts.md).
 The deterministic scene rules are documented in [docs/preflight.md](docs/preflight.md).
+Unreal capability discovery is documented in [docs/unreal_probe.md](docs/unreal_probe.md).
 
 Export or validate any contract:
 

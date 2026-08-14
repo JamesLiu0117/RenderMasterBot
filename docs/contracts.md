@@ -32,6 +32,8 @@ plugins or render passes that a specific Unreal project does not have.
 - Artifact paths are run-relative and portable; absolute and parent paths are
   rejected.
 - Terminal runs require an end timestamp, and failed runs require an error.
+- Capability assertions record whether they were confirmed, inferred, not
+  detected, or contradicted, together with the evidence source.
 
 ## CLI
 

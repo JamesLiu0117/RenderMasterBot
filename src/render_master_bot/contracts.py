@@ -220,20 +220,43 @@ class EvaluationReport(StrictModel):
         return self
 
 
+class CapabilityEvidence(StrictModel):
+    """Auditable evidence supporting one capability assertion."""
+
+    capability: Identifier
+    status: Literal["confirmed", "inferred", "not_detected", "conflict"]
+    source: Literal[
+        "uproject",
+        "project_log",
+        "engine_build",
+        "plugin_descriptor",
+        "filesystem",
+        "solution",
+        "user_override",
+    ]
+    detail: LongText
+
+
 class CapabilityManifest(StrictModel):
     """Observed capabilities of a concrete renderer project."""
 
     schema_version: Literal["0.1"] = "0.1"
     engine: Literal["unreal", "blender", "mock"]
     engine_version: ShortText
+    engine_association: ShortText | None = None
     project_name: ShortText
+    project_descriptor_sha256: Sha256 | None = None
     coordinate_system: Literal["unreal_z_up_cm", "blender_z_up_m", "mock"]
+    probe_mode: Literal["static", "editor_runtime"] = "static"
     python_available: bool
     movie_render_queue_available: bool = False
     movie_render_graph_available: bool = False
+    project_modules: list[ShortText] = Field(default_factory=list, max_length=128)
     enabled_plugins: list[ShortText] = Field(default_factory=list, max_length=256)
     supported_asset_types: list[ShortText] = Field(default_factory=list, max_length=64)
     supported_render_passes: list[ShortText] = Field(default_factory=list, max_length=64)
+    evidence: list[CapabilityEvidence] = Field(default_factory=list, max_length=128)
+    warnings: list[LongText] = Field(default_factory=list, max_length=64)
     captured_at: datetime
 
 
