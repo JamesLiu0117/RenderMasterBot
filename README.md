@@ -2,7 +2,7 @@
 
 RenderMasterBot is a local-first graphics planning system. It turns a natural-language request into a strictly validated `RenderSpec`, which a renderer adapter can later execute in Unreal Engine.
 
-The first milestone intentionally stops at validated scene planning. A language model is not allowed to run arbitrary engine code; it must return a versioned JSON document with known fields and constraints.
+The integration remains schema-gated: a language model is not allowed to run arbitrary engine code; it must return a versioned JSON document with known fields and constraints.
 
 ## Current milestone
 
@@ -12,10 +12,11 @@ The first milestone intentionally stops at validated scene planning. A language 
 - Ollama structured-output client over the local REST API
 - Deterministic semantic preflight with structured `EvaluationReport` output
 - Read-only Unreal project capability probing with evidence provenance
-- Command-line doctor, schema, validate, preflight, unreal-probe, and plan commands
+- Headless Unreal Asset Registry scanning into validated `AssetCard` records
+- Command-line doctor, schema, validate, preflight, unreal-probe, unreal-scan-assets, and plan commands
 - Standard-library unit tests for contracts, planning, and scene preflight
 
-Unreal execution, Chroma asset retrieval, visual evaluation, and model fine-tuning are later milestones.
+Scene execution, Chroma asset retrieval, visual evaluation, and model fine-tuning are later milestones.
 
 ## Local setup
 
@@ -58,6 +59,19 @@ render-master unreal-probe `
   --output capability_manifest.json
 ```
 
+Launch a compiled project headlessly and export a bounded, type-balanced asset sample:
+
+```powershell
+render-master unreal-scan-assets `
+  "E:\OptimizationPlugin\OptimizationPlugin.uproject" `
+  --engine-root "E:\Unreal Engine\UE_5.7" `
+  --limit 20 `
+  --raw-output "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\assets\optimization-plugin\raw_asset_scan.json" `
+  --output "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\assets\optimization-plugin\asset_cards.json"
+```
+
+The raw file preserves what Unreal observed. The second file contains records that have each passed the strict `AssetCard` contract.
+
 Show the resolved dual-model configuration:
 
 ```powershell
@@ -92,6 +106,7 @@ See [docs/architecture.md](docs/architecture.md) for the design boundaries and n
 The public AI/engine contracts are documented in [docs/contracts.md](docs/contracts.md).
 The deterministic scene rules are documented in [docs/preflight.md](docs/preflight.md).
 Unreal capability discovery is documented in [docs/unreal_probe.md](docs/unreal_probe.md).
+Real Asset Registry scanning is documented in [docs/unreal_assets.md](docs/unreal_assets.md).
 
 Export or validate any contract:
 

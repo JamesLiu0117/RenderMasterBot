@@ -16,6 +16,7 @@ from render_master_bot.planner import PlanningError, ScenePlanner
 from render_master_bot.preflight import run_preflight
 from render_master_bot.schemas import contract_model, contract_schema
 from render_master_bot.settings import Settings
+from render_master_bot.unreal_assets import UnrealAssetScanError, run_unreal_asset_scan
 from render_master_bot.unreal_probe import UnrealProbeError, probe_unreal_project
 
 
@@ -148,6 +149,35 @@ def cmd_unreal_probe(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_unreal_scan_assets(args: argparse.Namespace) -> int:
+    try:
+        scan, cards = run_unreal_asset_scan(
+            args.path,
+            engine_root=args.engine_root,
+            raw_output=args.raw_output,
+            limit=args.limit,
+            path_prefix=args.path_prefix,
+            timeout_seconds=args.timeout,
+        )
+    except UnrealAssetScanError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    try:
+        _write_json([card.model_dump(mode="json") for card in cards], args.output)
+    except OSError as exc:
+        print(f"ERROR: cannot write AssetCard output: {exc}", file=sys.stderr)
+        return 1
+    print(
+        "UNREAL ASSET SCAN: "
+        f"project={scan.project_name} "
+        f"discovered={scan.total_assets} "
+        f"exported={len(cards)} "
+        f"warnings={len(scan.warnings)}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    return 0
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
     settings = _settings()
     model = args.model or settings.planner_model
@@ -231,6 +261,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     unreal_probe.add_argument("--output", "-o", help="write CapabilityManifest JSON")
     unreal_probe.set_defaults(handler=cmd_unreal_probe)
+
+    unreal_scan = subparsers.add_parser(
+        "unreal-scan-assets",
+        help="run Unreal headlessly and export validated AssetCard records",
+    )
+    unreal_scan.add_argument("path", help="path to a compiled .uproject file")
+    unreal_scan.add_argument(
+        "--engine-root",
+        required=True,
+        help="Unreal installation root containing the Engine directory",
+    )
+    unreal_scan.add_argument(
+        "--raw-output",
+        required=True,
+        help="write the unconverted Unreal Asset Registry JSON",
+    )
+    unreal_scan.add_argument("--output", "-o", help="write validated AssetCard JSON array")
+    unreal_scan.add_argument("--limit", type=int, default=20)
+    unreal_scan.add_argument("--path-prefix", default="/Game")
+    unreal_scan.add_argument("--timeout", type=int, default=300, help="Unreal timeout in seconds")
+    unreal_scan.set_defaults(handler=cmd_unreal_scan_assets)
 
     plan = subparsers.add_parser("plan", help="ask a local Ollama model for a RenderSpec")
     plan.add_argument("--model", help="override the configured planner model")
