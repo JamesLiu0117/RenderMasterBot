@@ -5,10 +5,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from pydantic import ValidationError
 
+from render_master_bot.asset_index import (
+    AssetIndexError,
+    load_asset_card_catalog,
+    open_persistent_asset_index,
+)
 from render_master_bot.contracts import CONTRACT_MODELS
 from render_master_bot.models import RenderSpec
 from render_master_bot.ollama import OllamaClient, OllamaError
@@ -29,6 +35,15 @@ def _client(settings: Settings | None = None) -> OllamaClient:
     return OllamaClient(settings.ollama_base_url, num_ctx=settings.num_ctx)
 
 
+def _asset_index(settings: Settings):
+    return open_persistent_asset_index(
+        settings.chroma_dir,
+        _client(settings),
+        embedding_model=settings.embedding_model,
+        collection_name=settings.asset_collection,
+    )
+
+
 def _write_json(value: object, output: str | None) -> None:
     text = json.dumps(value, indent=2, ensure_ascii=False) + "\n"
     if output:
@@ -38,6 +53,15 @@ def _write_json(value: object, output: str | None) -> None:
         print(f"Wrote {output}")
     else:
         print(text, end="")
+
+
+def _configure_utf8_console() -> None:
+    """Keep Chinese prompts and JSON usable on legacy Windows code pages."""
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 def _response_metrics(response, *, status: str, error: str | None = None) -> dict:
@@ -73,10 +97,15 @@ def cmd_doctor(_: argparse.Namespace) -> int:
     installed = set(models)
     planner_ready = settings.planner_model in installed
     vision_ready = settings.vision_model in installed
+    embedding_ready = settings.embedding_model in installed
     print(f"Planner: {settings.planner_model} ({'ready' if planner_ready else 'missing'})")
     print(f"Vision:  {settings.vision_model} ({'ready' if vision_ready else 'missing'})")
+    print(
+        f"Embedding: {settings.embedding_model} "
+        f"({'ready' if embedding_ready else 'missing'})"
+    )
     print(f"Context: {settings.num_ctx} tokens")
-    return 0 if planner_ready and vision_ready else 1
+    return 0 if planner_ready and vision_ready and embedding_ready else 1
 
 
 def cmd_config(_: argparse.Namespace) -> int:
@@ -86,8 +115,11 @@ def cmd_config(_: argparse.Namespace) -> int:
             "ollama_base_url": settings.ollama_base_url,
             "planner_model": settings.planner_model,
             "vision_model": settings.vision_model,
+            "embedding_model": settings.embedding_model,
             "num_ctx": settings.num_ctx,
             "data_dir": str(settings.data_dir),
+            "chroma_dir": str(settings.chroma_dir),
+            "asset_collection": settings.asset_collection,
         },
         None,
     )
@@ -178,12 +210,74 @@ def cmd_unreal_scan_assets(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_asset_index(args: argparse.Namespace) -> int:
+    settings = _settings()
+    try:
+        cards = load_asset_card_catalog(args.path)
+        with _asset_index(settings) as index:
+            report = index.sync(cards)
+    except (AssetIndexError, OllamaError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    _write_json(asdict(report), args.output)
+    print(
+        "ASSET INDEX: "
+        f"collection={report.collection} "
+        f"total={report.total} inserted={report.inserted} "
+        f"updated={report.updated} deleted={report.deleted}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    return 0
+
+
+def cmd_asset_search(args: argparse.Namespace) -> int:
+    settings = _settings()
+    try:
+        with _asset_index(settings) as index:
+            hits = index.search(args.query, limit=args.limit)
+    except (AssetIndexError, OllamaError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    _write_json([asdict(hit) for hit in hits], args.output)
+    print(
+        f"ASSET SEARCH: results={len(hits)} query={args.query!r}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    return 0
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
     settings = _settings()
     model = args.model or settings.planner_model
     planner = ScenePlanner(_client(settings))
+    asset_ids = list(dict.fromkeys(args.asset))
+    asset_context = [f"{asset_id}: explicitly allowed by CLI" for asset_id in asset_ids]
+    if args.retrieve_assets:
+        try:
+            with _asset_index(settings) as index:
+                hits = index.search(
+                    args.prompt,
+                    limit=args.retrieve_assets,
+                )
+        except (AssetIndexError, OllamaError) as exc:
+            print(f"ERROR: asset retrieval failed: {exc}", file=sys.stderr)
+            return 1
+        for hit in hits:
+            if hit.asset_id not in asset_ids:
+                asset_ids.append(hit.asset_id)
+                asset_context.append(hit.planner_context())
+        print(
+            "Retrieved asset IDs: "
+            + (", ".join(hit.asset_id for hit in hits) if hits else "none"),
+            file=sys.stderr,
+        )
     try:
-        result = planner.plan(model=model, prompt=args.prompt, asset_ids=args.asset)
+        result = planner.plan(
+            model=model,
+            prompt=args.prompt,
+            asset_ids=asset_ids,
+            asset_context=asset_context,
+        )
     except PlanningError as exc:
         if exc.response is not None:
             if args.raw_output:
@@ -283,10 +377,34 @@ def build_parser() -> argparse.ArgumentParser:
     unreal_scan.add_argument("--timeout", type=int, default=300, help="Unreal timeout in seconds")
     unreal_scan.set_defaults(handler=cmd_unreal_scan_assets)
 
+    asset_index = subparsers.add_parser(
+        "asset-index",
+        help="synchronize a validated AssetCard array into local Chroma",
+    )
+    asset_index.add_argument("path", help="AssetCard JSON array")
+    asset_index.add_argument("--output", "-o", help="write index synchronization report")
+    asset_index.set_defaults(handler=cmd_asset_index)
+
+    asset_search = subparsers.add_parser(
+        "asset-search",
+        help="semantically search the local AssetCard collection",
+    )
+    asset_search.add_argument("--query", required=True)
+    asset_search.add_argument("--limit", type=int, default=5)
+    asset_search.add_argument("--output", "-o", help="write ranked retrieval results")
+    asset_search.set_defaults(handler=cmd_asset_search)
+
     plan = subparsers.add_parser("plan", help="ask a local Ollama model for a RenderSpec")
     plan.add_argument("--model", help="override the configured planner model")
     plan.add_argument("--prompt", required=True)
     plan.add_argument("--asset", action="append", default=[], help="allowed asset ID; repeatable")
+    plan.add_argument(
+        "--retrieve-assets",
+        type=int,
+        default=0,
+        metavar="N",
+        help="retrieve N semantic matches and restrict the planner to those asset IDs",
+    )
     plan.add_argument("--output", "-o")
     plan.add_argument("--raw-output", help="save the model's unvalidated response")
     plan.add_argument("--metrics-output", help="write timing and token metrics as JSON")
@@ -295,5 +413,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_utf8_console()
     args = build_parser().parse_args(argv)
     return args.handler(args)

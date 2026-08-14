@@ -54,10 +54,25 @@ class ScenePlanner:
     def __init__(self, client: StructuredChatClient):
         self.client = client
 
-    def plan(self, *, model: str, prompt: str, asset_ids: list[str] | None = None) -> PlanResult:
+    def plan(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        asset_ids: list[str] | None = None,
+        asset_context: list[str] | None = None,
+    ) -> PlanResult:
         assets = asset_ids or []
-        catalog = ", ".join(assets) if assets else "(empty; create no scene objects)"
-        user_message = f"Available asset IDs: {catalog}\n\nUser request:\n{prompt.strip()}"
+        if asset_context:
+            catalog = "\n".join(f"- {value}" for value in asset_context)
+        elif assets:
+            catalog = "\n".join(f"- {asset_id}" for asset_id in assets)
+        else:
+            catalog = "(empty; create no scene objects)"
+        user_message = (
+            "Available asset catalog (only the listed asset IDs may be used):\n"
+            f"{catalog}\n\nUser request:\n{prompt.strip()}"
+        )
         response = self.client.chat_structured(
             model=model,
             messages=[

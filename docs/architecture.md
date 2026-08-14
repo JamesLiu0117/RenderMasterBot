@@ -34,9 +34,13 @@ The contract uses Unreal's Z-up coordinate convention and explicit physical
 light units. Directional lights use lux; local point, spot, and rect lights
 use lumens, candelas, or an explicitly requested unitless compatibility mode.
 
-## Why Chroma is not connected yet
+## Why Chroma receives explicit embeddings
 
-Chroma will retrieve assets by semantic meaning, but the collection needs a real asset-catalog shape first: stable asset ID, engine path, display name, tags, dimensions, license, and optionally an embedding. Connecting an empty vector database now would create infrastructure without testable behavior.
+Chroma stores validated AssetCards only after Unreal has supplied stable asset
+IDs, engine paths, types, dimensions, and material slots. RenderMasterBot calls
+Ollama's embedding endpoint explicitly instead of allowing Chroma to choose or
+download a default embedding function. The collection records its embedding
+model identity and rejects attempts to query it with a different model.
 
 See `contracts.md` for the seven public JSON boundaries used by both tracks.
 
@@ -47,7 +51,7 @@ See `contracts.md` for the seven public JSON boundaries used by both tracks.
 2. ~~Add an Unreal project probe that emits a real `CapabilityManifest`.~~
 3. ~~Enable and verify the required Unreal integration plugins, then scan 10-20
    real Unreal assets into `AssetCard` records.~~
-4. Index those cards in Chroma and constrain planning to the returned asset IDs.
+4. ~~Index those cards in Chroma and constrain planning to the returned asset IDs.~~
 5. Execute one hand-written `RenderSpec` through the Unreal adapter.
 6. Capture the first preview and `RunManifest`, then connect Qwen evaluation.
 
@@ -55,5 +59,6 @@ See `contracts.md` for the seven public JSON boundaries used by both tracks.
 
 - `gpt-oss:20b`: text planning, structured RenderSpec generation, and later correction planning.
 - `qwen3.5:9b`: preview-image inspection and structured visual findings.
+- `qwen3-embedding:0.6b`: multilingual AssetCard indexing and semantic retrieval.
 
 Only one role needs to be resident on the GPU at a time.

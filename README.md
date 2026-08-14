@@ -13,10 +13,12 @@ The integration remains schema-gated: a language model is not allowed to run arb
 - Deterministic semantic preflight with structured `EvaluationReport` output
 - Read-only Unreal project capability probing with evidence provenance
 - Headless Unreal Asset Registry scanning into validated `AssetCard` records
-- Command-line doctor, schema, validate, preflight, unreal-probe, unreal-scan-assets, and plan commands
+- Persistent Chroma indexing with explicit local Ollama embeddings
+- Retrieval-constrained planning that rejects assets outside the returned catalog
+- Command-line doctor, schema, validate, preflight, Unreal, asset-index, asset-search, and plan commands
 - Standard-library unit tests for contracts, planning, and scene preflight
 
-Scene execution, Chroma asset retrieval, visual evaluation, and model fine-tuning are later milestones.
+Scene execution, visual evaluation, and model fine-tuning are later milestones.
 
 ## Local setup
 
@@ -30,6 +32,12 @@ Verify the local Ollama server:
 
 ```powershell
 render-master doctor
+```
+
+Install the lightweight multilingual embedding model used by asset retrieval:
+
+```powershell
+ollama pull qwen3-embedding:0.6b
 ```
 
 Export the schema:
@@ -72,6 +80,19 @@ render-master unreal-scan-assets `
 
 The raw file preserves what Unreal observed. The second file contains records that have each passed the strict `AssetCard` contract.
 
+Synchronize those cards into the local Chroma collection:
+
+```powershell
+render-master asset-index `
+  "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\assets\optimization-plugin\asset_cards.json"
+```
+
+Test multilingual semantic retrieval:
+
+```powershell
+render-master asset-search --query "一扇可以打开的木门" --limit 5
+```
+
 Show the resolved dual-model configuration:
 
 ```powershell
@@ -82,6 +103,15 @@ Create a plan with the configured planning model:
 
 ```powershell
 render-master plan --prompt "Create a studio product shot of a red chair"
+```
+
+Retrieve real assets first and restrict the planner to those IDs:
+
+```powershell
+render-master plan `
+  --prompt "Create a product-style scene featuring one usable wooden door" `
+  --retrieve-assets 8 `
+  --output door-scene.json
 ```
 
 Use `--model` only to benchmark or override the configured planner.
@@ -107,6 +137,7 @@ The public AI/engine contracts are documented in [docs/contracts.md](docs/contra
 The deterministic scene rules are documented in [docs/preflight.md](docs/preflight.md).
 Unreal capability discovery is documented in [docs/unreal_probe.md](docs/unreal_probe.md).
 Real Asset Registry scanning is documented in [docs/unreal_assets.md](docs/unreal_assets.md).
+Chroma indexing and retrieval constraints are documented in [docs/retrieval.md](docs/retrieval.md).
 
 Export or validate any contract:
 

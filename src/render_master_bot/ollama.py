@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,6 +40,41 @@ class OllamaClient:
         except httpx.HTTPError as exc:
             raise OllamaError(f"cannot reach Ollama at {self.base_url}: {exc}") from exc
         return [item["name"] for item in response.json().get("models", [])]
+
+    def embed_texts(self, *, model: str, texts: list[str]) -> list[list[float]]:
+        if not texts or any(not text.strip() for text in texts):
+            raise OllamaError("embedding input must contain non-empty text")
+        try:
+            response = httpx.post(
+                f"{self.base_url}/api/embed",
+                json={
+                    "model": model,
+                    "input": texts,
+                    "truncate": True,
+                    "keep_alive": "5m",
+                },
+                timeout=self.timeout_seconds,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500]
+            raise OllamaError(f"Ollama returned {exc.response.status_code}: {detail}") from exc
+        except httpx.HTTPError as exc:
+            raise OllamaError(f"Ollama embedding request failed: {exc}") from exc
+
+        values = response.json().get("embeddings")
+        if not isinstance(values, list) or len(values) != len(texts):
+            raise OllamaError("Ollama embedding response count did not match the input count")
+        try:
+            embeddings = [[float(value) for value in vector] for vector in values]
+        except (TypeError, ValueError) as exc:
+            raise OllamaError("Ollama embedding response was not numeric") from exc
+        dimensions = {len(vector) for vector in embeddings}
+        if not dimensions or 0 in dimensions or len(dimensions) != 1:
+            raise OllamaError("Ollama embedding vectors have inconsistent dimensions")
+        if any(not math.isfinite(value) for vector in embeddings for value in vector):
+            raise OllamaError("Ollama embedding response contains a non-finite value")
+        return embeddings
 
     def chat_structured(
         self,

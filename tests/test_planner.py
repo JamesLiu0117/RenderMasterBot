@@ -57,6 +57,32 @@ class PlannerTests(unittest.TestCase):
                 asset_ids=["allowed_asset"],
             )
 
+    def test_retrieved_asset_context_is_shown_to_the_model(self):
+        client = FakeClient("""{
+          "schema_version": "0.1",
+          "source_prompt": "test",
+          "scene_name": "door_scene",
+          "objects": [{
+            "object_id": "door",
+            "asset": {"asset_id": "sm_door"}
+          }],
+          "camera": {"camera_id": "main_camera", "transform": {}},
+          "lights": [],
+          "render": {},
+          "notes": []
+        }""")
+
+        ScenePlanner(client).plan(
+            model="fake",
+            prompt="add a door",
+            asset_ids=["sm_door"],
+            asset_context=["sm_door: SM_Door; type=static_mesh; unreal_path=/Game/SM_Door"],
+        )
+
+        user_message = client.last_request["messages"][1]["content"]
+        self.assertIn("sm_door: SM_Door", user_message)
+        self.assertIn("only the listed asset IDs may be used", user_message)
+
 
 if __name__ == "__main__":
     unittest.main()
