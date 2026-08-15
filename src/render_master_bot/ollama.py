@@ -23,6 +23,7 @@ class StructuredResponse:
     total_duration_ns: int | None = None
     prompt_tokens: int | None = None
     output_tokens: int | None = None
+    done_reason: str | None = None
 
 
 class OllamaClient:
@@ -138,4 +139,5 @@ class OllamaClient:
             total_duration_ns=body.get("total_duration"),
             prompt_tokens=body.get("prompt_eval_count"),
             output_tokens=body.get("eval_count"),
+            done_reason=body.get("done_reason"),
         )

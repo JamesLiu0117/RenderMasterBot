@@ -86,12 +86,16 @@ correction records, and a reproducible run manifest.
 - Verified Qwen3-VL material evaluation after fixed-exposure, top-down UE 5.7 rerender
 - Repeatable visual evaluator benchmarking with frozen labels, deterministic PNG evidence, stability scoring, and contradiction detection
 - First real four-case Qwen3-VL benchmark: 8/8 valid responses, 1.000 verdict stability, 0.750 case accuracy, and one preserved hard-negative contradiction
+- Bounded end-to-end workflow orchestration with immutable iterations, explicit stop reasons, and correction-cycle detection
+- Retrieved-only per-workflow asset catalogs that bound Unreal resolution and correction context
+- Schema-guided one-retry recovery for truncated planner JSON, with invalid raw-output evidence
+- Unreal scratch-output isolation with copied, hashed PNG/result artifacts and persistent process logs
 - Bounded local correction planning that emits a validated patch or an explicit capability gap
 - Command-line doctor, schema, validate, preflight, Unreal, retrieval, planning, evaluation, and correction commands
 - Standard-library unit tests for contracts, planning, preflight, Unreal execution, and preview orchestration
 
-Broader scene editing, evaluator benchmarking, Unreal Editor UI integration, and model
-fine-tuning are later milestones.
+Broader scene editing, Unreal bounds/lighting calibration, Unreal Editor UI integration, and
+model fine-tuning are later milestones.
 
 ## Local setup
 
@@ -181,7 +185,7 @@ render-master unreal-build-scene `
   "E:\OptimizationPlugin\OptimizationPlugin.uproject" `
   --engine-root "E:\Unreal Engine\UE_5.7" `
   --spec "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\retrieval-001\door_plan.json" `
-  --assets "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\assets\optimization-plugin\asset_cards.json" `
+  --assets "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\assets\optimization-plugin\full-scan-003\asset_cards.json" `
   --output "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\unreal-build-001\scene_build.json" `
   --fail-on-warning
 ```
@@ -257,6 +261,20 @@ render-master plan `
   --output door-scene.json
 ```
 
+Run the complete bounded local workflow:
+
+```powershell
+render-master run `
+  "E:\OptimizationPlugin\OptimizationPlugin.uproject" `
+  --engine-root "E:\Unreal Engine\UE_5.7" `
+  --prompt "Create a material-focused preview of a dark weathered wood door" `
+  --assets "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\assets\optimization-plugin\asset_cards.json" `
+  --workflow-dir "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\workflows\door-001" `
+  --workflow-id "door_001" `
+  --max-iterations 2 `
+  --view-axis preserve
+```
+
 Use `--model` only to benchmark or override the configured planner.
 
 ## Data separation
@@ -287,6 +305,7 @@ Transient scene execution is documented in [docs/unreal_execution.md](docs/unrea
 Offscreen preview runs are documented in [docs/unreal_preview.md](docs/unreal_preview.md).
 Local vision evaluation is documented in [docs/visual_evaluation.md](docs/visual_evaluation.md).
 Visual evaluator accuracy and stability benchmarking is documented in [docs/visual_benchmark.md](docs/visual_benchmark.md).
+Bounded end-to-end execution is documented in [docs/orchestration.md](docs/orchestration.md).
 Bounded correction planning is documented in [docs/correction_planning.md](docs/correction_planning.md).
 Chroma indexing and retrieval constraints are documented in [docs/retrieval.md](docs/retrieval.md).
 

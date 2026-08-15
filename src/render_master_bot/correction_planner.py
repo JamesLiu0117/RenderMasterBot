@@ -50,7 +50,16 @@ Its replacement value must be a complete object such as
 {"mode":"fixed","fixed_ev100":12.0}, never a scalar exposure-compensation value.
 Patch values must be literal JSON values of the target field type. For example, replace a numeric
 intensity with "value": 2000.0, never with a wrapper such as {"type":"number","value":2000.0}.
+Render resolution, quality, format, and seed are intentionally not correctable. Do not propose
+render settings as a remedy for lighting, clipping, material, camera, or composition defects.
 Return exactly one JSON object matching the schema, without Markdown or extra prose.
+Keep rationale concise so the complete JSON object fits in the response.
+"""
+
+FORMAT_RETRY_PROMPT = """Your previous response was invalid or truncated JSON.
+Return one complete replacement JSON object matching the supplied schema.
+Use no Markdown or extra prose. Keep rationale under 300 characters and include only operations
+needed to address the reported blocking issues. Do not repeat the invalid response.
 """
 
 _ALLOWED_PATH = re.compile(
@@ -59,10 +68,20 @@ _ALLOWED_PATH = re.compile(
     r"focus_distance_cm|aperture_f_stop|exposure)|"
     r"lights/[0-9]+/(?:transform/(?:location_cm|rotation_deg)|intensity|"
     r"color_rgb|cast_shadows)|"
-    r"objects/[0-9]+/(?:materials|transform/(?:location_cm|rotation_deg|scale))|"
-    r"render/(?:width_px|height_px|quality|seed)"
+    r"objects/[0-9]+/(?:materials|transform/(?:location_cm|rotation_deg|scale))"
     r")$"
 )
+
+PATCH_VALUE_RULES = """Patch value rules:
+- location_cm and rotation_deg: object with finite numeric x, y, z values
+- scale: object with positive numeric x, y, z values
+- focal_length_mm, focus_distance_cm, aperture_f_stop: positive number
+- exposure: {"mode":"auto"} or {"mode":"fixed","fixed_ev100":number from -20 to 30};
+  lower EV100 brightens the rendered image and higher EV100 darkens it
+- light intensity: non-negative number; color_rgb: three numbers from 0 to 1
+- cast_shadows: boolean
+- materials: complete assignment list using only supplied material IDs and listed mesh slot names
+"""
 
 
 class CorrectionPlanningError(RuntimeError):
@@ -127,6 +146,7 @@ class CorrectionPlanningResult:
     decision: CorrectionDecision
     response: StructuredResponse
     corrected_spec: RenderSpec | None = None
+    attempt_count: int = 1
 
 
 def _sha256_file(path: Path) -> str:
@@ -214,10 +234,6 @@ def _allowed_paths(spec: RenderSpec) -> list[str]:
         "/camera/focus_distance_cm",
         "/camera/aperture_f_stop",
         "/camera/exposure",
-        "/render/width_px",
-        "/render/height_px",
-        "/render/quality",
-        "/render/seed",
     ]
     for index, _ in enumerate(spec.objects):
         paths.extend((
@@ -281,6 +297,7 @@ def plan_correction(
     prompt = (
         "Decide whether this evaluation can be fixed with the allowed replacement paths.\n"
         f"Allowed paths:\n{json.dumps(allowed_paths, ensure_ascii=False)}\n"
+        f"{PATCH_VALUE_RULES}\n"
         "RenderSpec:\n"
         f"{spec.model_dump_json(indent=2)}\n"
         "EvaluationReport:\n"
@@ -290,21 +307,37 @@ def plan_correction(
         "Output JSON Schema:\n"
         f"{json.dumps(schema, ensure_ascii=False)}"
     )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
     response = client.chat_structured(
         model=model,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
+        messages=messages,
         json_schema=schema,
     )
+    attempt_count = 1
     try:
         draft = CorrectionDraft.model_validate_json(response.content)
-    except ValidationError as exc:
-        raise CorrectionPlanningError(
-            f"correction model returned an invalid decision draft:\n{exc}",
-            response=response,
-        ) from exc
+    except ValidationError:
+        response = client.chat_structured(
+            model=model,
+            messages=[
+                *messages,
+                {"role": "assistant", "content": response.content},
+                {"role": "user", "content": FORMAT_RETRY_PROMPT},
+            ],
+            json_schema=schema,
+        )
+        attempt_count = 2
+        try:
+            draft = CorrectionDraft.model_validate_json(response.content)
+        except ValidationError as exc:
+            raise CorrectionPlanningError(
+                "correction model returned an invalid decision draft after one format retry:\n"
+                f"{exc}",
+                response=response,
+            ) from exc
 
     spec_hash = canonical_sha256(spec)
     model_identity = {"provider": "ollama", "model": response.model}
@@ -317,7 +350,11 @@ def plan_correction(
             rationale=draft.rationale,
             missing_capabilities=draft.missing_capabilities,
         )
-        return CorrectionPlanningResult(decision=decision, response=response)
+        return CorrectionPlanningResult(
+            decision=decision,
+            response=response,
+            attempt_count=attempt_count,
+        )
 
     allowed = set(allowed_paths)
     invalid_paths = sorted({
@@ -359,4 +396,5 @@ def plan_correction(
         decision=decision,
         response=response,
         corrected_spec=corrected_spec,
+        attempt_count=attempt_count,
     )

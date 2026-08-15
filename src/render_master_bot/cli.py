@@ -21,6 +21,7 @@ from render_master_bot.contracts import CONTRACT_MODELS, RenderSpecPatch, Visual
 from render_master_bot.correction_planner import CorrectionPlanningError, plan_correction
 from render_master_bot.models import RenderSpec
 from render_master_bot.ollama import OllamaClient, OllamaError
+from render_master_bot.orchestrator import WorkflowError, run_render_workflow
 from render_master_bot.patching import PatchApplicationError, apply_render_spec_patch
 from render_master_bot.planner import PlanningError, ScenePlanner
 from render_master_bot.preflight import run_preflight
@@ -95,6 +96,7 @@ def _response_metrics(response, *, status: str, error: str | None = None) -> dic
         ),
         "prompt_tokens": response.prompt_tokens,
         "output_tokens": response.output_tokens,
+        "done_reason": response.done_reason,
         "error": error,
     }
 
@@ -576,10 +578,9 @@ def cmd_plan(args: argparse.Namespace) -> int:
                 Path(args.raw_output).write_text(exc.response.content + "\n", encoding="utf-8")
                 print(f"Wrote {args.raw_output}")
             if args.metrics_output:
-                _write_json(
-                    _response_metrics(exc.response, status="invalid", error=str(exc)),
-                    args.metrics_output,
-                )
+                metrics = _response_metrics(exc.response, status="invalid", error=str(exc))
+                metrics["attempt_count"] = exc.attempt_count
+                _write_json(metrics, args.metrics_output)
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     except OllamaError as exc:
@@ -590,6 +591,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
         print(f"Wrote {args.raw_output}")
     _write_json(result.spec.model_dump(mode="json"), args.output)
     metrics = _response_metrics(result.response, status="valid")
+    metrics["attempt_count"] = result.attempt_count
     if args.metrics_output:
         _write_json(metrics, args.metrics_output)
     else:
@@ -601,6 +603,48 @@ def cmd_plan(args: argparse.Namespace) -> int:
             f"output_tokens={metrics['output_tokens']}"
         )
     return 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    settings = _settings()
+    planner_model = args.planner_model or settings.planner_model
+    vision_model = args.vision_model or settings.vision_model
+    planner_client = _client(settings)
+    vision_client = _client(settings, num_ctx=settings.vision_num_ctx)
+    try:
+        with _asset_index(settings) as index:
+            result = run_render_workflow(
+                planner_client=planner_client,
+                vision_client=vision_client,
+                correction_client=planner_client,
+                asset_searcher=index,
+                planner_model=planner_model,
+                vision_model=vision_model,
+                prompt=args.prompt,
+                uproject_path=args.path,
+                engine_root=args.engine_root,
+                asset_catalog_path=args.assets,
+                workflow_directory=args.workflow_dir,
+                workflow_id=args.workflow_id,
+                retrieve_assets=args.retrieve_assets,
+                retrieve_materials=args.retrieve_materials,
+                max_iterations=args.max_iterations,
+                view_axis=args.view_axis,
+                margin_fraction=args.margin,
+                timeout_seconds=args.timeout,
+                fail_on_warning=args.fail_on_warning,
+            )
+    except (WorkflowError, AssetIndexError, OllamaError, ValueError) as exc:
+        print(f"ERROR: render workflow failed: {exc}", file=sys.stderr)
+        return 1
+    manifest = result.manifest
+    print(
+        "RENDER WORKFLOW: "
+        f"status={manifest.status} stop={manifest.stop_reason} "
+        f"iterations={len(manifest.iterations)}/{manifest.max_iterations} "
+        f"directory={Path(args.workflow_dir).expanduser().resolve()}"
+    )
+    return 0 if manifest.status == "succeeded" else 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -935,6 +979,80 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--raw-output", help="save the model's unvalidated response")
     plan.add_argument("--metrics-output", help="write timing and token metrics as JSON")
     plan.set_defaults(handler=cmd_plan)
+
+    run = subparsers.add_parser(
+        "run",
+        help="run bounded retrieval, planning, Unreal preview, evaluation, and correction",
+    )
+    run.add_argument("path", help="path to a compiled .uproject file")
+    run.add_argument(
+        "--engine-root",
+        required=True,
+        help="Unreal installation root containing the Engine directory",
+    )
+    run.add_argument("--prompt", required=True, help="natural-language render request")
+    run.add_argument(
+        "--assets",
+        required=True,
+        help="validated complete AssetCard JSON catalog",
+    )
+    run.add_argument(
+        "--workflow-dir",
+        required=True,
+        help="new or empty directory for all immutable workflow evidence",
+    )
+    run.add_argument(
+        "--workflow-id",
+        required=True,
+        help="stable lowercase workflow identifier",
+    )
+    run.add_argument("--planner-model", help="override the configured planner/correction model")
+    run.add_argument("--vision-model", help="override the configured vision model")
+    run.add_argument(
+        "--retrieve-assets",
+        type=int,
+        default=8,
+        metavar="N",
+        help="retrieve N static-mesh candidates (default: 8)",
+    )
+    run.add_argument(
+        "--retrieve-materials",
+        type=int,
+        default=5,
+        metavar="N",
+        help="retrieve N material candidates (default: 5)",
+    )
+    run.add_argument(
+        "--max-iterations",
+        type=int,
+        choices=range(1, 6),
+        default=2,
+        help="maximum preview/evaluation attempts from 1 to 5 (default: 2)",
+    )
+    run.add_argument(
+        "--view-axis",
+        choices=VIEW_AXES,
+        default="preserve",
+        help="deterministic product framing direction (default: preserve)",
+    )
+    run.add_argument(
+        "--margin",
+        type=float,
+        default=0.1,
+        help="fractional framing margin on each image edge (default: 0.1)",
+    )
+    run.add_argument(
+        "--timeout",
+        type=int,
+        default=600,
+        help="per-Unreal-preview timeout in seconds (default: 600)",
+    )
+    run.add_argument(
+        "--fail-on-warning",
+        action="store_true",
+        help="stop before Unreal when semantic preflight needs review",
+    )
+    run.set_defaults(handler=cmd_run)
     return parser
 
 

@@ -8,10 +8,22 @@ class FakeClient:
     def __init__(self, content):
         self.content = content
         self.last_request = None
+        self.call_count = 0
 
     def chat_structured(self, **kwargs):
         self.last_request = kwargs
+        self.call_count += 1
         return StructuredResponse(content=self.content, model="fake")
+
+
+class SequenceClient:
+    def __init__(self, contents):
+        self.contents = iter(contents)
+        self.requests = []
+
+    def chat_structured(self, **kwargs):
+        self.requests.append(kwargs)
+        return StructuredResponse(content=next(self.contents), model="fake")
 
 
 class PlannerTests(unittest.TestCase):
@@ -28,7 +40,44 @@ class PlannerTests(unittest.TestCase):
         }""")
         result = ScenePlanner(client).plan(model="fake", prompt="test")
         self.assertEqual(result.spec.scene_name, "test_scene")
+        self.assertEqual(result.attempt_count, 1)
+        self.assertEqual(client.call_count, 1)
         self.assertEqual(client.last_request["json_schema"]["title"], "RenderSpec")
+
+    def test_invalid_exposure_is_repaired_by_one_schema_guided_retry(self):
+        invalid = """{
+          "source_prompt": "test",
+          "scene_name": "test_scene",
+          "objects": [],
+          "camera": {
+            "camera_id": "main_camera",
+            "transform": {},
+            "exposure": {"fixed_ev100": 0}
+          }
+        }"""
+        valid = """{
+          "source_prompt": "test",
+          "scene_name": "test_scene",
+          "objects": [],
+          "camera": {
+            "camera_id": "main_camera",
+            "transform": {},
+            "exposure": {"mode": "auto"}
+          }
+        }"""
+        client = SequenceClient([invalid, valid])
+
+        result = ScenePlanner(client).plan(model="fake", prompt="test")
+
+        self.assertEqual(result.attempt_count, 2)
+        self.assertEqual(result.spec.camera.exposure.mode, "auto")
+        self.assertEqual(len(client.requests), 2)
+        retry_messages = client.requests[1]["messages"]
+        self.assertEqual(retry_messages[-2], {"role": "assistant", "content": invalid})
+        self.assertIn(
+            "auto exposure mode cannot specify fixed_ev100",
+            retry_messages[-1]["content"],
+        )
 
     def test_invalid_model_json_becomes_planning_error(self):
         client = FakeClient('{"scene_name": "missing_required_fields"}')
@@ -56,6 +105,7 @@ class PlannerTests(unittest.TestCase):
                 prompt="test",
                 asset_ids=["allowed_asset"],
             )
+        self.assertEqual(client.call_count, 1)
 
     def test_retrieved_asset_context_is_shown_to_the_model(self):
         client = FakeClient("""{
@@ -84,6 +134,8 @@ class PlannerTests(unittest.TestCase):
         self.assertIn("sm_door: SM_Door", user_message)
         self.assertIn("only the listed asset IDs may be used", user_message)
         self.assertIn("candidates, not proof of suitability", system_message)
+        self.assertIn("Dimensions cm evidence", system_message)
+        self.assertIn("fixed exposure for repeatable previews", system_message)
 
     def test_material_assets_are_subject_to_the_same_catalog_allowlist(self):
         client = FakeClient("""{

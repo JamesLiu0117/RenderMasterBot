@@ -41,8 +41,7 @@ RenderSpec are accepted:
 - existing object transforms;
 - complete material-assignment lists for existing objects, using only supplied
   catalog material IDs and the target mesh's observed slot names;
-- existing light transforms, intensity, color, and shadow state;
-- render width, height, quality, and seed.
+- existing light transforms, intensity, color, and shadow state.
 
 Primary mesh asset references, object IDs, scene identity, prompts, schema
 metadata, new objects, new lights, and material invention are forbidden. Each
@@ -50,6 +49,16 @@ model path is checked against both a fixed pattern and the exact paths that
 exist in the source RenderSpec. The finished patch is then applied by the
 deterministic patch engine, the entire resulting RenderSpec is revalidated, and
 all mesh, material, and slot references are resolved against the run's catalog.
+Render resolution, format, quality, and seed are not correction controls. Patch
+value rules explicitly state numeric ranges, vector shapes, booleans, material
+assignment structure, and the photographic rule that lower EV100 brightens an
+image while higher EV100 darkens it.
+
+Malformed or truncated correction JSON receives one concise format-only retry.
+Semantic violations such as forbidden paths, invented assets, invalid enum
+values, or no-op replacements are never retried as if they were formatting
+problems. The orchestrator preserves the final invalid raw response and metrics
+before terminating the workflow.
 
 ## Usage and outputs
 

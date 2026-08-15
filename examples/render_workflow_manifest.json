@@ -1,0 +1,57 @@
+{
+  "schema_version": "0.1",
+  "workflow_id": "door_workflow_001",
+  "status": "succeeded",
+  "stage": "complete",
+  "stop_reason": "evaluator_passed",
+  "prompt": "Create a front-facing product preview of a dark wood door.",
+  "project_name": "OptimizationPlugin",
+  "project_descriptor_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "planner": {
+    "provider": "ollama",
+    "model": "gpt-oss:20b",
+    "revision": null
+  },
+  "evaluator": {
+    "provider": "ollama",
+    "model": "qwen3-vl:8b-instruct",
+    "revision": null
+  },
+  "max_iterations": 2,
+  "retrieved_asset_ids": [
+    "door_asset",
+    "wood_material"
+  ],
+  "started_at": "2026-08-15T12:00:00Z",
+  "finished_at": "2026-08-15T12:01:00Z",
+  "input_artifacts": [
+    {
+      "role": "workflow_request",
+      "path": "inputs/request.json",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "output_artifacts": [
+    {
+      "role": "final_render_spec",
+      "path": "specs/iteration-001.json",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  ],
+  "iterations": [
+    {
+      "iteration": 1,
+      "run_directory": "iterations/iteration-001",
+      "render_spec_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "preflight_report_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "preflight_verdict": "pass",
+      "preview_manifest_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "evaluation_report_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "evaluation_verdict": "pass",
+      "correction_outcome": null,
+      "correction_decision_sha256": null,
+      "corrected_render_spec_sha256": null
+    }
+  ],
+  "errors": []
+}

@@ -50,7 +50,9 @@ class AssetSearchHit:
         details = "; ".join(
             line.strip()
             for line in self.document.splitlines()
-            if line.strip().startswith(("Description:", "Tags:", "Material slots:"))
+            if line.strip().startswith(
+                ("Description:", "Tags:", "Dimensions cm:", "Material slots:")
+            )
         )
         suffix = f"; {details}" if details else ""
         return (

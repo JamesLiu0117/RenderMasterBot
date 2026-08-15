@@ -27,6 +27,7 @@ class GenerationSchemaTests(unittest.TestCase):
             "evaluation-report",
             "visual-benchmark-suite",
             "visual-benchmark-report",
+            "render-workflow-manifest",
             "capability-manifest",
             "run-manifest",
         ):

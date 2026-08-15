@@ -24,10 +24,22 @@ class FakeCorrectionClient:
     def __init__(self, content: str):
         self.content = content
         self.last_request = None
+        self.call_count = 0
 
     def chat_structured(self, **kwargs):
         self.last_request = kwargs
+        self.call_count += 1
         return StructuredResponse(content=self.content, model="gpt-oss:20b")
+
+
+class SequenceCorrectionClient:
+    def __init__(self, contents: list[str]):
+        self.contents = iter(contents)
+        self.requests = []
+
+    def chat_structured(self, **kwargs):
+        self.requests.append(kwargs)
+        return StructuredResponse(content=next(self.contents), model="gpt-oss:20b")
 
 
 def _sha256(path: Path) -> str:
@@ -186,6 +198,34 @@ class CorrectionPlannerTests(unittest.TestCase):
         self.assertEqual(result.decision.outcome, "unresolved")
         self.assertIsNone(result.corrected_spec)
         self.assertIn("wood material asset", result.decision.missing_capabilities)
+        self.assertEqual(result.attempt_count, 1)
+
+    def test_truncated_json_is_retried_once_with_a_concise_format_request(self):
+        valid = json.dumps({
+            "outcome": "patch",
+            "rationale": "Increase the existing light for the dark preview.",
+            "operations": [{"path": "/lights/0/intensity", "value": 100}],
+            "missing_capabilities": [],
+        })
+        client = SequenceCorrectionClient(['{"outcome":"patch","rationale":"cut', valid])
+        with tempfile.TemporaryDirectory() as directory:
+            run_root, _ = prepare_run(Path(directory), report_category="lighting")
+            result = plan_correction(
+                client,
+                model="gpt-oss:20b",
+                run_directory=run_root,
+            )
+
+        self.assertEqual(result.attempt_count, 2)
+        self.assertEqual(result.corrected_spec.lights[0].intensity, 100)
+        self.assertEqual(len(client.requests), 2)
+        retry_message = client.requests[1]["messages"][-1]["content"]
+        self.assertIn("invalid or truncated JSON", retry_message)
+        self.assertIn("under 300 characters", retry_message)
+        self.assertEqual(
+            client.requests[1]["messages"][-2],
+            {"role": "assistant", "content": '{"outcome":"patch","rationale":"cut'},
+        )
 
     def test_catalog_material_assignment_is_applied_and_resolved(self):
         content = json.dumps({
@@ -257,6 +297,29 @@ class CorrectionPlannerTests(unittest.TestCase):
         self.assertEqual(result.corrected_spec.lights[0].intensity, 100)
         self.assertEqual(result.decision.patch.base_spec_sha256, canonical_sha256(spec))
 
+    def test_render_settings_are_not_exposed_as_correction_paths(self):
+        content = json.dumps({
+            "outcome": "unresolved",
+            "rationale": "Render pipeline quality is outside the bounded patch surface.",
+            "operations": [],
+            "missing_capabilities": ["render pipeline quality control"],
+        })
+        client = FakeCorrectionClient(content)
+        with tempfile.TemporaryDirectory() as directory:
+            run_root, _ = prepare_run(Path(directory), report_category="lighting")
+            plan_correction(
+                client,
+                model="gpt-oss:20b",
+                run_directory=run_root,
+            )
+
+        user_prompt = client.last_request["messages"][1]["content"]
+        self.assertNotIn("/render/quality", user_prompt)
+        self.assertNotIn("/render/width_px", user_prompt)
+        self.assertIn("fixed_ev100", user_prompt)
+        self.assertIn("positive number", user_prompt)
+        self.assertIn("lower EV100 brightens", user_prompt)
+
     def test_no_op_replacement_is_rejected(self):
         content = json.dumps({
             "outcome": "patch",
@@ -306,12 +369,14 @@ class CorrectionPlannerTests(unittest.TestCase):
         })
         with tempfile.TemporaryDirectory() as directory:
             run_root, _ = prepare_run(Path(directory))
+            client = FakeCorrectionClient(content)
             with self.assertRaisesRegex(CorrectionPlanningError, "forbidden"):
                 plan_correction(
-                    FakeCorrectionClient(content),
+                    client,
                     model="gpt-oss:20b",
                     run_directory=run_root,
                 )
+            self.assertEqual(client.call_count, 1)
 
     def test_report_hash_mismatch_is_rejected_before_model_call(self):
         with tempfile.TemporaryDirectory() as directory:

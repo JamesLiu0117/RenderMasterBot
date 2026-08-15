@@ -46,7 +46,7 @@ Ollama's embedding endpoint explicitly instead of allowing Chroma to choose or
 download a default embedding function. The collection records its embedding
 model identity and rejects attempts to query it with a different model.
 
-See `contracts.md` for the eight public JSON boundaries used by both tracks.
+See `contracts.md` for the eleven public JSON boundaries used by both tracks.
 
 ## Next milestones
 
@@ -74,9 +74,12 @@ See `contracts.md` for the eight public JSON boundaries used by both tracks.
 13. ~~Benchmark the dedicated vision evaluator on a small render suite, then add
     deterministic image statistics or a second-model review for contradictory
     high-severity findings.~~
-14. Add a bounded end-to-end orchestration command that runs retrieval,
+14. ~~Add a bounded end-to-end orchestration command that runs retrieval,
     planning, preflight, Unreal preview, evaluation, correction, and comparison
-    with explicit iteration and stop limits.
+    with explicit iteration and stop limits.~~
+15. Calibrate real AssetCard bounds, studio lighting, and exposure against
+    deterministic pixel evidence so validated corrections improve image quality
+    rather than merely completing the loop.
 
 ## Default model roles
 

@@ -112,8 +112,10 @@ class UnrealPreviewTests(unittest.TestCase):
             root = Path(directory)
             project, engine, spec, assets = prepare_files(root)
             run_directory = root / "run"
+            scratch_preview = None
 
             def fake_run(command, **kwargs):
+                nonlocal scratch_preview
                 self.assertIn("-RenderOffscreen", command)
                 request = json.loads(
                     Path(kwargs["env"]["RENDERMASTER_PREVIEW_REQUEST"]).read_text(
@@ -121,6 +123,7 @@ class UnrealPreviewTests(unittest.TestCase):
                     )
                 )
                 preview = Path(kwargs["env"]["RENDERMASTER_PREVIEW_DIRECTORY"]) / "beauty.png"
+                scratch_preview = preview
                 preview.write_bytes(b"png-data")
                 result = {
                     "schema_version": "0.1",
@@ -153,8 +156,13 @@ class UnrealPreviewTests(unittest.TestCase):
             self.assertEqual(manifest.status, "succeeded")
             self.assertEqual(len(result.preview_files), 1)
             self.assertEqual(
+                Path(result.preview_files[0]),
+                (run_directory / "preview" / "beauty.png").resolve(),
+            )
+            self.assertFalse(scratch_preview.exists())
+            self.assertEqual(
                 {artifact.role for artifact in manifest.output_artifacts},
-                {"unreal_result", "beauty_preview"},
+                {"unreal_result", "beauty_preview", "unreal_process_log"},
             )
             saved = RunManifest.model_validate_json(
                 (run_directory / "run_manifest.json").read_text(encoding="utf-8")
@@ -188,6 +196,10 @@ class UnrealPreviewTests(unittest.TestCase):
             self.assertEqual(saved.status, "failed")
             self.assertTrue(saved.errors)
             self.assertIsNotNone(saved.finished_at)
+            self.assertEqual(
+                {artifact.role for artifact in saved.output_artifacts},
+                {"unreal_process_log"},
+            )
 
     def test_nonempty_run_directory_is_never_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:

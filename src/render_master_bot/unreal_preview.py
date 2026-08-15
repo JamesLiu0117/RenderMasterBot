@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,9 +70,9 @@ def _load_result(path: Path) -> UnrealPreviewResult:
 
 def _validate_preview_files(
     result: UnrealPreviewResult,
-    run_directory: Path,
+    preview_directory: Path,
 ) -> list[Path]:
-    preview_root = (run_directory / "preview").resolve()
+    preview_root = preview_directory.resolve()
     paths: list[Path] = []
     for value in result.preview_files:
         path = Path(value)
@@ -94,6 +96,22 @@ def _validate_preview_files(
             f"the one-frame preview must produce exactly one PNG, observed {len(unique)}"
         )
     return unique
+
+
+def _write_process_log(
+    path: Path,
+    command: list[str],
+    completed: subprocess.CompletedProcess[str],
+) -> None:
+    value = (
+        f"exit_code={completed.returncode}\n"
+        f"command={subprocess.list2cmdline(command)}\n\n"
+        "STDOUT\n"
+        f"{completed.stdout or ''}\n"
+        "STDERR\n"
+        f"{completed.stderr or ''}\n"
+    )
+    path.write_text(value, encoding="utf-8", errors="replace")
 
 
 def _scene_result(result: UnrealPreviewResult) -> UnrealSceneBuildResult:
@@ -152,6 +170,7 @@ def run_unreal_preview(
     inputs = run_root / "inputs"
     preview = run_root / "preview"
     result_path = run_root / "unreal_result.json"
+    process_log_path = run_root / "unreal_process.log"
     manifest_path = run_root / "run_manifest.json"
     inputs.mkdir(parents=True, exist_ok=True)
     preview.mkdir(parents=True, exist_ok=True)
@@ -181,14 +200,6 @@ def run_unreal_preview(
         raise UnrealPreviewError(f"invalid run ID or manifest input: {exc}") from exc
     _write_manifest(manifest_path, running)
 
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "RENDERMASTER_PREVIEW_REQUEST": str(request_copy),
-            "RENDERMASTER_PREVIEW_RESULT": str(result_path),
-            "RENDERMASTER_PREVIEW_DIRECTORY": str(preview),
-        }
-    )
     command = [
         str(editor),
         str(project),
@@ -203,36 +214,61 @@ def run_unreal_preview(
     ]
     started_clock = time.perf_counter()
     try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=environment,
-            timeout=timeout_seconds,
-            check=False,
-        )
-        if not result_path.is_file():
-            raise UnrealPreviewError(
-                f"Unreal produced no preview result (exit {completed.returncode}): "
-                f"{_diagnostic_output(completed)}"
+        with tempfile.TemporaryDirectory(prefix=f"render-master-{run_id}-") as scratch_value:
+            scratch_root = Path(scratch_value).resolve()
+            scratch_preview = scratch_root / "preview"
+            scratch_result = scratch_root / "unreal_result.json"
+            scratch_preview.mkdir()
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "RENDERMASTER_PREVIEW_REQUEST": str(request_copy),
+                    "RENDERMASTER_PREVIEW_RESULT": str(scratch_result),
+                    "RENDERMASTER_PREVIEW_DIRECTORY": str(scratch_preview),
+                }
             )
-        result = _load_result(result_path)
-        if completed.returncode != 0:
-            raise UnrealPreviewError(
-                f"Unreal preview exited with code {completed.returncode}: "
-                f"{_diagnostic_output(completed)}"
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=environment,
+                timeout=timeout_seconds,
+                check=False,
             )
-        if result.status != "succeeded":
-            raise UnrealPreviewError("Unreal preview failed: " + "; ".join(result.errors))
-        _validate_observed_result(request, _scene_result(result))
-        preview_files = _validate_preview_files(result, run_root)
+            _write_process_log(process_log_path, command, completed)
+            if not scratch_result.is_file():
+                raise UnrealPreviewError(
+                    f"Unreal produced no preview result (exit {completed.returncode}): "
+                    f"{_diagnostic_output(completed)}"
+                )
+            shutil.copy2(scratch_result, result_path)
+            result = _load_result(scratch_result)
+            if completed.returncode != 0:
+                raise UnrealPreviewError(
+                    f"Unreal preview exited with code {completed.returncode}: "
+                    f"{_diagnostic_output(completed)}"
+                )
+            if result.status != "succeeded":
+                raise UnrealPreviewError(
+                    "Unreal preview failed: " + "; ".join(result.errors)
+                )
+            _validate_observed_result(request, _scene_result(result))
+            scratch_files = _validate_preview_files(result, scratch_preview)
+            final_preview = preview / "beauty.png"
+            shutil.copy2(scratch_files[0], final_preview)
+            result = result.model_copy(
+                update={"preview_files": [str(final_preview.resolve())]}
+            )
+            _write_json(result_path, result.model_dump(mode="json"))
+
         duration = time.perf_counter() - started_clock
-        output_artifacts = [_artifact("unreal_result", result_path, run_root)]
-        output_artifacts.extend(
-            _artifact("beauty_preview", path, run_root) for path in preview_files
-        )
+        output_artifacts = [
+            _artifact("unreal_result", result_path, run_root),
+            _artifact("beauty_preview", final_preview, run_root),
+            _artifact("unreal_process_log", process_log_path, run_root),
+        ]
         manifest = RunManifest(
             run_id=run_id,
             status="succeeded",
@@ -248,6 +284,13 @@ def run_unreal_preview(
     except Exception as exc:
         duration = time.perf_counter() - started_clock
         message = str(exc)[:4000] or exc.__class__.__name__
+        failed_artifacts = []
+        if result_path.is_file():
+            failed_artifacts.append(_artifact("unreal_result", result_path, run_root))
+        if process_log_path.is_file():
+            failed_artifacts.append(
+                _artifact("unreal_process_log", process_log_path, run_root)
+            )
         failed = RunManifest(
             run_id=run_id,
             status="failed",
@@ -255,11 +298,7 @@ def run_unreal_preview(
             finished_at=datetime.now(timezone.utc),
             render_spec_sha256=request.render_spec_sha256,
             input_artifacts=input_artifacts,
-            output_artifacts=(
-                [_artifact("unreal_result", result_path, run_root)]
-                if result_path.is_file()
-                else []
-            ),
+            output_artifacts=failed_artifacts,
             timings=[RunTiming(stage="unreal_preview", duration_seconds=duration)],
             errors=[message],
         )

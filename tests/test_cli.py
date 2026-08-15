@@ -195,6 +195,31 @@ class CliOutputTests(unittest.TestCase):
         )
         self.assertEqual(material_args.retrieve_materials, 3)
 
+    def test_run_parser_captures_bounded_workflow_controls(self):
+        args = build_parser().parse_args([
+            "run",
+            "E:/Project/Project.uproject",
+            "--engine-root",
+            "E:/Unreal Engine/UE_5.7",
+            "--prompt",
+            "Render a dark wood door",
+            "--assets",
+            "asset_cards.json",
+            "--workflow-dir",
+            "workflow-001",
+            "--workflow-id",
+            "workflow_001",
+            "--max-iterations",
+            "3",
+            "--view-axis",
+            "from-negative-x",
+        ])
+
+        self.assertEqual(args.max_iterations, 3)
+        self.assertEqual(args.retrieve_assets, 8)
+        self.assertEqual(args.retrieve_materials, 5)
+        self.assertEqual(args.view_axis, "from-negative-x")
+
     def test_asset_search_parser_captures_query_and_limit(self):
         args = build_parser().parse_args(
             [

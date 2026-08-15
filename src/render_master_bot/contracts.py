@@ -517,6 +517,119 @@ class VisualBenchmarkReport(StrictModel):
         return self
 
 
+class WorkflowIteration(StrictModel):
+    """Auditable evidence from one preview/evaluate/correct workflow iteration."""
+
+    iteration: Annotated[int, Field(ge=1, le=5)]
+    run_directory: RelativeArtifactPath
+    render_spec_sha256: Sha256
+    preflight_report_sha256: Sha256
+    preflight_verdict: Literal["pass", "needs_review", "fail"]
+    preview_manifest_sha256: Sha256
+    evaluation_report_sha256: Sha256
+    evaluation_verdict: Literal["pass", "needs_review", "fail"]
+    correction_outcome: Literal["patch", "unresolved"] | None = None
+    correction_decision_sha256: Sha256 | None = None
+    corrected_render_spec_sha256: Sha256 | None = None
+
+    @model_validator(mode="after")
+    def correction_fields_are_consistent(self) -> "WorkflowIteration":
+        if self.evaluation_verdict == "pass" and self.correction_outcome is not None:
+            raise ValueError("passing workflow iterations cannot contain a correction")
+        if self.correction_outcome is None:
+            if (
+                self.correction_decision_sha256 is not None
+                or self.corrected_render_spec_sha256 is not None
+            ):
+                raise ValueError("workflow correction hashes require a correction outcome")
+        elif self.correction_decision_sha256 is None:
+            raise ValueError("workflow correction outcomes require a decision hash")
+        elif self.correction_outcome == "patch":
+            if self.corrected_render_spec_sha256 is None:
+                raise ValueError("workflow patch outcomes require a corrected RenderSpec hash")
+        elif self.corrected_render_spec_sha256 is not None:
+            raise ValueError("unresolved workflow outcomes cannot have a corrected RenderSpec")
+        return self
+
+
+class RenderWorkflowManifest(StrictModel):
+    """Top-level lifecycle and stop record for one bounded RenderMasterBot run."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    workflow_id: Identifier
+    status: Literal["running", "succeeded", "stopped", "failed"]
+    stage: Literal[
+        "initializing",
+        "retrieval",
+        "planning",
+        "preflight",
+        "rendering",
+        "evaluation",
+        "correction",
+        "complete",
+    ]
+    stop_reason: Literal[
+        "evaluator_passed",
+        "preflight_rejected",
+        "correction_unresolved",
+        "max_iterations_reached",
+        "correction_cycle_detected",
+        "stage_failed",
+    ] | None = None
+    prompt: LongText
+    project_name: ShortText
+    project_descriptor_sha256: Sha256
+    planner: ModelIdentity
+    evaluator: ModelIdentity
+    max_iterations: Annotated[int, Field(ge=1, le=5)]
+    retrieved_asset_ids: list[Identifier] = Field(default_factory=list, max_length=128)
+    started_at: datetime
+    finished_at: datetime | None = None
+    input_artifacts: list[ArtifactRecord] = Field(default_factory=list, max_length=64)
+    output_artifacts: list[ArtifactRecord] = Field(default_factory=list, max_length=512)
+    iterations: list[WorkflowIteration] = Field(default_factory=list, max_length=5)
+    errors: list[LongText] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="after")
+    def lifecycle_is_consistent(self) -> "RenderWorkflowManifest":
+        terminal = self.status in {"succeeded", "stopped", "failed"}
+        if terminal != (self.finished_at is not None):
+            raise ValueError(
+                "terminal workflows require finished_at and running workflows forbid it"
+            )
+        if terminal != (self.stage == "complete"):
+            raise ValueError("terminal workflows require complete stage")
+        if terminal != (self.stop_reason is not None):
+            raise ValueError("terminal workflows require a stop reason")
+        if self.status == "running" and self.errors:
+            raise ValueError("running workflows cannot contain terminal errors")
+        if self.status == "failed":
+            if self.stop_reason != "stage_failed" or not self.errors:
+                raise ValueError("failed workflows require stage_failed and at least one error")
+        elif self.errors:
+            raise ValueError("only failed workflows can contain errors")
+        if self.status == "succeeded":
+            if self.stop_reason != "evaluator_passed":
+                raise ValueError("succeeded workflows require evaluator_passed")
+            if not self.iterations or self.iterations[-1].evaluation_verdict != "pass":
+                raise ValueError("succeeded workflows require a final passing evaluation")
+        if self.status == "stopped" and self.stop_reason not in {
+            "preflight_rejected",
+            "correction_unresolved",
+            "max_iterations_reached",
+            "correction_cycle_detected",
+        }:
+            raise ValueError("stopped workflow has an invalid stop reason")
+        numbers = [iteration.iteration for iteration in self.iterations]
+        if numbers != list(range(1, len(numbers) + 1)):
+            raise ValueError("workflow iterations must be contiguous and one-based")
+        if len(numbers) > self.max_iterations:
+            raise ValueError("workflow iterations exceed max_iterations")
+        if len(self.retrieved_asset_ids) != len(set(self.retrieved_asset_ids)):
+            raise ValueError("workflow retrieved asset IDs must be unique")
+        return self
+
+
 class CapabilityEvidence(StrictModel):
     """Auditable evidence supporting one capability assertion."""
 
@@ -608,6 +721,7 @@ CONTRACT_MODELS = {
     "evaluation-report": EvaluationReport,
     "visual-benchmark-suite": VisualBenchmarkSuite,
     "visual-benchmark-report": VisualBenchmarkReport,
+    "render-workflow-manifest": RenderWorkflowManifest,
     "capability-manifest": CapabilityManifest,
     "run-manifest": RunManifest,
 }

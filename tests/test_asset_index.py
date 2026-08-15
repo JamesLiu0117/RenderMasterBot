@@ -66,6 +66,7 @@ class AssetIndexTests(unittest.TestCase):
             display_name="SM_Door",
             asset_type="static_mesh",
             description="A product door mesh.",
+            dimensions_cm={"x": 10, "y": 100, "z": 200},
             material_slots=["DoorSurface"],
         )
         hit = AssetSearchHit(
@@ -82,6 +83,7 @@ class AssetIndexTests(unittest.TestCase):
         context = hit.planner_context()
 
         self.assertIn("Description: A product door mesh.", context)
+        self.assertIn("Dimensions cm: x=10, y=100, z=200", context)
         self.assertIn("Material slots: DoorSurface", context)
 
     def test_real_chroma_sync_search_and_stale_deletion(self):

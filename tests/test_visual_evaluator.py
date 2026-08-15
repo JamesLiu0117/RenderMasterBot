@@ -101,6 +101,7 @@ class VisualEvaluatorTests(unittest.TestCase):
         self.assertIn("every non-excluded visible requirement", SYSTEM_PROMPT)
         self.assertIn("wrong requested view", SYSTEM_PROMPT)
         self.assertIn("rather than assuming", SYSTEM_PROMPT)
+        self.assertIn("Distinguish clipping or exposure problems", SYSTEM_PROMPT)
 
     def test_host_verifies_evidence_and_owns_report_identity_fields(self):
         with tempfile.TemporaryDirectory() as directory:

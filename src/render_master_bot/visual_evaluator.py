@@ -41,6 +41,9 @@ metadata.
 Use stable lowercase snake_case issue IDs and only the supplied scene object IDs.
 Use blocking or error only when the requested result is unusable, absent, or clearly wrong.
 Use warning for visible quality defects that permit another correction pass.
+Distinguish clipping or exposure problems from random render noise. Large solid black or white
+areas, blown highlights, or high-contrast surface patterns are lighting, exposure, or material
+evidence unless genuinely random image noise is visibly distributed across the frame.
 Return exactly one JSON object matching the schema, without Markdown or extra prose.
 Do not propose a patch in this evaluation stage.
 """
