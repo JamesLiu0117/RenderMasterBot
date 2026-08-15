@@ -25,9 +25,11 @@ from render_master_bot.contracts import (
     RenderWorkflowManifest,
     WorkflowIteration,
 )
+from render_master_bot.image_comparison import compare_image_statistics
 from render_master_bot.correction_planner import (
     CorrectionPlanningError,
     CorrectionPlanningResult,
+    DETERMINISTIC_FRAMING_PATHS,
     plan_correction,
 )
 from render_master_bot.models import RenderSpec
@@ -35,6 +37,7 @@ from render_master_bot.ollama import StructuredResponse
 from render_master_bot.planner import PlanningError, ScenePlanner
 from render_master_bot.preflight import run_preflight
 from render_master_bot.serialization import canonical_sha256
+from render_master_bot.studio_calibration import calibrate_studio_preview
 from render_master_bot.unreal_preview import run_unreal_preview
 from render_master_bot.visual_evaluator import PreviewEvaluationResult, evaluate_preview_run
 
@@ -165,10 +168,11 @@ def run_render_workflow(
     retrieve_assets: int = 8,
     retrieve_materials: int = 5,
     max_iterations: int = 2,
-    view_axis: ViewAxis = "preserve",
-    margin_fraction: float = 0.1,
+    view_axis: ViewAxis = "auto-product",
+    margin_fraction: float = 0.02,
     timeout_seconds: int = 600,
     fail_on_warning: bool = False,
+    studio_calibration: bool = True,
     preview_runner=run_unreal_preview,
     preview_evaluator=evaluate_preview_run,
     correction_planner=plan_correction,
@@ -224,6 +228,7 @@ def run_render_workflow(
             "margin_fraction": margin_fraction,
             "timeout_seconds": timeout_seconds,
             "fail_on_warning": fail_on_warning,
+            "studio_calibration": studio_calibration,
         },
     )
     _write_json(catalog_path, [card.model_dump(mode="json") for card in cards])
@@ -247,6 +252,7 @@ def run_render_workflow(
     _write_manifest(manifest_path, manifest)
     output_artifacts: list[ArtifactRecord] = []
     iterations: list[WorkflowIteration] = []
+    previous_statistics = None
 
     try:
         manifest = _updated(manifest, stage="retrieval")
@@ -336,9 +342,23 @@ def run_render_workflow(
             _artifact("initial_render_spec", initial_spec_path, root),
         ))
 
+        planned_spec = plan_result.spec
+        if studio_calibration:
+            calibration = calibrate_studio_preview(planned_spec)
+            planned_spec = calibration.spec
+            if calibration.patch is not None:
+                calibration_patch_path = root / "planning" / "studio_calibration.patch.json"
+                _write_json(
+                    calibration_patch_path,
+                    calibration.patch.model_dump(mode="json"),
+                )
+                output_artifacts.append(
+                    _artifact("studio_calibration_patch", calibration_patch_path, root)
+                )
+
         try:
             framing = frame_camera(
-                plan_result.spec,
+                planned_spec,
                 retrieved_cards,
                 margin_fraction=margin_fraction,
                 view_axis=view_axis,
@@ -350,7 +370,7 @@ def run_render_workflow(
         except CameraFramingError as exc:
             if "already matches the requested deterministic framing" not in str(exc):
                 raise
-            framed_spec = plan_result.spec
+            framed_spec = planned_spec
 
         current_spec: RenderSpec = framed_spec
         current_spec_path = root / "specs" / "iteration-001.json"
@@ -447,6 +467,49 @@ def run_render_workflow(
                 "evaluation_report_sha256": canonical_sha256(evaluation.report),
                 "evaluation_verdict": evaluation.report.verdict,
             }
+            comparison = None
+            if evaluation.statistics is not None:
+                statistics_path = iteration_root / "image_statistics.json"
+                _write_json(
+                    statistics_path,
+                    evaluation.statistics.model_dump(mode="json"),
+                )
+                output_artifacts.append(_artifact(
+                    f"iteration_{iteration_number:03d}_image_statistics",
+                    statistics_path,
+                    root,
+                ))
+                iteration_values["image_statistics_sha256"] = canonical_sha256(
+                    evaluation.statistics
+                )
+                if previous_statistics is not None:
+                    comparison = compare_image_statistics(
+                        previous_statistics,
+                        evaluation.statistics,
+                    )
+                    comparison_path = iteration_root / "image_comparison.json"
+                    _write_json(comparison_path, comparison.model_dump(mode="json"))
+                    output_artifacts.append(_artifact(
+                        f"iteration_{iteration_number:03d}_image_comparison",
+                        comparison_path,
+                        root,
+                    ))
+                    iteration_values["image_comparison_sha256"] = canonical_sha256(
+                        comparison
+                    )
+                previous_statistics = evaluation.statistics
+
+            if comparison is not None and comparison.outcome == "regressed":
+                iterations.append(WorkflowIteration.model_validate(iteration_values))
+                manifest = _terminal_manifest(
+                    manifest,
+                    status="stopped",
+                    stop_reason="image_quality_regressed",
+                    output_artifacts=output_artifacts,
+                    iterations=iterations,
+                )
+                _write_manifest(manifest_path, manifest)
+                return WorkflowResult(manifest=manifest)
             if evaluation.report.verdict == "pass":
                 iterations.append(WorkflowIteration.model_validate(iteration_values))
                 output_artifacts.append(_artifact("final_render_spec", current_spec_path, root))
@@ -480,6 +543,11 @@ def run_render_workflow(
                     model=planner_model,
                     run_directory=iteration_root,
                     evaluation_path="evaluation.json",
+                    protected_paths=(
+                        DETERMINISTIC_FRAMING_PATHS
+                        if view_axis != "preserve"
+                        else None
+                    ),
                 )
             except CorrectionPlanningError as exc:
                 if exc.response is not None:
@@ -504,6 +572,28 @@ def run_render_workflow(
                 raise
             decision_path = iteration_root / "correction.json"
             correction_metrics_path = iteration_root / "correction_metrics.json"
+            if correction.initial_response is not None:
+                first_attempt_path = iteration_root / "correction_first_attempt_raw.json"
+                retry_path = iteration_root / "correction_retry.json"
+                _write_text(first_attempt_path, correction.initial_response.content)
+                _write_json(retry_path, {
+                    "reason": correction.retry_reason,
+                    "first_attempt_metrics": _response_metrics(
+                        correction.initial_response
+                    ),
+                })
+                output_artifacts.extend((
+                    _artifact(
+                        f"iteration_{iteration_number:03d}_correction_first_attempt_raw",
+                        first_attempt_path,
+                        root,
+                    ),
+                    _artifact(
+                        f"iteration_{iteration_number:03d}_correction_retry",
+                        retry_path,
+                        root,
+                    ),
+                ))
             _write_json(decision_path, correction.decision.model_dump(mode="json"))
             correction_metrics = _response_metrics(correction.response)
             correction_metrics["attempt_count"] = correction.attempt_count

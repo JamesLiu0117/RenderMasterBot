@@ -24,8 +24,9 @@ host process:
 
 After Unreal exits, the host validates the result schema, status, scene name,
 RenderSpec hash, actor IDs, actor kinds, observed transforms, material
-evidence, and camera exposure evidence. An exit code of zero alone is not
-considered success.
+evidence, camera exposure evidence, and loaded static-mesh bounds and pivot.
+Runtime bounds must match the supplied AssetCard evidence within a narrow
+floating-point tolerance. An exit code of zero alone is not considered success.
 
 ## First-adapter scope
 

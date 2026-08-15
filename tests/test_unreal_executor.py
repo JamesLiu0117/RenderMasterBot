@@ -92,7 +92,13 @@ def actor_record(
     transform=None,
     materials=None,
     exposure=None,
+    asset_bounds=None,
 ) -> SpawnedActorRecord:
+    if actor_kind == "static_mesh" and asset_bounds is None:
+        asset_bounds = {
+            "dimensions_cm": {"x": 1, "y": 1, "z": 1},
+            "pivot_offset_cm": {},
+        }
     return SpawnedActorRecord(
         actor_id=actor_id,
         actor_kind=actor_kind,
@@ -101,6 +107,7 @@ def actor_record(
         transform=transform or {},
         materials=materials or [],
         exposure=exposure,
+        asset_bounds=asset_bounds,
     )
 
 
@@ -114,11 +121,15 @@ def exposure_record(request) -> dict:
 
 class UnrealSceneBuildTests(unittest.TestCase):
     def test_resolves_asset_ids_to_bounded_unreal_paths(self):
-        request = resolve_scene_build_request(scene_spec(), [asset_card()])
+        request = resolve_scene_build_request(
+            scene_spec(),
+            [asset_card(dimensions_cm={"x": 10, "y": 100, "z": 200})],
+        )
 
         self.assertEqual(request.scene_name, "door_test")
         self.assertEqual(request.objects[0].asset_id, "door_asset")
         self.assertEqual(request.objects[0].engine_path, "/Game/Props/SM_Door")
+        self.assertEqual(request.objects[0].dimensions_cm.z, 200)
         self.assertEqual(len(request.render_spec_sha256), 64)
         self.assertEqual(request.sensor_width_mm, 36.0)
 
@@ -257,6 +268,42 @@ class UnrealSceneBuildTests(unittest.TestCase):
         with self.assertRaisesRegex(UnrealSceneBuildError, "material evidence"):
             _validate_observed_result(request, result)
 
+    def test_observed_asset_bounds_must_match_catalog_evidence(self):
+        request = resolve_scene_build_request(
+            scene_spec(),
+            [asset_card(dimensions_cm={"x": 10, "y": 100, "z": 200})],
+        )
+        result = UnrealSceneBuildResult(
+            status="succeeded",
+            project_name="Example",
+            world_name="Map",
+            scene_name=request.scene_name,
+            render_spec_sha256=request.render_spec_sha256,
+            actors=[
+                actor_record(
+                    "door",
+                    "static_mesh",
+                    request.objects[0].transform,
+                    asset_bounds={
+                        "dimensions_cm": {"x": 10, "y": 100, "z": 200},
+                        "pivot_offset_cm": {},
+                    },
+                ),
+                actor_record(
+                    "camera",
+                    "camera",
+                    request.camera.transform,
+                    exposure=exposure_record(request),
+                ),
+                actor_record("key", "directional", request.lights[0].transform),
+            ],
+        )
+        _validate_observed_result(request, result)
+
+        result.actors[0].asset_bounds.dimensions_cm.z = 201
+        with self.assertRaisesRegex(UnrealSceneBuildError, "bounds do not match"):
+            _validate_observed_result(request, result)
+
     def test_fixed_exposure_evidence_must_match_requested_ev100(self):
         value = scene_spec().model_dump(mode="json")
         value["camera"]["exposure"] = {"mode": "fixed", "fixed_ev100": 12.0}
@@ -337,6 +384,14 @@ class UnrealSceneBuildTests(unittest.TestCase):
                         "actor_name": item["object_id"],
                         "class_name": "StaticMeshActor",
                         "transform": item["transform"],
+                        "asset_bounds": {
+                            "dimensions_cm": item["dimensions_cm"] or {
+                                "x": 1.0,
+                                "y": 1.0,
+                                "z": 1.0,
+                            },
+                            "pivot_offset_cm": item["pivot_offset_cm"],
+                        },
                     }
                     for item in request["objects"]
                 ]

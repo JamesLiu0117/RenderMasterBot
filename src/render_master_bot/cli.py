@@ -633,6 +633,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 margin_fraction=args.margin,
                 timeout_seconds=args.timeout,
                 fail_on_warning=args.fail_on_warning,
+                studio_calibration=not args.no_studio_calibration,
             )
     except (WorkflowError, AssetIndexError, OllamaError, ValueError) as exc:
         print(f"ERROR: render workflow failed: {exc}", file=sys.stderr)
@@ -1032,14 +1033,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--view-axis",
         choices=VIEW_AXES,
-        default="preserve",
-        help="deterministic product framing direction (default: preserve)",
+        default="auto-product",
+        help="deterministic product framing direction (default: auto-product)",
     )
     run.add_argument(
         "--margin",
         type=float,
-        default=0.1,
-        help="fractional framing margin on each image edge (default: 0.1)",
+        default=0.02,
+        help="fractional framing margin on each image edge (default: 0.02)",
     )
     run.add_argument(
         "--timeout",
@@ -1051,6 +1052,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--fail-on-warning",
         action="store_true",
         help="stop before Unreal when semantic preflight needs review",
+    )
+    run.add_argument(
+        "--no-studio-calibration",
+        action="store_true",
+        help="disable the deterministic fixed-exposure first-preview baseline",
     )
     run.set_defaults(handler=cmd_run)
     return parser

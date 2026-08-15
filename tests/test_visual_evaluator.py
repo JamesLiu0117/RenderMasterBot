@@ -1,8 +1,10 @@
 import base64
 import hashlib
 import json
+import struct
 import tempfile
 import unittest
+import zlib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,7 +19,28 @@ from render_master_bot.visual_evaluator import (
 )
 
 
-PNG_BYTES = b"\x89PNG\r\n\x1a\nverified-preview"
+def _png_chunk(chunk_type: bytes, data: bytes) -> bytes:
+    crc = zlib.crc32(chunk_type)
+    crc = zlib.crc32(data, crc) & 0xFFFFFFFF
+    return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", crc)
+
+
+def _test_png() -> bytes:
+    width = height = 8
+    rows = bytearray()
+    for _y in range(height):
+        rows.append(0)
+        rows.extend((96, 96, 96, 255) * width)
+    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", header)
+        + _png_chunk(b"IDAT", zlib.compress(bytes(rows)))
+        + _png_chunk(b"IEND", b"")
+    )
+
+
+PNG_BYTES = _test_png()
 
 
 class FakeVisionClient:
@@ -102,6 +125,8 @@ class VisualEvaluatorTests(unittest.TestCase):
         self.assertIn("wrong requested view", SYSTEM_PROMPT)
         self.assertIn("rather than assuming", SYSTEM_PROMPT)
         self.assertIn("Distinguish clipping or exposure problems", SYSTEM_PROMPT)
+        self.assertIn("underexposed_like", SYSTEM_PROMPT)
+        self.assertIn("tall product in a landscape frame", SYSTEM_PROMPT)
 
     def test_host_verifies_evidence_and_owns_report_identity_fields(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -125,6 +150,12 @@ class VisualEvaluatorTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(encoded), PNG_BYTES)
         self.assertEqual(client.last_request["json_schema"]["title"], "VisualEvaluationDraft")
         self.assertIs(client.last_request["think"], False)
+        self.assertIsNotNone(result.statistics)
+        self.assertEqual(result.statistics.sha256, hashlib.sha256(PNG_BYTES).hexdigest())
+        self.assertIn(
+            '"center_luminance"',
+            client.last_request["messages"][1]["content"],
+        )
 
     def test_unknown_scene_object_ids_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

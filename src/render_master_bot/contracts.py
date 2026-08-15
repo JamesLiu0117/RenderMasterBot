@@ -13,6 +13,7 @@ from typing import Annotated, Literal
 from pydantic import AfterValidator, Field, JsonValue, model_validator
 
 from render_master_bot.models import (
+    FiniteFloat,
     Identifier,
     NonNegativeFiniteFloat,
     PositiveFiniteFloat,
@@ -383,6 +384,19 @@ class ImageStatistics(StrictModel):
     overexposed_like: bool
 
 
+class ImageComparison(StrictModel):
+    """Deterministic quality comparison between consecutive preview PNGs."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    baseline_sha256: Sha256
+    candidate_sha256: Sha256
+    outcome: Literal["improved", "regressed", "inconclusive"]
+    reasons: list[LongText] = Field(min_length=1, max_length=16)
+    mean_luminance_delta: FiniteFloat
+    center_luminance_delta: FiniteFloat
+    foreground_fraction_delta: FiniteFloat
+
+
 class VisualBenchmarkObservation(StrictModel):
     repetition: Annotated[int, Field(ge=1, le=5)]
     status: Literal["valid", "invalid"]
@@ -528,12 +542,16 @@ class WorkflowIteration(StrictModel):
     preview_manifest_sha256: Sha256
     evaluation_report_sha256: Sha256
     evaluation_verdict: Literal["pass", "needs_review", "fail"]
+    image_statistics_sha256: Sha256 | None = None
+    image_comparison_sha256: Sha256 | None = None
     correction_outcome: Literal["patch", "unresolved"] | None = None
     correction_decision_sha256: Sha256 | None = None
     corrected_render_spec_sha256: Sha256 | None = None
 
     @model_validator(mode="after")
     def correction_fields_are_consistent(self) -> "WorkflowIteration":
+        if self.image_comparison_sha256 is not None and self.image_statistics_sha256 is None:
+            raise ValueError("image comparisons require image statistics")
         if self.evaluation_verdict == "pass" and self.correction_outcome is not None:
             raise ValueError("passing workflow iterations cannot contain a correction")
         if self.correction_outcome is None:
@@ -574,6 +592,7 @@ class RenderWorkflowManifest(StrictModel):
         "correction_unresolved",
         "max_iterations_reached",
         "correction_cycle_detected",
+        "image_quality_regressed",
         "stage_failed",
     ] | None = None
     prompt: LongText
@@ -618,6 +637,7 @@ class RenderWorkflowManifest(StrictModel):
             "correction_unresolved",
             "max_iterations_reached",
             "correction_cycle_detected",
+            "image_quality_regressed",
         }:
             raise ValueError("stopped workflow has an invalid stop reason")
         numbers = [iteration.iteration for iteration in self.iterations]

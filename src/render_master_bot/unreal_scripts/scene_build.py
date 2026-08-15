@@ -45,7 +45,14 @@ def apply_scale(actor, transform):
     actor.set_actor_scale3d(vector(scale))
 
 
-def actor_record(actor, actor_id, actor_kind, materials=None, exposure=None):
+def actor_record(
+    actor,
+    actor_id,
+    actor_kind,
+    materials=None,
+    exposure=None,
+    asset_bounds=None,
+):
     location = actor.get_actor_location()
     rotation = actor.get_actor_rotation()
     scale = actor.get_actor_scale3d()
@@ -73,6 +80,25 @@ def actor_record(actor, actor_id, actor_kind, materials=None, exposure=None):
         },
         "materials": materials or [],
         "exposure": exposure,
+        "asset_bounds": asset_bounds,
+    }
+
+
+def static_mesh_bounds(asset):
+    bounds = asset.get_bounding_box()
+    minimum = bounds.min
+    maximum = bounds.max
+    return {
+        "dimensions_cm": {
+            "x": float(maximum.x - minimum.x),
+            "y": float(maximum.y - minimum.y),
+            "z": float(maximum.z - minimum.z),
+        },
+        "pivot_offset_cm": {
+            "x": float((minimum.x + maximum.x) / 2.0),
+            "y": float((minimum.y + maximum.y) / 2.0),
+            "z": float((minimum.z + maximum.z) / 2.0),
+        },
     }
 
 
@@ -160,7 +186,13 @@ def spawn_object(actor_subsystem, value, transient=True):
     actor.set_actor_hidden_in_game(not bool(value["visible"]))
     unreal.log(f"RENDERMASTER_SCENE_STEP object_visibility id={value['object_id']}")
     materials = apply_materials(actor, value)
-    record = actor_record(actor, value["object_id"], "static_mesh", materials)
+    record = actor_record(
+        actor,
+        value["object_id"],
+        "static_mesh",
+        materials,
+        asset_bounds=static_mesh_bounds(asset),
+    )
     unreal.log(f"RENDERMASTER_SCENE_STEP object_recorded id={value['object_id']}")
     return record
 

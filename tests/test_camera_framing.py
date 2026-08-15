@@ -101,6 +101,28 @@ class CameraFramingTests(unittest.TestCase):
         self.assertEqual(result.view_axis, "from-negative-x")
         self.assertIn("from-negative-x", result.patch.rationale)
 
+    def test_auto_product_snaps_planned_camera_side_to_horizontal_axis(self):
+        original = framing_scene(camera={
+            "camera_id": "camera",
+            "transform": {"location_cm": {"x": 20, "y": -500, "z": 500}},
+            "focal_length_mm": 50,
+        })
+
+        result = frame_camera(
+            original,
+            [cube_card()],
+            margin_fraction=0.02,
+            view_axis="auto-product",
+        )
+
+        location = result.spec.camera.transform.location_cm
+        rotation = result.spec.camera.transform.rotation_deg
+        self.assertAlmostEqual(location.x, result.target_cm.x)
+        self.assertLess(location.y, result.target_cm.y)
+        self.assertAlmostEqual(location.z, result.target_cm.z)
+        self.assertEqual(rotation.model_dump(), {"x": 0.0, "y": 0.0, "z": 90.0})
+        self.assertEqual(result.view_axis, "auto-product")
+
     def test_explicit_positive_z_view_creates_a_top_down_material_view(self):
         result = frame_camera(
             framing_scene(),

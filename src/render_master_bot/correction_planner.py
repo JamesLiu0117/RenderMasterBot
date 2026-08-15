@@ -17,6 +17,7 @@ from render_master_bot.contracts import (
     ArtifactRecord,
     CorrectionDecision,
     EvaluationReport,
+    ImageStatistics,
     LongText,
     PatchOperation,
     RenderSpecPatch,
@@ -48,6 +49,10 @@ the RenderSpec; an identical material assignment is not a correction.
 Use /camera/exposure only when fixed EV100 directly addresses exposure adaptation or brightness.
 Its replacement value must be a complete object such as
 {"mode":"fixed","fixed_ev100":12.0}, never a scalar exposure-compensation value.
+Treat deterministic ImageStatistics as measured ground truth. If underexposed_like and
+overexposed_like are both false and center_luminance is between 0.08 and 0.85, do not change
+global exposure; dark borders may be a composition issue. For fixed exposure, lower EV100
+brightens and higher EV100 darkens, so never move EV100 in the opposite direction.
 Patch values must be literal JSON values of the target field type. For example, replace a numeric
 intensity with "value": 2000.0, never with a wrapper such as {"type":"number","value":2000.0}.
 Render resolution, quality, format, and seed are intentionally not correctable. Do not propose
@@ -60,6 +65,13 @@ FORMAT_RETRY_PROMPT = """Your previous response was invalid or truncated JSON.
 Return one complete replacement JSON object matching the supplied schema.
 Use no Markdown or extra prose. Keep rationale under 300 characters and include only operations
 needed to address the reported blocking issues. Do not repeat the invalid response.
+"""
+
+SEMANTIC_RETRY_PROMPT = """The host rejected your previous correction for this reason:
+{reason}
+Return one complete replacement decision. Respect the deterministic ImageStatistics and all
+allowed-path rules. Do not repeat a rejected operation. Return 'unresolved' if no remaining
+evidence-supported patch addresses every error or blocking issue. Use JSON only and no prose.
 """
 
 _ALLOWED_PATH = re.compile(
@@ -82,6 +94,13 @@ PATCH_VALUE_RULES = """Patch value rules:
 - cast_shadows: boolean
 - materials: complete assignment list using only supplied material IDs and listed mesh slot names
 """
+
+DETERMINISTIC_FRAMING_PATHS: tuple[str, ...] = (
+    "/camera/transform/location_cm",
+    "/camera/transform/rotation_deg",
+    "/camera/focal_length_mm",
+    "/camera/focus_distance_cm",
+)
 
 
 class CorrectionPlanningError(RuntimeError):
@@ -147,6 +166,8 @@ class CorrectionPlanningResult:
     response: StructuredResponse
     corrected_spec: RenderSpec | None = None
     attempt_count: int = 1
+    initial_response: StructuredResponse | None = None
+    retry_reason: str | None = None
 
 
 def _sha256_file(path: Path) -> str:
@@ -185,7 +206,13 @@ def _verified_artifact(run_root: Path, artifact: ArtifactRecord) -> Path:
 def _load_inputs(
     run_directory: str | Path,
     evaluation_path: str,
-) -> tuple[RenderSpec, EvaluationReport, list[AssetCard], str]:
+) -> tuple[
+    RenderSpec,
+    EvaluationReport,
+    list[AssetCard],
+    str,
+    ImageStatistics | None,
+]:
     run_root = Path(run_directory).expanduser().resolve()
     try:
         manifest = RunManifest.model_validate_json(
@@ -223,7 +250,67 @@ def _load_inputs(
         raise CorrectionPlanningError("correction planning requires a preview EvaluationReport")
     if report.preview_paths != [preview_artifact.path]:
         raise CorrectionPlanningError("EvaluationReport does not reference the run beauty preview")
-    return spec, report, cards, canonical_sha256(report)
+    statistics_path = run_root / "image_statistics.json"
+    statistics = None
+    if statistics_path.exists():
+        try:
+            statistics = ImageStatistics.model_validate_json(
+                statistics_path.read_text(encoding="utf-8-sig")
+            )
+        except (OSError, ValidationError) as exc:
+            raise CorrectionPlanningError(f"invalid image statistics: {exc}") from exc
+        if statistics.sha256 != preview_artifact.sha256:
+            raise CorrectionPlanningError(
+                "image statistics SHA-256 does not match the beauty preview"
+            )
+    return spec, report, cards, canonical_sha256(report), statistics
+
+
+def _validate_exposure_evidence(
+    spec: RenderSpec,
+    statistics: ImageStatistics | None,
+    operations: list[CorrectionOperationDraft],
+    response: StructuredResponse,
+) -> None:
+    if statistics is None:
+        return
+    exposure_operations = [
+        operation for operation in operations if operation.path == "/camera/exposure"
+    ]
+    if not exposure_operations:
+        return
+    if (
+        not statistics.underexposed_like
+        and not statistics.overexposed_like
+        and 0.08 <= statistics.center_luminance <= 0.85
+    ):
+        raise CorrectionPlanningError(
+            "global exposure correction is unsupported by healthy image statistics",
+            response=response,
+        )
+    if spec.camera.exposure.mode != "fixed":
+        return
+    current_ev = spec.camera.exposure.fixed_ev100
+    for operation in exposure_operations:
+        value = operation.value
+        if not isinstance(value, dict) or value.get("mode") != "fixed":
+            raise CorrectionPlanningError(
+                "evidence-based exposure correction must preserve fixed exposure",
+                response=response,
+            )
+        candidate_ev = value.get("fixed_ev100")
+        if isinstance(candidate_ev, bool) or not isinstance(candidate_ev, (int, float)):
+            continue
+        if statistics.underexposed_like and candidate_ev >= current_ev:
+            raise CorrectionPlanningError(
+                "underexposed preview requires a lower fixed EV100, not a higher one",
+                response=response,
+            )
+        if statistics.overexposed_like and candidate_ev <= current_ev:
+            raise CorrectionPlanningError(
+                "overexposed preview requires a higher fixed EV100, not a lower one",
+                response=response,
+            )
 
 
 def _allowed_paths(spec: RenderSpec) -> list[str]:
@@ -251,6 +338,31 @@ def _allowed_paths(spec: RenderSpec) -> list[str]:
             f"/lights/{index}/cast_shadows",
         ))
     return paths
+
+
+def _validate_draft_safety(
+    draft: CorrectionDraft,
+    *,
+    spec: RenderSpec,
+    statistics: ImageStatistics | None,
+    allowed_paths: list[str],
+    response: StructuredResponse,
+) -> None:
+    if draft.outcome != "patch":
+        return
+    allowed = set(allowed_paths)
+    invalid_paths = sorted({
+        operation.path
+        for operation in draft.operations
+        if operation.path not in allowed or _ALLOWED_PATH.fullmatch(operation.path) is None
+    })
+    if invalid_paths:
+        raise CorrectionPlanningError(
+            "correction model used forbidden or unavailable paths: "
+            + ", ".join(invalid_paths),
+            response=response,
+        )
+    _validate_exposure_evidence(spec, statistics, draft.operations, response)
 
 
 def _relevant_asset_context(
@@ -288,11 +400,23 @@ def plan_correction(
     model: str,
     run_directory: str | Path,
     evaluation_path: str = "evaluation.json",
+    protected_paths: list[str] | tuple[str, ...] | None = None,
 ) -> CorrectionPlanningResult:
     """Plan a validated replacement-only correction or report a capability gap."""
 
-    spec, report, cards, report_hash = _load_inputs(run_directory, evaluation_path)
+    spec, report, cards, report_hash, statistics = _load_inputs(
+        run_directory,
+        evaluation_path,
+    )
     allowed_paths = _allowed_paths(spec)
+    protected = set(protected_paths or ())
+    unknown_protected = sorted(protected - set(allowed_paths))
+    if unknown_protected:
+        raise CorrectionPlanningError(
+            "protected correction paths are not available: "
+            + ", ".join(unknown_protected)
+        )
+    allowed_paths = [path for path in allowed_paths if path not in protected]
     schema = ollama_model_schema(CorrectionDraft)
     prompt = (
         "Decide whether this evaluation can be fixed with the allowed replacement paths.\n"
@@ -302,6 +426,8 @@ def plan_correction(
         f"{spec.model_dump_json(indent=2)}\n"
         "EvaluationReport:\n"
         f"{report.model_dump_json(indent=2)}\n"
+        "Deterministic ImageStatistics (null only for legacy runs):\n"
+        f"{statistics.model_dump_json(indent=2) if statistics is not None else 'null'}\n"
         "Relevant asset evidence:\n"
         f"{json.dumps(_relevant_asset_context(spec, cards), ensure_ascii=False, indent=2)}\n"
         "Output JSON Schema:\n"
@@ -317,9 +443,13 @@ def plan_correction(
         json_schema=schema,
     )
     attempt_count = 1
+    initial_response = None
+    retry_reason = None
     try:
         draft = CorrectionDraft.model_validate_json(response.content)
     except ValidationError:
+        initial_response = response
+        retry_reason = "The first response was invalid or truncated JSON."
         response = client.chat_structured(
             model=model,
             messages=[
@@ -339,6 +469,48 @@ def plan_correction(
                 response=response,
             ) from exc
 
+    try:
+        _validate_draft_safety(
+            draft,
+            spec=spec,
+            statistics=statistics,
+            allowed_paths=allowed_paths,
+            response=response,
+        )
+    except CorrectionPlanningError as exc:
+        if attempt_count != 1:
+            raise
+        initial_response = response
+        retry_reason = str(exc)
+        response = client.chat_structured(
+            model=model,
+            messages=[
+                *messages,
+                {"role": "assistant", "content": response.content},
+                {
+                    "role": "user",
+                    "content": SEMANTIC_RETRY_PROMPT.format(reason=retry_reason),
+                },
+            ],
+            json_schema=schema,
+        )
+        attempt_count = 2
+        try:
+            draft = CorrectionDraft.model_validate_json(response.content)
+        except ValidationError as validation_exc:
+            raise CorrectionPlanningError(
+                "correction model returned invalid JSON after an evidence-guided retry:\n"
+                f"{validation_exc}",
+                response=response,
+            ) from validation_exc
+        _validate_draft_safety(
+            draft,
+            spec=spec,
+            statistics=statistics,
+            allowed_paths=allowed_paths,
+            response=response,
+        )
+
     spec_hash = canonical_sha256(spec)
     model_identity = {"provider": "ollama", "model": response.model}
     if draft.outcome == "unresolved":
@@ -354,18 +526,8 @@ def plan_correction(
             decision=decision,
             response=response,
             attempt_count=attempt_count,
-        )
-
-    allowed = set(allowed_paths)
-    invalid_paths = sorted({
-        operation.path
-        for operation in draft.operations
-        if operation.path not in allowed or _ALLOWED_PATH.fullmatch(operation.path) is None
-    })
-    if invalid_paths:
-        raise CorrectionPlanningError(
-            "correction model used forbidden or unavailable paths: " + ", ".join(invalid_paths),
-            response=response,
+            initial_response=initial_response,
+            retry_reason=retry_reason,
         )
     patch = RenderSpecPatch(
         base_spec_sha256=spec_hash,
@@ -397,4 +559,6 @@ def plan_correction(
         response=response,
         corrected_spec=corrected_spec,
         attempt_count=attempt_count,
+        initial_response=initial_response,
+        retry_reason=retry_reason,
     )

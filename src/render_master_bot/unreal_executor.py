@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import Field, ValidationError, model_validator
 
 from render_master_bot.asset_index import AssetIndexError, load_asset_card_catalog
-from render_master_bot.contracts import AssetCard, Sha256
+from render_master_bot.contracts import AssetCard, Dimensions3, Sha256
 from render_master_bot.models import (
     Camera,
     DEFAULT_SENSOR_WIDTH_MM,
@@ -23,6 +23,7 @@ from render_master_bot.models import (
     RenderSpec,
     StrictModel,
     Transform,
+    Vector3,
 )
 from render_master_bot.preflight import run_preflight
 from render_master_bot.serialization import canonical_sha256
@@ -51,6 +52,8 @@ class ResolvedSceneObject(StrictModel):
     asset_type: Literal["static_mesh"]
     transform: Transform
     visible: bool
+    dimensions_cm: Dimensions3 | None = None
+    pivot_offset_cm: Vector3
     materials: list[ResolvedMaterialAssignment] = Field(default_factory=list, max_length=64)
 
 
@@ -93,6 +96,13 @@ class AppliedExposureRecord(StrictModel):
         return self
 
 
+class ObservedAssetBounds(StrictModel):
+    """Local StaticMesh bounds read back from the exact Unreal asset used."""
+
+    dimensions_cm: Dimensions3
+    pivot_offset_cm: Vector3
+
+
 class SpawnedActorRecord(StrictModel):
     """Observed actor state returned by Unreal after scene construction."""
 
@@ -110,6 +120,7 @@ class SpawnedActorRecord(StrictModel):
     transform: Transform
     materials: list[AppliedMaterialRecord] = Field(default_factory=list, max_length=64)
     exposure: AppliedExposureRecord | None = None
+    asset_bounds: ObservedAssetBounds | None = None
 
 
 class UnrealSceneBuildResult(StrictModel):
@@ -225,6 +236,8 @@ def resolve_scene_build_request(
                 asset_type="static_mesh",
                 transform=scene_object.transform,
                 visible=scene_object.visible,
+                dimensions_cm=card.dimensions_cm,
+                pivot_offset_cm=card.pivot_offset_cm,
                 materials=material_assignments,
             )
         )
@@ -317,6 +330,30 @@ def _validate_observed_result(
         raise UnrealSceneBuildError(
             "Unreal material evidence does not match the request: "
             + ", ".join(material_mismatches)
+        )
+
+    bounds_mismatches = []
+    for item in request.objects:
+        observed_bounds = observed_actors[item.object_id].asset_bounds
+        if observed_bounds is None:
+            bounds_mismatches.append(item.object_id + ":missing")
+            continue
+        if item.dimensions_cm is not None and not all((
+            _close(item.dimensions_cm.x, observed_bounds.dimensions_cm.x),
+            _close(item.dimensions_cm.y, observed_bounds.dimensions_cm.y),
+            _close(item.dimensions_cm.z, observed_bounds.dimensions_cm.z),
+        )):
+            bounds_mismatches.append(item.object_id + ":dimensions")
+        if not all((
+            _close(item.pivot_offset_cm.x, observed_bounds.pivot_offset_cm.x),
+            _close(item.pivot_offset_cm.y, observed_bounds.pivot_offset_cm.y),
+            _close(item.pivot_offset_cm.z, observed_bounds.pivot_offset_cm.z),
+        )):
+            bounds_mismatches.append(item.object_id + ":pivot")
+    if bounds_mismatches:
+        raise UnrealSceneBuildError(
+            "Unreal asset bounds do not match the supplied AssetCard evidence: "
+            + ", ".join(bounds_mismatches)
         )
 
     camera_actor = observed_actors[request.camera.camera_id]

@@ -10,6 +10,7 @@ from render_master_bot.contracts import (
     AssetCard,
     CorrectionDecision,
     EvaluationReport,
+    ImageStatistics,
     PatchOperation,
     RenderSpecPatch,
     RenderWorkflowManifest,
@@ -188,8 +189,9 @@ class FakePreviewRunner:
 
 
 class FakeEvaluator:
-    def __init__(self, verdicts: list[str]):
+    def __init__(self, verdicts: list[str], statistics: list[ImageStatistics] | None = None):
         self.verdicts = iter(verdicts)
+        self.statistics = iter(statistics) if statistics is not None else None
 
     def __call__(self, _client, *, run_directory, **_kwargs):
         spec = RenderSpec.model_validate_json(
@@ -231,7 +233,31 @@ class FakeEvaluator:
                 model="qwen3-vl:8b-instruct",
                 total_duration_ns=2_000_000_000,
             ),
+            statistics=next(self.statistics) if self.statistics is not None else None,
         )
+
+
+def image_stats(sha_char: str, **overrides) -> ImageStatistics:
+    value = {
+        "sha256": sha_char * 64,
+        "width_px": 640,
+        "height_px": 360,
+        "sampled_pixels": 10_000,
+        "mean_luminance": 0.2,
+        "luminance_stddev": 0.1,
+        "p05_luminance": 0.01,
+        "p95_luminance": 0.7,
+        "dark_pixel_fraction": 0.4,
+        "clipped_pixel_fraction": 0.0,
+        "foreground_fraction": 0.3,
+        "center_luminance": 0.4,
+        "border_luminance": 0.01,
+        "blank_like": False,
+        "underexposed_like": False,
+        "overexposed_like": False,
+    }
+    value.update(overrides)
+    return ImageStatistics.model_validate(value)
 
 
 def patch_correction(_client, *, run_directory, **_kwargs) -> CorrectionPlanningResult:
@@ -246,7 +272,7 @@ def patch_correction(_client, *, run_directory, **_kwargs) -> CorrectionPlanning
         base_spec_sha256=canonical_sha256(spec),
         rationale="Increase the key light for the next bounded attempt.",
         proposed_by={"provider": "ollama", "model": "gpt-oss:20b"},
-        operations=[PatchOperation(op="replace", path="/lights/0/intensity", value=20_000)],
+        operations=[PatchOperation(op="replace", path="/lights/0/intensity", value=30_000)],
     )
     corrected = apply_render_spec_patch(spec, patch)
     decision = CorrectionDecision(
@@ -353,8 +379,9 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(result.manifest.status, "succeeded")
         self.assertEqual(len(result.manifest.iterations), 2)
         self.assertEqual(result.manifest.iterations[0].correction_outcome, "patch")
-        self.assertEqual(preview_runner.specs[0].lights[0].intensity, 10_000)
-        self.assertEqual(preview_runner.specs[1].lights[0].intensity, 20_000)
+        self.assertEqual(preview_runner.specs[0].lights[0].intensity, 20_000)
+        self.assertEqual(preview_runner.specs[1].lights[0].intensity, 30_000)
+        self.assertEqual(preview_runner.specs[0].camera.exposure.fixed_ev100, 9.0)
 
     def test_unresolved_correction_stops_without_another_render(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -367,6 +394,38 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(result.manifest.status, "stopped")
         self.assertEqual(result.manifest.stop_reason, "correction_unresolved")
         self.assertEqual(len(preview_runner.specs), 1)
+
+    def test_large_pixel_regression_stops_before_accepting_model_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result, _ = self.run_workflow(
+                Path(directory),
+                FakeEvaluator(
+                    ["needs_review", "pass"],
+                    statistics=[
+                        image_stats("a"),
+                        image_stats(
+                            "b",
+                            mean_luminance=0.02,
+                            center_luminance=0.03,
+                            foreground_fraction=0.1,
+                            underexposed_like=True,
+                        ),
+                    ],
+                ),
+                correction_planner=patch_correction,
+            )
+
+            comparison = json.loads((
+                Path(directory)
+                / "workflow"
+                / "iterations"
+                / "iteration-002"
+                / "image_comparison.json"
+            ).read_text(encoding="utf-8"))
+
+        self.assertEqual(result.manifest.status, "stopped")
+        self.assertEqual(result.manifest.stop_reason, "image_quality_regressed")
+        self.assertEqual(comparison["outcome"], "regressed")
 
     def test_iteration_limit_stops_before_requesting_an_unused_patch(self):
         def forbidden_correction(*_args, **_kwargs):

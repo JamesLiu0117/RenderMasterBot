@@ -7,11 +7,11 @@ one auditable workflow:
 prompt
   -> Chroma retrieval
   -> strict RenderSpec planning
-  -> deterministic camera framing and semantic preflight
+  -> deterministic studio calibration, camera framing, and semantic preflight
   -> transient Unreal preview
-  -> Qwen3-VL evaluation
+  -> deterministic image statistics and Qwen3-VL evaluation
   -> bounded correction decision
-  -> corrected preview, or a terminal stop reason
+  -> corrected preview plus regression comparison, or a terminal stop reason
 ```
 
 The orchestrator does not give either model direct Unreal access. The text
@@ -36,6 +36,7 @@ workflow/
 |   |-- planner_raw.json
 |   |-- planner_metrics.json
 |   |-- render_spec.json
+|   |-- studio_calibration.patch.json
 |   `-- camera_framing.patch.json
 |-- specs/
 |   |-- iteration-001.json
@@ -47,8 +48,9 @@ workflow/
 
 Each iteration directory is a normal standalone Unreal preview run containing
 its own frozen inputs, preview PNG, `RunManifest`, evaluation, model metrics,
-Unreal process log, and correction artifacts when applicable. A later attempt
-never reuses or overwrites an earlier iteration directory.
+Unreal process log, `image_statistics.json`, and correction artifacts when
+applicable. Iterations after the first also contain `image_comparison.json`.
+A later attempt never reuses or overwrites an earlier iteration directory.
 
 ## Retrieval boundary
 
@@ -74,6 +76,7 @@ The `RenderWorkflowManifest.stop_reason` is always explicit for terminal runs:
 | `correction_unresolved` | the planner named a capability gap instead of a patch |
 | `max_iterations_reached` | the configured render-attempt budget was exhausted |
 | `correction_cycle_detected` | a correction returned to a previously rendered spec hash |
+| `image_quality_regressed` | deterministic pixel evidence detected a large correction regression |
 | `stage_failed` | retrieval, planning, rendering, evaluation, or persistence failed |
 
 One to five preview attempts are allowed. The default is two. On the last
@@ -92,9 +95,14 @@ render-master run `
   --workflow-id "door_001" `
   --retrieve-assets 8 `
   --retrieve-materials 5 `
-  --max-iterations 2 `
-  --view-axis preserve
+  --max-iterations 3
 ```
+
+The complete workflow defaults to `--view-axis auto-product`, `--margin 0.02`,
+and deterministic first-preview studio calibration. Use
+`--no-studio-calibration` only for an intentional comparison with the planner's
+original exposure and light intensity. Deterministic framing paths are
+host-owned during correction and are not exposed to the text model.
 
 Exit code `0` means `evaluator_passed`. Exit code `2` means the workflow safely
 stopped without a pass. Exit code `1` means a stage failed. In all cases where
@@ -105,16 +113,21 @@ Use `--fail-on-warning` when any semantic preflight warning must prevent an
 Unreal launch. Use a new workflow directory for every retry or configuration
 change.
 
-## First complete local loop
+## First passing local loop
 
-`e2e-door-007` completed two full preview/evaluation iterations on the real UE
-5.7 project and stopped with `max_iterations_reached`. This is a successful
-orchestration test, not a visual-quality pass: the first correction produced a
-valid patch and a second verified render, but it made exposure worse.
+`e2e-door-009` passed the complete workflow on the real UE 5.7 project in one
+iteration. It retrieved `SM_Door` and `M_WeatheredPlanks`, applied fixed EV100 9
+and 20,000 directional lux, framed the subject from the planned negative-Y side,
+rendered a hashed PNG, extracted deterministic pixel evidence, and received a
+zero-issue `pass` from `qwen3-vl:8b-instruct`.
 
-Freezing the 13 retrieved cards instead of exposing the 544-card source catalog
-reduced correction input from 7,778 to 3,325 tokens. Deterministic image evidence
-confirmed that mean luminance fell from 0.1110 to 0.0122 and dark-pixel fraction
-rose from 0.8058 to 0.8807. The next milestone is therefore Unreal bounds,
-lighting, and exposure calibration; the workflow no longer needs structural
-orchestration work to produce that training and evaluation evidence.
+The PNG SHA-256 matched the statistics record. Catalog and runtime Unreal bounds
+also matched exactly at approximately 200 x 200 x 200 cm with a zero pivot. The
+image measured mean luminance 0.0913, center luminance 0.1686, foreground
+fraction 0.2959, zero clipping, and no blank, underexposed, or overexposed flag.
+
+`e2e-door-008` is retained as an important negative trace. Its first model
+correction tried to change EV100 in a direction unsupported by healthy pixel
+statistics and rotate a deterministically framed camera away from the subject.
+That run motivated the evidence-guided retry and protected framing boundary now
+used by the passing loop.

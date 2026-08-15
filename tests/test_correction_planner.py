@@ -51,12 +51,20 @@ def prepare_run(
     *,
     report_category="material",
     include_wood_material=False,
+    fixed_ev100=None,
+    image_statistics=None,
 ) -> tuple[Path, RenderSpec]:
     run_root = root / "run"
     inputs = run_root / "inputs"
     preview = run_root / "preview"
     inputs.mkdir(parents=True)
     preview.mkdir()
+    camera = {
+        "camera_id": "camera",
+        "transform": {"location_cm": {"x": -500}},
+    }
+    if fixed_ev100 is not None:
+        camera["exposure"] = {"mode": "fixed", "fixed_ev100": fixed_ev100}
     spec = RenderSpec.model_validate({
         "source_prompt": "Render one wooden door.",
         "scene_name": "door_scene",
@@ -64,10 +72,7 @@ def prepare_run(
             "object_id": "door",
             "asset": {"asset_id": "door_asset"},
         }],
-        "camera": {
-            "camera_id": "camera",
-            "transform": {"location_cm": {"x": -500}},
-        },
+        "camera": camera,
         "lights": [{
             "light_id": "key",
             "kind": "directional",
@@ -97,6 +102,30 @@ def prepare_run(
     assets_path.write_text(json.dumps(cards), encoding="utf-8")
     preview_path = preview / "beauty.png"
     preview_path.write_bytes(PNG_BYTES)
+    if image_statistics is not None:
+        statistics_value = {
+            "sha256": _sha256(preview_path),
+            "width_px": 640,
+            "height_px": 360,
+            "sampled_pixels": 10_000,
+            "mean_luminance": 0.2,
+            "luminance_stddev": 0.1,
+            "p05_luminance": 0.01,
+            "p95_luminance": 0.7,
+            "dark_pixel_fraction": 0.4,
+            "clipped_pixel_fraction": 0.0,
+            "foreground_fraction": 0.3,
+            "center_luminance": 0.4,
+            "border_luminance": 0.01,
+            "blank_like": False,
+            "underexposed_like": False,
+            "overexposed_like": False,
+        }
+        statistics_value.update(image_statistics)
+        (run_root / "image_statistics.json").write_text(
+            json.dumps(statistics_value),
+            encoding="utf-8",
+        )
     now = datetime.now(UTC)
     manifest = RunManifest.model_validate({
         "run_id": "correction_test",
@@ -320,6 +349,33 @@ class CorrectionPlannerTests(unittest.TestCase):
         self.assertIn("positive number", user_prompt)
         self.assertIn("lower EV100 brightens", user_prompt)
 
+    def test_workflow_can_protect_deterministic_camera_framing_paths(self):
+        content = json.dumps({
+            "outcome": "unresolved",
+            "rationale": "Camera framing is host-owned for this workflow.",
+            "operations": [],
+            "missing_capabilities": ["host camera reframing"],
+        })
+        client = FakeCorrectionClient(content)
+        with tempfile.TemporaryDirectory() as directory:
+            run_root, _ = prepare_run(Path(directory), report_category="lighting")
+            plan_correction(
+                client,
+                model="gpt-oss:20b",
+                run_directory=run_root,
+                protected_paths=[
+                    "/camera/transform/location_cm",
+                    "/camera/transform/rotation_deg",
+                    "/camera/focal_length_mm",
+                    "/camera/focus_distance_cm",
+                ],
+            )
+
+        user_prompt = client.last_request["messages"][1]["content"]
+        self.assertNotIn("/camera/transform/location_cm", user_prompt)
+        self.assertNotIn("/camera/focal_length_mm", user_prompt)
+        self.assertIn("/camera/exposure", user_prompt)
+
     def test_no_op_replacement_is_rejected(self):
         content = json.dumps({
             "outcome": "patch",
@@ -357,6 +413,114 @@ class CorrectionPlannerTests(unittest.TestCase):
         self.assertEqual(result.corrected_spec.camera.exposure.mode, "fixed")
         self.assertEqual(result.corrected_spec.camera.exposure.fixed_ev100, 12.0)
 
+    def test_healthy_statistics_reject_unsupported_global_exposure_change(self):
+        content = json.dumps({
+            "outcome": "patch",
+            "rationale": "Darken the whole image.",
+            "operations": [{
+                "path": "/camera/exposure",
+                "value": {"mode": "fixed", "fixed_ev100": 12.0},
+            }],
+            "missing_capabilities": [],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            run_root, _ = prepare_run(
+                Path(directory),
+                report_category="lighting",
+                fixed_ev100=9,
+                image_statistics={},
+            )
+            with self.assertRaisesRegex(CorrectionPlanningError, "healthy image statistics"):
+                plan_correction(
+                    FakeCorrectionClient(content),
+                    model="gpt-oss:20b",
+                    run_directory=run_root,
+                )
+
+    def test_evidence_rejection_gets_one_auditable_semantic_retry(self):
+        rejected = json.dumps({
+            "outcome": "patch",
+            "rationale": "Darken the whole image.",
+            "operations": [{
+                "path": "/camera/exposure",
+                "value": {"mode": "fixed", "fixed_ev100": 12.0},
+            }],
+            "missing_capabilities": [],
+        })
+        accepted = json.dumps({
+            "outcome": "patch",
+            "rationale": "Adjust the existing key light without changing exposure.",
+            "operations": [{"path": "/lights/0/intensity", "value": 100.0}],
+            "missing_capabilities": [],
+        })
+        client = SequenceCorrectionClient([rejected, accepted])
+        with tempfile.TemporaryDirectory() as directory:
+            run_root, _ = prepare_run(
+                Path(directory),
+                report_category="lighting",
+                fixed_ev100=9,
+                image_statistics={},
+            )
+            result = plan_correction(
+                client,
+                model="gpt-oss:20b",
+                run_directory=run_root,
+            )
+
+        self.assertEqual(result.attempt_count, 2)
+        self.assertEqual(result.initial_response.content, rejected)
+        self.assertIn("healthy image statistics", result.retry_reason)
+        self.assertEqual(result.corrected_spec.lights[0].intensity, 100)
+        self.assertIn(
+            "Do not repeat a rejected operation",
+            client.requests[1]["messages"][-1]["content"],
+        )
+
+    def test_underexposure_requires_fixed_ev_to_move_brighter(self):
+        wrong_direction = json.dumps({
+            "outcome": "patch",
+            "rationale": "Attempt the wrong fixed exposure direction.",
+            "operations": [{
+                "path": "/camera/exposure",
+                "value": {"mode": "fixed", "fixed_ev100": 12.0},
+            }],
+            "missing_capabilities": [],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            run_root, _ = prepare_run(
+                Path(directory),
+                report_category="lighting",
+                fixed_ev100=9,
+                image_statistics={
+                    "mean_luminance": 0.02,
+                    "center_luminance": 0.03,
+                    "underexposed_like": True,
+                },
+            )
+            with self.assertRaisesRegex(CorrectionPlanningError, "lower fixed EV100"):
+                plan_correction(
+                    FakeCorrectionClient(wrong_direction),
+                    model="gpt-oss:20b",
+                    run_directory=run_root,
+                )
+
+            correct_direction = json.dumps({
+                "outcome": "patch",
+                "rationale": "Brighten the fixed exposure based on measured darkness.",
+                "operations": [{
+                    "path": "/camera/exposure",
+                    "value": {"mode": "fixed", "fixed_ev100": 8.0},
+                }],
+                "missing_capabilities": [],
+            })
+            result = plan_correction(
+                FakeCorrectionClient(correct_direction),
+                model="gpt-oss:20b",
+                run_directory=run_root,
+            )
+
+        self.assertEqual(result.corrected_spec.camera.exposure.fixed_ev100, 8.0)
+
     def test_asset_replacement_path_is_rejected(self):
         content = json.dumps({
             "outcome": "patch",
@@ -376,7 +540,7 @@ class CorrectionPlannerTests(unittest.TestCase):
                     model="gpt-oss:20b",
                     run_directory=run_root,
                 )
-            self.assertEqual(client.call_count, 1)
+            self.assertEqual(client.call_count, 2)
 
     def test_report_hash_mismatch_is_rejected_before_model_call(self):
         with tempfile.TemporaryDirectory() as directory:

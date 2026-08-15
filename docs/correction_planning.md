@@ -30,6 +30,10 @@ Before inference, the host requires:
 5. matching canonical RenderSpec identities in the manifest and report;
 6. a preview-stage report pointing to the exact beauty artifact.
 
+When `image_statistics.json` exists, its stored PNG SHA-256 must also match the
+verified beauty artifact. Those statistics become correction evidence rather
+than optional model commentary.
+
 Any disagreement fails before the model is called.
 
 ## Allowed patch surface
@@ -54,11 +58,18 @@ value rules explicitly state numeric ranges, vector shapes, booleans, material
 assignment structure, and the photographic rule that lower EV100 brightens an
 image while higher EV100 darkens it.
 
+Healthy center luminance with neither an underexposed nor overexposed flag
+forbids a global exposure patch. For an underexposed fixed-EV image, the new EV
+must be lower; for an overexposed image, it must be higher. End-to-end workflows
+using deterministic framing also remove camera location, rotation, focal length,
+and focus distance from the model's allowed paths.
+
 Malformed or truncated correction JSON receives one concise format-only retry.
-Semantic violations such as forbidden paths, invented assets, invalid enum
-values, or no-op replacements are never retried as if they were formatting
-problems. The orchestrator preserves the final invalid raw response and metrics
-before terminating the workflow.
+A schema-valid decision rejected by path or deterministic exposure evidence can
+instead receive one semantic retry containing the exact host rejection reason.
+The first response and retry reason are preserved. A second violation, invented
+asset, invalid enum value, no-op replacement, or patch application failure is
+never silently accepted.
 
 ## Usage and outputs
 

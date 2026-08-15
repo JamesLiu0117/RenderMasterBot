@@ -48,3 +48,13 @@ The correction planner may replace `/camera/exposure` when visual evidence
 identifies exposure adaptation or global brightness as the direct problem. The
 normal patch hash, JSON Pointer allowlist, complete RenderSpec validation, and
 artifact identity checks still apply.
+
+The complete workflow applies an auditable first-preview baseline of fixed
+EV100 9 and raises existing directional lights below 20,000 lux to that minimum.
+It never invents a light. `--no-studio-calibration` disables this baseline for
+controlled comparisons.
+
+Each correction consumes deterministic statistics tied to the beauty PNG hash.
+When those statistics show healthy center luminance and neither underexposure
+nor overexposure, global exposure changes are rejected. For fixed exposure,
+underexposure requires a lower EV100 and overexposure requires a higher EV100.

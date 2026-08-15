@@ -15,6 +15,7 @@ from render_master_bot.contracts import (
     ArtifactRecord,
     EvaluationIssue,
     EvaluationReport,
+    ImageStatistics,
     LongText,
     RunManifest,
 )
@@ -44,6 +45,14 @@ Use warning for visible quality defects that permit another correction pass.
 Distinguish clipping or exposure problems from random render noise. Large solid black or white
 areas, blown highlights, or high-contrast surface patterns are lighting, exposure, or material
 evidence unless genuinely random image noise is visibly distributed across the frame.
+Use the supplied deterministic ImageStatistics as measured evidence. Do not call the whole image
+underexposed solely because the background or side borders are black when underexposed_like is
+false and center_luminance is healthy. A low foreground_fraction is composition evidence, not by
+itself proof that the subject material or exposure is wrong.
+For one tall product in a landscape frame, symmetric side background is expected. Do not call the
+product too small or poorly framed when it is centered and nearly fills the image height; it does
+not need to fill the image width. Do not confuse an intentionally dark weathered material with
+global underexposure when measured center luminance is healthy and surface detail remains visible.
 Return exactly one JSON object matching the schema, without Markdown or extra prose.
 Do not propose a patch in this evaluation stage.
 """
@@ -111,6 +120,7 @@ class StructuredVisionClient(Protocol):
 class PreviewEvaluationResult:
     report: EvaluationReport
     response: StructuredResponse
+    statistics: ImageStatistics | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +228,15 @@ def evaluate_preview_run(
     spec = evidence.spec
     preview_path = evidence.preview_path
     image_bytes = evidence.image_bytes
+    try:
+        # Imported lazily because the benchmark runner also uses this evaluator.
+        from render_master_bot.visual_benchmark import analyze_preview_png
+
+        statistics = analyze_preview_png(image_bytes)
+    except Exception as exc:
+        raise VisualEvaluationError(
+            f"cannot extract deterministic statistics from beauty_preview: {exc}"
+        ) from exc
     schema = ollama_model_schema(VisualEvaluationDraft)
     scene_ids = [item.object_id for item in spec.objects]
     scene_ids.append(spec.camera.camera_id)
@@ -225,6 +244,8 @@ def evaluate_preview_run(
     user_prompt = (
         "Evaluate this rendered preview against the exact RenderSpec below.\n"
         f"Allowed object_ids: {json.dumps(scene_ids, ensure_ascii=False)}\n"
+        "Deterministic ImageStatistics for this exact PNG:\n"
+        f"{statistics.model_dump_json(indent=2)}\n"
         f"RenderSpec:\n{spec.model_dump_json(indent=2)}\n"
         "Output JSON Schema:\n"
         f"{json.dumps(schema, ensure_ascii=False)}"
@@ -284,4 +305,8 @@ def evaluate_preview_run(
             f"cannot construct the trusted EvaluationReport envelope: {exc}",
             response=response,
         ) from exc
-    return PreviewEvaluationResult(report=report, response=response)
+    return PreviewEvaluationResult(
+        report=report,
+        response=response,
+        statistics=statistics,
+    )

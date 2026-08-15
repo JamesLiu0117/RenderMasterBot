@@ -78,7 +78,9 @@ correction records, and a reproducible run manifest.
 - Verified CC0 wood-material acquisition, Unreal import, multilingual retrieval, and planner assignment
 - Verified planner refusal to hide a remaining geometry gap after a material becomes available
 - Deterministic AssetCard-bounds camera framing through auditable `RenderSpecPatch` output
-- Explicit six-axis product-view framing, including top-down material inspection
+- Automatic principal-axis product framing plus explicit six-axis inspection views
+- Runtime Unreal bounds and pivot readback matched against the catalog before a run is trusted
+- Default first-preview studio calibration at fixed EV100 9 and at least 20,000 directional lux
 - Backward-compatible automatic or fixed-EV100 camera exposure with Unreal readback evidence
 - Transient Unreal scene construction for static meshes, camera, and physical lights
 - One-frame Unreal Movie Render Queue previews with terminal, artifact-hashed `RunManifest` records
@@ -87,6 +89,8 @@ correction records, and a reproducible run manifest.
 - Repeatable visual evaluator benchmarking with frozen labels, deterministic PNG evidence, stability scoring, and contradiction detection
 - First real four-case Qwen3-VL benchmark: 8/8 valid responses, 1.000 verdict stability, 0.750 case accuracy, and one preserved hard-negative contradiction
 - Bounded end-to-end workflow orchestration with immutable iterations, explicit stop reasons, and correction-cycle detection
+- Per-iteration deterministic PNG statistics, cross-iteration regression detection, and pixel-bound SHA-256 evidence
+- Evidence-gated exposure correction, protected deterministic framing, and one auditable semantic retry
 - Retrieved-only per-workflow asset catalogs that bound Unreal resolution and correction context
 - Schema-guided one-retry recovery for truncated planner JSON, with invalid raw-output evidence
 - Unreal scratch-output isolation with copied, hashed PNG/result artifacts and persistent process logs
@@ -94,8 +98,8 @@ correction records, and a reproducible run manifest.
 - Command-line doctor, schema, validate, preflight, Unreal, retrieval, planning, evaluation, and correction commands
 - Standard-library unit tests for contracts, planning, preflight, Unreal execution, and preview orchestration
 
-Broader scene editing, Unreal bounds/lighting calibration, Unreal Editor UI integration, and
-model fine-tuning are later milestones.
+Broader scene editing, richer per-material lighting calibration, Unreal Editor UI integration,
+and model fine-tuning are later milestones.
 
 ## Local setup
 

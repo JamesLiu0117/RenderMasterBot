@@ -220,6 +220,24 @@ class CliOutputTests(unittest.TestCase):
         self.assertEqual(args.retrieve_materials, 5)
         self.assertEqual(args.view_axis, "from-negative-x")
 
+        defaults = build_parser().parse_args([
+            "run",
+            "E:/Project/Project.uproject",
+            "--engine-root",
+            "E:/Unreal Engine/UE_5.7",
+            "--prompt",
+            "Render a product",
+            "--assets",
+            "asset_cards.json",
+            "--workflow-dir",
+            "workflow-defaults",
+            "--workflow-id",
+            "workflow_defaults",
+        ])
+        self.assertEqual(defaults.view_axis, "auto-product")
+        self.assertEqual(defaults.margin, 0.02)
+        self.assertFalse(defaults.no_studio_calibration)
+
     def test_asset_search_parser_captures_query_and_limit(self):
         args = build_parser().parse_args(
             [

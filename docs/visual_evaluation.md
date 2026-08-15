@@ -15,7 +15,9 @@ model inference, the host:
 4. recalculates and compares both file SHA-256 values;
 5. validates the complete RenderSpec and compares its canonical identity with
    `RunManifest.render_spec_sha256`;
-6. accepts only a PNG signature and a maximum image size of 20 MiB.
+6. accepts only a PNG signature and a maximum image size of 20 MiB;
+7. extracts reproducible luminance, clipping, border, center, and foreground
+   statistics from that exact PNG.
 
 Only then is the PNG base64 encoded for Ollama. The evaluator has no URL, file
 search, Unreal command, or tool-calling interface.
@@ -48,8 +50,11 @@ boundary and current material limitation.
 
 The REST request sends the base64 image in the user message's `images` array,
 passes the Pydantic-derived JSON Schema in `format`, disables streaming, and
-sets temperature to zero. The prompt also contains the exact RenderSpec, the
-allowed object IDs, and the output schema.
+sets temperature to zero. The prompt also contains the exact RenderSpec,
+deterministic `ImageStatistics`, allowed object IDs, and output schema. Prompt
+rules distinguish black side background around a tall product from whole-frame
+underexposure and prevent foreground fraction alone from proving an exposure or
+material error.
 
 The vision role uses `RENDERMASTER_VISION_NUM_CTX` (default 16384), separately
 from the planner's `RENDERMASTER_NUM_CTX`. The structured evaluator disables

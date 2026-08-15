@@ -45,6 +45,7 @@ def preview_asset() -> AssetCard:
         engine_path="/Game/Props/SM_Door",
         display_name="SM_Door",
         asset_type="static_mesh",
+        dimensions_cm={"x": 10, "y": 100, "z": 200},
     )
 
 
@@ -76,6 +77,10 @@ def actor_evidence(request: dict) -> list[dict]:
             "actor_name": item["object_id"],
             "class_name": "StaticMeshActor",
             "transform": item["transform"],
+            "asset_bounds": {
+                "dimensions_cm": item["dimensions_cm"],
+                "pivot_offset_cm": item["pivot_offset_cm"],
+            },
         }
         for item in request["objects"]
     ]

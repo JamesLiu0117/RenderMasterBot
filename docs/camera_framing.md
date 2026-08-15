@@ -14,8 +14,8 @@ For every visible scene object, the framing stage:
 3. constructs all eight local bounding-box corners around `pivot_offset_cm`;
 4. applies the RenderSpec scale and Unreal roll/pitch/yaw rotation;
 5. transforms the corners into world space and finds the combined bounds;
-6. preserves the side from which the existing camera observes that center, or
-   uses an explicitly requested product-view axis;
+6. preserves the original direction, snaps the planned side to the nearest
+   horizontal product axis, or uses an explicitly requested world axis;
 7. solves the minimum perspective distance that keeps every corner inside the
    horizontal and vertical image limits, including the requested edge margin.
 
@@ -25,9 +25,11 @@ same 36 mm value is written into the private Unreal execution request and
 applied to the `CineCameraComponent` filmback, so planning math and engine
 projection cannot silently diverge.
 
-The default `--margin 0.1` reserves 10% on every edge. A square subject in a
-16:9 image will naturally have more horizontal than vertical space because the
-tighter vertical constraint determines camera distance.
+The standalone command defaults to `--margin 0.1` and `--view-axis preserve`.
+The complete `render-master run` workflow defaults to a tighter 2% edge margin
+and `auto-product`. A square or tall subject in a 16:9 image naturally has more
+horizontal than vertical space because the tighter vertical constraint
+determines camera distance.
 
 ## Patch boundary
 
@@ -50,6 +52,7 @@ For repeatable product tests, an axis can be selected explicitly:
 
 | Option | Camera position | Looking direction |
 | --- | --- | --- |
+| `auto-product` | planned side, snapped to nearest horizontal axis | toward bounds center |
 | `from-negative-x` | negative X side | toward positive X |
 | `from-positive-x` | positive X side | toward negative X |
 | `from-negative-y` | negative Y side | toward positive Y |

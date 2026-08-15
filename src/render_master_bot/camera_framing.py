@@ -16,6 +16,7 @@ from render_master_bot.serialization import canonical_sha256
 Point3 = tuple[float, float, float]
 ViewAxis = Literal[
     "preserve",
+    "auto-product",
     "from-negative-x",
     "from-positive-x",
     "from-negative-y",
@@ -25,6 +26,7 @@ ViewAxis = Literal[
 ]
 VIEW_AXES: tuple[ViewAxis, ...] = (
     "preserve",
+    "auto-product",
     "from-negative-x",
     "from-positive-x",
     "from-negative-y",
@@ -34,6 +36,7 @@ VIEW_AXES: tuple[ViewAxis, ...] = (
 )
 _VIEW_FORWARDS: dict[ViewAxis, Point3] = {
     "preserve": (0.0, 0.0, 0.0),
+    "auto-product": (0.0, 0.0, 0.0),
     "from-negative-x": (1.0, 0.0, 0.0),
     "from-positive-x": (-1.0, 0.0, 0.0),
     "from-negative-y": (0.0, 1.0, 0.0),
@@ -134,6 +137,21 @@ def _rounded_vector(value: Point3) -> dict[str, float]:
     return {axis: round(component, 6) for axis, component in zip("xyz", value, strict=True)}
 
 
+def _automatic_product_forward(spec: RenderSpec, target: Point3) -> Point3:
+    """Snap the planned camera side to the nearest horizontal world axis."""
+
+    location = spec.camera.transform.location_cm
+    toward_target = (target[0] - location.x, target[1] - location.y, 0.0)
+    if _length(toward_target) <= 1e-9:
+        planned_forward = _rotation_basis(spec.camera.transform.rotation_deg)[0]
+        toward_target = (planned_forward[0], planned_forward[1], 0.0)
+    if _length(toward_target) <= 1e-9:
+        return (1.0, 0.0, 0.0)
+    if abs(toward_target[0]) > abs(toward_target[1]):
+        return (1.0 if toward_target[0] > 0 else -1.0, 0.0, 0.0)
+    return (0.0, 1.0 if toward_target[1] > 0 else -1.0, 0.0)
+
+
 def frame_camera(
     spec: RenderSpec,
     asset_cards: list[AssetCard],
@@ -174,6 +192,8 @@ def frame_camera(
             forward = _rotation_basis(spec.camera.transform.rotation_deg)[0]
         else:
             forward = _normalize(toward_target)
+    elif view_axis == "auto-product":
+        forward = _automatic_product_forward(spec, target)
     else:
         forward = _VIEW_FORWARDS[view_axis]
 
