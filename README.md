@@ -70,10 +70,13 @@ correction records, and a reproducible run manifest.
 - Read-only Unreal project capability probing with evidence provenance
 - Headless Unreal Asset Registry scanning into validated `AssetCard` records
 - Persistent Chroma indexing with explicit local Ollama embeddings
+- Bounded 32-document embedding batches for stable full-catalog synchronization
 - Type-filtered Chroma retrieval that rejects assets outside the returned catalog
 - Catalog-backed per-slot material assignments with host and Unreal evidence validation
+- Automated four-map PBR material import with frozen source hashes and no-overwrite behavior
 - Verified UE 5.7 material override in both transient scene build and MRQ preview paths
-- Verified planner refusal to substitute unrelated materials when a requested wood asset is absent
+- Verified CC0 wood-material acquisition, Unreal import, multilingual retrieval, and planner assignment
+- Verified planner refusal to hide a remaining geometry gap after a material becomes available
 - Deterministic AssetCard-bounds camera framing through auditable `RenderSpecPatch` output
 - Transient Unreal scene construction for static meshes, camera, and physical lights
 - One-frame Unreal Movie Render Queue previews with terminal, artifact-hashed `RunManifest` records
@@ -82,7 +85,8 @@ correction records, and a reproducible run manifest.
 - Command-line doctor, schema, validate, preflight, Unreal, retrieval, planning, evaluation, and correction commands
 - Standard-library unit tests for contracts, planning, preflight, Unreal execution, and preview orchestration
 
-Iterative rerendering, broader scene editing, and model fine-tuning are later milestones.
+Exposure-aware rerendering, semantic product-view framing, broader scene editing, and model
+fine-tuning are later milestones.
 
 ## Local setup
 
@@ -143,6 +147,25 @@ render-master unreal-scan-assets `
 ```
 
 The raw file preserves what Unreal observed. The second file contains records that have each passed the strict `AssetCard` contract.
+
+Import four local PBR maps into a new Unreal content folder and create a connected material:
+
+```powershell
+render-master unreal-import-pbr-material `
+  "E:\OptimizationPlugin\OptimizationPlugin.uproject" `
+  --engine-root "E:\Unreal Engine\UE_5.7" `
+  --destination-path "/Game/RenderMasterBot/TestMaterials/WeatheredPlanks" `
+  --material-name "M_WeatheredPlanks" `
+  --base-color "C:\local-data\weathered_planks_diff_1k.jpg" `
+  --normal "C:\local-data\weathered_planks_nor_dx_1k.jpg" `
+  --roughness "C:\local-data\weathered_planks_rough_1k.jpg" `
+  --ambient-occlusion "C:\local-data\weathered_planks_ao_1k.jpg" `
+  --output "C:\local-data\weathered_planks_import.json"
+```
+
+The importer freezes every source SHA-256 before launching Unreal, refuses to overwrite an
+existing target asset, applies Unreal-appropriate color and compression settings, connects the
+four material properties, saves all five assets, and verifies the returned engine paths.
 
 Build a validated scene as transient actors without saving or modifying project Content:
 
@@ -242,6 +265,7 @@ The deterministic scene rules are documented in [docs/preflight.md](docs/preflig
 Asset-bounds camera framing is documented in [docs/camera_framing.md](docs/camera_framing.md).
 Unreal capability discovery is documented in [docs/unreal_probe.md](docs/unreal_probe.md).
 Real Asset Registry scanning is documented in [docs/unreal_assets.md](docs/unreal_assets.md).
+Automated PBR material import is documented in [docs/unreal_materials.md](docs/unreal_materials.md).
 Transient scene execution is documented in [docs/unreal_execution.md](docs/unreal_execution.md).
 Offscreen preview runs are documented in [docs/unreal_preview.md](docs/unreal_preview.md).
 Local vision evaluation is documented in [docs/visual_evaluation.md](docs/visual_evaluation.md).

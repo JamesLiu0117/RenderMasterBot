@@ -57,6 +57,34 @@ class CliOutputTests(unittest.TestCase):
         self.assertEqual(args.output, "scene_build.json")
         self.assertTrue(args.fail_on_warning)
 
+    def test_unreal_material_parser_requires_all_four_pbr_maps(self):
+        args = build_parser().parse_args(
+            [
+                "unreal-import-pbr-material",
+                "E:/Project/Project.uproject",
+                "--engine-root",
+                "E:/Unreal Engine/UE_5.7",
+                "--destination-path",
+                "/Game/RenderMasterBot/TestMaterials/Wood",
+                "--material-name",
+                "M_Wood",
+                "--base-color",
+                "base.jpg",
+                "--normal",
+                "normal.jpg",
+                "--roughness",
+                "roughness.jpg",
+                "--ambient-occlusion",
+                "ao.jpg",
+                "--output",
+                "material_import.json",
+            ]
+        )
+
+        self.assertEqual(args.material_name, "M_Wood")
+        self.assertEqual(args.ambient_occlusion, "ao.jpg")
+        self.assertEqual(args.timeout, 300)
+
     def test_unreal_preview_parser_requires_run_identity_and_directory(self):
         args = build_parser().parse_args(
             [

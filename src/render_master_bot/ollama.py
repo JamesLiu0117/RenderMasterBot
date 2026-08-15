@@ -13,6 +13,9 @@ class OllamaError(RuntimeError):
     """Raised when the local Ollama service cannot satisfy a request."""
 
 
+EMBEDDING_BATCH_SIZE = 32
+
+
 @dataclass(frozen=True)
 class StructuredResponse:
     content: str
@@ -44,6 +47,17 @@ class OllamaClient:
     def embed_texts(self, *, model: str, texts: list[str]) -> list[list[float]]:
         if not texts or any(not text.strip() for text in texts):
             raise OllamaError("embedding input must contain non-empty text")
+        embeddings: list[list[float]] = []
+        for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
+            batch = texts[start : start + EMBEDDING_BATCH_SIZE]
+            embeddings.extend(self._embed_batch(model=model, texts=batch))
+        if len(embeddings) != len(texts):
+            raise OllamaError("Ollama embedding response count did not match the input count")
+        return embeddings
+
+    def _embed_batch(self, *, model: str, texts: list[str]) -> list[list[float]]:
+        """Embed one bounded batch so large catalogs do not overload model runners."""
+
         try:
             response = httpx.post(
                 f"{self.base_url}/api/embed",

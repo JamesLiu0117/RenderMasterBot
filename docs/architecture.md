@@ -66,8 +66,11 @@ See `contracts.md` for the eight public JSON boundaries used by both tracks.
    `RenderSpecPatch` or reports an explicit capability gap.~~
 10. ~~Add catalog-backed material assignment to the shared contract and Unreal
     adapter, then verify it in transient scene-build and MRQ preview paths.~~
-11. Add or ingest a suitable wood material, rerender the first failed preview,
-    and compare the before-and-after evaluations.
+11. ~~Add or ingest a suitable wood material, rerender a failed material preview,
+    and compare the before-and-after evaluations.~~
+12. Add explicit exposure control and semantic product-view camera constraints,
+    then rerun the wood-material correction until the visual evaluator passes or
+    reports a narrower asset/geometry capability gap.
 
 ## Default model roles
 

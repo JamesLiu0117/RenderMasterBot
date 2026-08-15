@@ -26,6 +26,28 @@ class OllamaEmbeddingTests(unittest.TestCase):
             with self.assertRaisesRegex(OllamaError, "count did not match"):
                 OllamaClient().embed_texts(model="fake", texts=["one", "two"])
 
+    def test_large_embedding_inputs_are_batched_without_reordering(self):
+        def response_for_batch(*_, **kwargs):
+            values = kwargs["json"]["input"]
+            response = Mock()
+            response.raise_for_status.return_value = None
+            response.json.return_value = {
+                "embeddings": [[float(value.removeprefix("item-"))] for value in values]
+            }
+            return response
+
+        texts = [f"item-{index}" for index in range(33)]
+        with patch(
+            "render_master_bot.ollama.httpx.post",
+            side_effect=response_for_batch,
+        ) as post:
+            values = OllamaClient().embed_texts(model="fake", texts=texts)
+
+        self.assertEqual(values, [[float(index)] for index in range(33)])
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(len(post.call_args_list[0].kwargs["json"]["input"]), 32)
+        self.assertEqual(post.call_args_list[1].kwargs["json"]["input"], ["item-32"])
+
     def test_structured_chat_preserves_base64_images(self):
         response = Mock()
         response.raise_for_status.return_value = None

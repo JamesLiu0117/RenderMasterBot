@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from pydantic import Field, JsonValue, ValidationError, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 
 from render_master_bot.asset_index import AssetIndexError, load_asset_card_catalog
 from render_master_bot.contracts import (
@@ -42,6 +42,8 @@ Never claim that camera, lighting, or transform changes can create a missing tex
 Never modify a scene object's primary asset reference, object IDs, scene identity, schema metadata,
 or source prompts. A listed materials path may reference only supplied material asset IDs and the
 target object's listed material slot names. Do not invent assets, materials, lights, or objects.
+Patch values must be literal JSON values of the target field type. For example, replace a numeric
+intensity with "value": 2000.0, never with a wrapper such as {"type":"number","value":2000.0}.
 Return exactly one JSON object matching the schema, without Markdown or extra prose.
 """
 
@@ -67,7 +69,20 @@ class CorrectionPlanningError(RuntimeError):
 
 class CorrectionOperationDraft(StrictModel):
     path: str = Field(min_length=1, max_length=500)
-    value: JsonValue
+    # Keep the model-facing schema free of recursive JsonValue references. The value is
+    # immediately revalidated as a public PatchOperation and then as a full RenderSpec.
+    value: Any
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def unwrap_redundant_literal_wrapper(cls, value: Any) -> Any:
+        """Normalize the narrow wrappers some structured models add to JSON literals."""
+
+        if isinstance(value, dict) and set(value) == {"value"}:
+            return value["value"]
+        if isinstance(value, dict) and set(value) == {"type", "value"}:
+            return value["value"]
+        return value
 
 
 class CorrectionDraft(StrictModel):

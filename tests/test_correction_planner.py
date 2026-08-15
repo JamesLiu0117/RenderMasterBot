@@ -6,9 +6,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from render_master_bot.contracts import EvaluationReport, RunManifest
-from render_master_bot.correction_planner import CorrectionPlanningError, plan_correction
+from render_master_bot.correction_planner import (
+    CorrectionOperationDraft,
+    CorrectionPlanningError,
+    plan_correction,
+)
 from render_master_bot.models import RenderSpec
 from render_master_bot.ollama import StructuredResponse
+from render_master_bot.schemas import ollama_model_schema
 from render_master_bot.serialization import canonical_sha256
 
 
@@ -133,6 +138,36 @@ def prepare_run(
 
 
 class CorrectionPlannerTests(unittest.TestCase):
+    def test_model_facing_patch_value_schema_avoids_recursive_json_refs(self):
+        from render_master_bot.correction_planner import CorrectionDraft
+
+        schema = ollama_model_schema(CorrectionDraft)
+        operation_schema = schema["$defs"]["CorrectionOperationDraft"]["properties"]
+
+        self.assertEqual(operation_schema["value"], {"title": "Value"})
+
+    def test_redundant_model_literal_wrappers_are_narrowly_unwrapped(self):
+        number = CorrectionOperationDraft.model_validate(
+            {"path": "/lights/0/intensity", "value": {"type": "number", "value": 2000}}
+        )
+        vector = CorrectionOperationDraft.model_validate(
+            {
+                "path": "/camera/transform/location_cm",
+                "value": {"value": {"x": 500, "y": 0, "z": 200}},
+            }
+        )
+        material = {
+            "slot_name": "Material_0",
+            "material": {"asset_id": "wood_material"},
+        }
+        assignment = CorrectionOperationDraft.model_validate(
+            {"path": "/objects/0/materials", "value": [material]}
+        )
+
+        self.assertEqual(number.value, 2000)
+        self.assertEqual(vector.value, {"x": 500, "y": 0, "z": 200})
+        self.assertEqual(assignment.value, [material])
+
     def test_material_gap_can_be_reported_as_unresolved(self):
         content = json.dumps({
             "outcome": "unresolved",

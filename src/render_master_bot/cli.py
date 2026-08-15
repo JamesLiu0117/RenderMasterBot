@@ -27,6 +27,10 @@ from render_master_bot.schemas import contract_model, contract_schema
 from render_master_bot.settings import Settings
 from render_master_bot.unreal_assets import UnrealAssetScanError, run_unreal_asset_scan
 from render_master_bot.unreal_executor import UnrealSceneBuildError, run_unreal_scene_build
+from render_master_bot.unreal_materials import (
+    UnrealMaterialImportError,
+    run_unreal_pbr_material_import,
+)
 from render_master_bot.unreal_preview import UnrealPreviewError, run_unreal_preview
 from render_master_bot.unreal_probe import UnrealProbeError, probe_unreal_project
 from render_master_bot.visual_evaluator import VisualEvaluationError, evaluate_preview_run
@@ -338,6 +342,32 @@ def cmd_unreal_scan_assets(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_unreal_import_pbr_material(args: argparse.Namespace) -> int:
+    try:
+        request, result = run_unreal_pbr_material_import(
+            args.path,
+            engine_root=args.engine_root,
+            destination_path=args.destination_path,
+            material_name=args.material_name,
+            base_color=args.base_color,
+            normal=args.normal,
+            roughness=args.roughness,
+            ambient_occlusion=args.ambient_occlusion,
+            output=args.output,
+            timeout_seconds=args.timeout,
+        )
+    except UnrealMaterialImportError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(
+        "UNREAL PBR MATERIAL IMPORT: "
+        f"project={result.project_name} material={result.material_engine_path} "
+        f"textures={len(result.textures)} destination={request.destination_path}"
+    )
+    print(f"Wrote {args.output}")
+    return 0
+
+
 def cmd_unreal_build_scene(args: argparse.Namespace) -> int:
     try:
         request, result = run_unreal_scene_build(
@@ -638,6 +668,44 @@ def build_parser() -> argparse.ArgumentParser:
     unreal_scan.add_argument("--path-prefix", default="/Game")
     unreal_scan.add_argument("--timeout", type=int, default=300, help="Unreal timeout in seconds")
     unreal_scan.set_defaults(handler=cmd_unreal_scan_assets)
+
+    unreal_material = subparsers.add_parser(
+        "unreal-import-pbr-material",
+        help="import four PBR textures and create a connected Unreal material",
+    )
+    unreal_material.add_argument("path", help="path to a compiled .uproject file")
+    unreal_material.add_argument(
+        "--engine-root",
+        required=True,
+        help="Unreal installation root containing the Engine directory",
+    )
+    unreal_material.add_argument(
+        "--destination-path",
+        required=True,
+        help="new Unreal content folder such as /Game/RenderMasterBot/TestMaterials/Wood",
+    )
+    unreal_material.add_argument("--material-name", required=True)
+    unreal_material.add_argument("--base-color", required=True, help="color texture image")
+    unreal_material.add_argument("--normal", required=True, help="DirectX normal texture image")
+    unreal_material.add_argument("--roughness", required=True, help="roughness texture image")
+    unreal_material.add_argument(
+        "--ambient-occlusion",
+        required=True,
+        help="ambient-occlusion texture image",
+    )
+    unreal_material.add_argument(
+        "--output",
+        "-o",
+        required=True,
+        help="write validated material-import evidence",
+    )
+    unreal_material.add_argument(
+        "--timeout",
+        type=int,
+        default=300,
+        help="Unreal timeout in seconds",
+    )
+    unreal_material.set_defaults(handler=cmd_unreal_import_pbr_material)
 
     unreal_build = subparsers.add_parser(
         "unreal-build-scene",
