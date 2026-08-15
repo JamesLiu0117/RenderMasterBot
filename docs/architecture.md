@@ -56,7 +56,10 @@ See `contracts.md` for the seven public JSON boundaries used by both tracks.
 6. ~~Capture the first Movie Render Queue preview and terminal `RunManifest`.~~
 7. ~~Use AssetCard bounds for deterministic camera framing through an auditable
    `RenderSpecPatch`.~~
-8. Connect Qwen preview evaluation and bounded `RenderSpecPatch` correction.
+8. ~~Connect Qwen preview evaluation to strict, evidence-linked
+   `EvaluationReport` output.~~
+9. Generate and apply a bounded correction `RenderSpecPatch`, then rerender and
+   compare evaluation results.
 
 ## Default model roles
 

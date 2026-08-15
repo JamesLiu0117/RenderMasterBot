@@ -29,6 +29,8 @@ plugins or render passes that a specific Unreal project does not have.
   evaluation must point to at least one rendered image.
 - Suggested patches must target the exact SHA-256 identity of the evaluated
   `RenderSpec`.
+- For local vision evaluation, the model produces subjective findings only;
+  the host owns the model identity, RenderSpec hash, stage, and evidence paths.
 - Patch application rechecks the base hash, applies only the bounded JSON Patch
   subset, and validates the complete resulting `RenderSpec` before use.
 - Artifact paths are run-relative and portable; absolute and parent paths are

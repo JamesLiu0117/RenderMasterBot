@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import ValidationError
 
@@ -32,7 +32,7 @@ class StructuredChatClient(Protocol):
         self,
         *,
         model: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         json_schema: dict,
     ) -> StructuredResponse: ...
 

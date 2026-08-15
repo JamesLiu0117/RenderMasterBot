@@ -1,7 +1,11 @@
 import unittest
 
 from render_master_bot.models import RenderSpec
-from render_master_bot.schemas import contract_schema, ollama_generation_schema
+from render_master_bot.schemas import (
+    contract_schema,
+    ollama_generation_schema,
+    ollama_model_schema,
+)
 
 
 def schema_contains(value, key):
@@ -38,6 +42,10 @@ class GenerationSchemaTests(unittest.TestCase):
         self.assertFalse(schema_contains(schema, "pattern"))
         self.assertFalse(schema_contains(schema, "prefixItems"))
         self.assertTrue(schema_contains(schema, "items"))
+
+    def test_ollama_projection_accepts_any_pydantic_model(self):
+        schema = ollama_model_schema(RenderSpec)
+        self.assertEqual(schema, ollama_generation_schema())
 
 
 if __name__ == "__main__":

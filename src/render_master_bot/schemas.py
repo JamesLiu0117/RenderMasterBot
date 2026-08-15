@@ -27,8 +27,8 @@ def contract_schema(name: str) -> dict[str, Any]:
     return contract_model(name).model_json_schema()
 
 
-def ollama_generation_schema() -> dict[str, Any]:
-    """Return an Ollama-compatible projection of the strict RenderSpec schema.
+def ollama_model_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """Return an Ollama-compatible projection of a strict Pydantic schema.
 
     Ollama 0.32's grammar parser rejects the ``pattern`` keyword and the
     ``prefixItems`` representation produced for fixed homogeneous tuples.
@@ -36,7 +36,7 @@ def ollama_generation_schema() -> dict[str, Any]:
     these two grammar hints does not weaken the application trust boundary.
     """
 
-    schema = deepcopy(RenderSpec.model_json_schema())
+    schema = deepcopy(model.model_json_schema())
     stack: list[Any] = [schema]
     while stack:
         value = stack.pop()
@@ -52,3 +52,9 @@ def ollama_generation_schema() -> dict[str, Any]:
         elif isinstance(value, list):
             stack.extend(value)
     return schema
+
+
+def ollama_generation_schema() -> dict[str, Any]:
+    """Return the model-generation projection of the RenderSpec schema."""
+
+    return ollama_model_schema(RenderSpec)

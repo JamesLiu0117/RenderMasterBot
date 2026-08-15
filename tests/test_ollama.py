@@ -26,6 +26,24 @@ class OllamaEmbeddingTests(unittest.TestCase):
             with self.assertRaisesRegex(OllamaError, "count did not match"):
                 OllamaClient().embed_texts(model="fake", texts=["one", "two"])
 
+    def test_structured_chat_preserves_base64_images(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "message": {"content": "{}"},
+            "model": "vision-model",
+        }
+        messages = [{"role": "user", "content": "inspect", "images": ["cG5n"]}]
+        with patch("render_master_bot.ollama.httpx.post", return_value=response) as post:
+            result = OllamaClient().chat_structured(
+                model="vision-model",
+                messages=messages,
+                json_schema={"type": "object"},
+            )
+
+        self.assertEqual(result.model, "vision-model")
+        self.assertEqual(post.call_args.kwargs["json"]["messages"], messages)
+
 
 if __name__ == "__main__":
     unittest.main()

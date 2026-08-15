@@ -27,6 +27,7 @@ from render_master_bot.unreal_assets import UnrealAssetScanError, run_unreal_ass
 from render_master_bot.unreal_executor import UnrealSceneBuildError, run_unreal_scene_build
 from render_master_bot.unreal_preview import UnrealPreviewError, run_unreal_preview
 from render_master_bot.unreal_probe import UnrealProbeError, probe_unreal_project
+from render_master_bot.visual_evaluator import VisualEvaluationError, evaluate_preview_run
 
 
 def _settings() -> Settings:
@@ -193,6 +194,43 @@ def cmd_frame_camera(args: argparse.Namespace) -> int:
         "CAMERA FRAMED: "
         f"objects={len(result.object_ids)} distance_cm={result.distance_cm:g} "
         f"target_cm=({target.x:g}, {target.y:g}, {target.z:g})"
+    )
+    return 0
+
+
+def cmd_evaluate_preview(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.vision_model
+    run_root = Path(args.run_dir).expanduser().resolve()
+    output_path = (run_root / args.output).resolve()
+    metrics_path = (run_root / args.metrics_output).resolve()
+    try:
+        output_path.relative_to(run_root)
+        metrics_path.relative_to(run_root)
+    except ValueError:
+        print("ERROR: evaluation outputs must stay inside the run directory", file=sys.stderr)
+        return 1
+    if output_path == metrics_path:
+        print("ERROR: evaluation and metrics output paths must be distinct", file=sys.stderr)
+        return 1
+    if output_path.exists() or metrics_path.exists():
+        print("ERROR: evaluation output already exists; choose new output names", file=sys.stderr)
+        return 1
+    try:
+        result = evaluate_preview_run(
+            _client(settings),
+            model=model,
+            run_directory=run_root,
+        )
+        _write_json(result.report.model_dump(mode="json"), str(output_path))
+        _write_json(_response_metrics(result.response, status="valid"), str(metrics_path))
+    except (OSError, VisualEvaluationError, OllamaError) as exc:
+        print(f"ERROR: preview evaluation failed: {exc}", file=sys.stderr)
+        return 1
+    print(
+        "PREVIEW EVALUATION: "
+        f"verdict={result.report.verdict} issues={len(result.report.issues)} "
+        f"model={result.response.model}"
     )
     return 0
 
@@ -457,6 +495,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="fractional safety margin on each image edge (default: 0.1)",
     )
     frame_camera_parser.set_defaults(handler=cmd_frame_camera)
+
+    evaluate_preview = subparsers.add_parser(
+        "evaluate-preview",
+        help="evaluate a verified Unreal run with the configured local vision model",
+    )
+    evaluate_preview.add_argument("run_dir", help="completed Unreal preview run directory")
+    evaluate_preview.add_argument("--model", help="override the configured vision model")
+    evaluate_preview.add_argument(
+        "--output",
+        default="evaluation.json",
+        help="run-relative EvaluationReport output path",
+    )
+    evaluate_preview.add_argument(
+        "--metrics-output",
+        default="evaluation_metrics.json",
+        help="run-relative model metrics output path",
+    )
+    evaluate_preview.set_defaults(handler=cmd_evaluate_preview)
 
     unreal_probe = subparsers.add_parser(
         "unreal-probe",

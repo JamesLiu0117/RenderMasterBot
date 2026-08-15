@@ -81,5 +81,6 @@ render-master unreal-render-preview `
 
 The initial preview intentionally evaluates execution, not aesthetics.
 `render-master frame-camera` can now fit known AssetCard bounds before render.
-The next slice will ask the visual evaluator to report composition, lighting,
-material, and visibility issues as a structured `EvaluationReport`.
+`render-master evaluate-preview` verifies the run artifacts before asking the
+local vision model to report composition, lighting, material, and visibility
+issues as a structured `EvaluationReport`.

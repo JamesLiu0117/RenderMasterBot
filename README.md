@@ -18,10 +18,11 @@ The integration remains schema-gated: a language model is not allowed to run arb
 - Deterministic AssetCard-bounds camera framing through auditable `RenderSpecPatch` output
 - Transient Unreal scene construction for static meshes, camera, and physical lights
 - One-frame Unreal Movie Render Queue previews with terminal, artifact-hashed `RunManifest` records
+- Verified local Qwen preview evaluation with strict, evidence-linked `EvaluationReport` output
 - Command-line doctor, schema, validate, preflight, Unreal, asset-index, asset-search, and plan commands
 - Standard-library unit tests for contracts, planning, preflight, Unreal execution, and preview orchestration
 
-Visual evaluation, bounded correction, and model fine-tuning are later milestones.
+Bounded correction and model fine-tuning are later milestones.
 
 ## Local setup
 
@@ -112,6 +113,9 @@ render-master unreal-render-preview `
   --run-dir "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\preview-002" `
   --run-id "preview_002" `
   --fail-on-warning
+
+render-master evaluate-preview `
+  "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\preview-005"
 ```
 
 Synchronize those cards into the local Chroma collection:
@@ -174,6 +178,7 @@ Unreal capability discovery is documented in [docs/unreal_probe.md](docs/unreal_
 Real Asset Registry scanning is documented in [docs/unreal_assets.md](docs/unreal_assets.md).
 Transient scene execution is documented in [docs/unreal_execution.md](docs/unreal_execution.md).
 Offscreen preview runs are documented in [docs/unreal_preview.md](docs/unreal_preview.md).
+Local vision evaluation is documented in [docs/visual_evaluation.md](docs/visual_evaluation.md).
 Chroma indexing and retrieval constraints are documented in [docs/retrieval.md](docs/retrieval.md).
 
 Export or validate any contract:

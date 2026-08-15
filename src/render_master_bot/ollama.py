@@ -80,7 +80,7 @@ class OllamaClient:
         self,
         *,
         model: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         json_schema: dict[str, Any],
     ) -> StructuredResponse:
         payload = {
