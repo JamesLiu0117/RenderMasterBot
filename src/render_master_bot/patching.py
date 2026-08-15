@@ -66,6 +66,10 @@ def _apply_operation(document: dict[str, Any], operation: PatchOperation) -> Non
         if operation.op == "remove":
             del parent[token]
         else:
+            if operation.op == "replace" and parent[token] == value:
+                raise PatchApplicationError(
+                    f"replace operation does not change its target: {operation.path}"
+                )
             parent[token] = value
         return
 
@@ -87,6 +91,10 @@ def _apply_operation(document: dict[str, Any], operation: PatchOperation) -> Non
     if operation.op == "add":
         parent.insert(index, value)
     elif operation.op == "replace":
+        if parent[index] == value:
+            raise PatchApplicationError(
+                f"replace operation does not change its target: {operation.path}"
+            )
         parent[index] = value
     else:
         del parent[index]
@@ -102,6 +110,13 @@ def apply_render_spec_patch(spec: RenderSpec, patch: RenderSpecPatch) -> RenderS
             f"expected {observed_hash}, received {patch.base_spec_sha256}"
         )
     document = spec.model_dump(mode="json")
+    # The default auto policy is intentionally omitted from v0.1 canonical
+    # serialization so historical hashes remain stable. It is still a real
+    # model field and therefore must exist in the internal patch document.
+    document["camera"].setdefault(
+        "exposure",
+        spec.camera.exposure.model_dump(mode="json"),
+    )
     try:
         for operation in patch.operations:
             _apply_operation(document, operation)

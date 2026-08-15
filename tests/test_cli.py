@@ -118,12 +118,43 @@ class CliOutputTests(unittest.TestCase):
                 "framed.json",
                 "--patch-output",
                 "framing_patch.json",
+                "--view-axis",
+                "from-negative-x",
             ]
         )
 
         self.assertEqual(args.output, "framed.json")
         self.assertEqual(args.patch_output, "framing_patch.json")
         self.assertEqual(args.margin, 0.1)
+        self.assertEqual(args.view_axis, "from-negative-x")
+
+        top_down = build_parser().parse_args([
+            "frame-camera",
+            "source.json",
+            "--assets",
+            "assets.json",
+            "--output",
+            "framed.json",
+            "--patch-output",
+            "framing_patch.json",
+            "--view-axis",
+            "from-positive-z",
+        ])
+        self.assertEqual(top_down.view_axis, "from-positive-z")
+
+    def test_apply_patch_parser_keeps_source_patch_and_output_distinct(self):
+        args = build_parser().parse_args([
+            "apply-patch",
+            "source.json",
+            "--patch",
+            "exposure_patch.json",
+            "--output",
+            "corrected.json",
+        ])
+
+        self.assertEqual(args.path, "source.json")
+        self.assertEqual(args.patch, "exposure_patch.json")
+        self.assertEqual(args.output, "corrected.json")
 
     def test_evaluate_preview_parser_uses_run_relative_outputs(self):
         args = build_parser().parse_args(["evaluate-preview", "preview-005"])

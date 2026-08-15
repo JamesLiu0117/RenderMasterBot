@@ -77,6 +77,22 @@ class AppliedMaterialRecord(StrictModel):
     asset_type: Literal["material"]
 
 
+class AppliedExposureRecord(StrictModel):
+    """Camera exposure state observed after Unreal post-process configuration."""
+
+    mode: Literal["auto", "fixed"]
+    fixed_ev100: float | None = Field(default=None, ge=-20.0, le=30.0)
+    extended_luminance_range: bool
+
+    @model_validator(mode="after")
+    def value_matches_mode(self) -> "AppliedExposureRecord":
+        if self.mode == "fixed" and self.fixed_ev100 is None:
+            raise ValueError("fixed exposure evidence requires fixed_ev100")
+        if self.mode == "auto" and self.fixed_ev100 is not None:
+            raise ValueError("auto exposure evidence cannot contain fixed_ev100")
+        return self
+
+
 class SpawnedActorRecord(StrictModel):
     """Observed actor state returned by Unreal after scene construction."""
 
@@ -93,6 +109,7 @@ class SpawnedActorRecord(StrictModel):
     class_name: str = Field(min_length=1, max_length=240)
     transform: Transform
     materials: list[AppliedMaterialRecord] = Field(default_factory=list, max_length=64)
+    exposure: AppliedExposureRecord | None = None
 
 
 class UnrealSceneBuildResult(StrictModel):
@@ -301,6 +318,24 @@ def _validate_observed_result(
             "Unreal material evidence does not match the request: "
             + ", ".join(material_mismatches)
         )
+
+    camera_actor = observed_actors[request.camera.camera_id]
+    exposure = camera_actor.exposure
+    expected_exposure = request.camera.exposure
+    if exposure is None or exposure.mode != expected_exposure.mode:
+        raise UnrealSceneBuildError("Unreal camera exposure evidence does not match the request")
+    if expected_exposure.mode == "fixed":
+        if (
+            not exposure.extended_luminance_range
+            or exposure.fixed_ev100 is None
+            or expected_exposure.fixed_ev100 is None
+            or not _close(exposure.fixed_ev100, expected_exposure.fixed_ev100)
+        ):
+            raise UnrealSceneBuildError(
+                "Unreal fixed EV100 evidence does not match the request"
+            )
+    elif exposure.fixed_ev100 is not None:
+        raise UnrealSceneBuildError("Unreal auto-exposure evidence contains a fixed EV100")
 
 
 def _close(first: float, second: float, *, tolerance: float = 1e-3) -> bool:

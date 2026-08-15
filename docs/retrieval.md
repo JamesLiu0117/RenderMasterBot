@@ -6,7 +6,7 @@ Chroma collection using cosine distance.
 
 ## Why the embedding model is separate
 
-`gpt-oss:20b` and `qwen3.5:9b` are generation and vision models. Asset search
+`gpt-oss:20b` and `qwen3-vl:8b-instruct` are generation and vision models. Asset search
 uses `qwen3-embedding:0.6b`, a much smaller dedicated embedding model that can
 match Chinese requests with English Unreal asset names and paths. The model is
 run locally through Ollama; Chroma never downloads a hidden default model.

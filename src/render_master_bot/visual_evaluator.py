@@ -30,6 +30,9 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 SYSTEM_PROMPT = """You are the visual quality evaluator for RenderMasterBot.
 Judge only evidence visible in the supplied preview image and compare it with the RenderSpec.
 Do not claim to see hidden geometry, metadata, intent, or materials that are not visible.
+Treat evaluation scope and exclusions stated in source_prompt as binding. Do not report an excluded
+feature unless it prevents evaluation of an in-scope requirement. Inspect the complete frame,
+including its center, before declaring the image blank, black, or missing all geometry.
 Use stable lowercase snake_case issue IDs and only the supplied scene object IDs.
 Use blocking or error only when the requested result is unusable, absent, or clearly wrong.
 Use warning for visible quality defects that permit another correction pass.
@@ -92,6 +95,7 @@ class StructuredVisionClient(Protocol):
         model: str,
         messages: list[dict[str, Any]],
         json_schema: dict[str, Any],
+        think: bool | str | None = None,
     ) -> StructuredResponse: ...
 
 
@@ -212,6 +216,7 @@ def evaluate_preview_run(
             },
         ],
         json_schema=schema,
+        think=False,
     )
     try:
         draft = VisualEvaluationDraft.model_validate_json(response.content)

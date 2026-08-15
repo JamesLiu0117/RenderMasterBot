@@ -73,12 +73,34 @@ class SceneObject(StrictModel):
         return self
 
 
+class ExposureSettings(StrictModel):
+    """Camera exposure policy interpreted by renderer adapters."""
+
+    mode: Literal["auto", "fixed"] = "auto"
+    fixed_ev100: Annotated[
+        float,
+        Field(ge=-20.0, le=30.0, allow_inf_nan=False),
+    ] | None = None
+
+    @model_validator(mode="after")
+    def fixed_value_matches_mode(self) -> "ExposureSettings":
+        if self.mode == "fixed" and self.fixed_ev100 is None:
+            raise ValueError("fixed exposure mode requires fixed_ev100")
+        if self.mode == "auto" and self.fixed_ev100 is not None:
+            raise ValueError("auto exposure mode cannot specify fixed_ev100")
+        return self
+
+
 class Camera(StrictModel):
     camera_id: Identifier = "main_camera"
     transform: Transform
     focal_length_mm: PositiveFiniteFloat = 50.0
     focus_distance_cm: PositiveFiniteFloat | None = None
     aperture_f_stop: PositiveFiniteFloat = 5.6
+    exposure: ExposureSettings = Field(
+        default_factory=ExposureSettings,
+        exclude_if=lambda value: value.mode == "auto",
+    )
 
 
 class Light(StrictModel):

@@ -61,10 +61,31 @@ class OllamaEmbeddingTests(unittest.TestCase):
                 model="vision-model",
                 messages=messages,
                 json_schema={"type": "object"},
+                think=False,
             )
 
         self.assertEqual(result.model, "vision-model")
         self.assertEqual(post.call_args.kwargs["json"]["messages"], messages)
+        self.assertIs(post.call_args.kwargs["json"]["think"], False)
+
+    def test_empty_final_content_is_reported_with_bounded_diagnostics(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "message": {"content": "", "thinking": "internal trace"},
+            "done_reason": "length",
+        }
+        with patch("render_master_bot.ollama.httpx.post", return_value=response):
+            with self.assertRaisesRegex(
+                OllamaError,
+                "done_reason='length', thinking_present=True",
+            ):
+                OllamaClient().chat_structured(
+                    model="vision-model",
+                    messages=[{"role": "user", "content": "inspect"}],
+                    json_schema={"type": "object"},
+                    think=False,
+                )
 
 
 if __name__ == "__main__":

@@ -23,8 +23,9 @@ host process:
    execution request.
 
 After Unreal exits, the host validates the result schema, status, scene name,
-RenderSpec hash, actor IDs, actor kinds, observed transforms, and material
-evidence. An exit code of zero alone is not considered success.
+RenderSpec hash, actor IDs, actor kinds, observed transforms, material
+evidence, and camera exposure evidence. An exit code of zero alone is not
+considered success.
 
 ## First-adapter scope
 
@@ -32,8 +33,8 @@ evidence. An exit code of zero alone is not considered success.
 - Materials: catalog-backed `MaterialInterface` assets assigned to named slots
   on spawned static-mesh components, with the applied asset path read back from
   Unreal before success is accepted.
-- Camera: one transient `CineCameraActor` with focal length, aperture, and
-  optional manual focus distance.
+- Camera: one transient `CineCameraActor` with focal length, aperture,
+  optional manual focus distance, and automatic or fixed-EV100 exposure.
 - Lights: directional, point, spot, and rect lights with physical intensity
   units, normalized linear RGB color, and shadow state.
 - Persistence: all generated actors are transient. The command does not save a

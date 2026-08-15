@@ -65,6 +65,10 @@ def prepare_files(root: Path):
 
 
 def actor_evidence(request: dict) -> list[dict]:
+    requested_exposure = request["camera"].get(
+        "exposure",
+        {"mode": "auto", "fixed_ev100": None},
+    )
     actors = [
         {
             "actor_id": item["object_id"],
@@ -82,6 +86,11 @@ def actor_evidence(request: dict) -> list[dict]:
             "actor_name": "camera",
             "class_name": "CineCameraActor",
             "transform": request["camera"]["transform"],
+            "exposure": {
+                "mode": requested_exposure["mode"],
+                "fixed_ev100": requested_exposure.get("fixed_ev100"),
+                "extended_luminance_range": True,
+            },
         }
     )
     actors.extend(

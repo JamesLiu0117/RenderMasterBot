@@ -69,6 +69,29 @@ class RenderSpecPatchApplicationTests(unittest.TestCase):
         with self.assertRaisesRegex(PatchApplicationError, "is invalid"):
             apply_render_spec_patch(original, patch)
 
+    def test_replace_must_change_its_target(self):
+        original = scene()
+        patch = patch_for(original, [
+            {"op": "replace", "path": "/camera/focal_length_mm", "value": 50},
+        ])
+
+        with self.assertRaisesRegex(PatchApplicationError, "does not change"):
+            apply_render_spec_patch(original, patch)
+
+    def test_default_auto_exposure_can_be_replaced_with_fixed_ev100(self):
+        original = scene()
+        patch = patch_for(original, [{
+            "op": "replace",
+            "path": "/camera/exposure",
+            "value": {"mode": "fixed", "fixed_ev100": 12.0},
+        }])
+
+        corrected = apply_render_spec_patch(original, patch)
+
+        self.assertEqual(corrected.camera.exposure.mode, "fixed")
+        self.assertEqual(corrected.camera.exposure.fixed_ev100, 12.0)
+        self.assertIn("exposure", corrected.model_dump(mode="json")["camera"])
+
 
 if __name__ == "__main__":
     unittest.main()

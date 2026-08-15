@@ -96,6 +96,7 @@ class OllamaClient:
         model: str,
         messages: list[dict[str, Any]],
         json_schema: dict[str, Any],
+        think: bool | str | None = None,
     ) -> StructuredResponse:
         payload = {
             "model": model,
@@ -104,6 +105,8 @@ class OllamaClient:
             "stream": False,
             "options": {"temperature": 0, "num_ctx": self.num_ctx},
         }
+        if think is not None:
+            payload["think"] = think
         try:
             response = httpx.post(
                 f"{self.base_url}/api/chat",
@@ -122,6 +125,13 @@ class OllamaClient:
             content = body["message"]["content"]
         except (KeyError, TypeError) as exc:
             raise OllamaError("Ollama response did not contain message.content") from exc
+        if not isinstance(content, str) or not content.strip():
+            message = body.get("message") or {}
+            raise OllamaError(
+                "Ollama returned empty message.content "
+                f"(done_reason={body.get('done_reason')!r}, "
+                f"thinking_present={bool(message.get('thinking'))})"
+            )
         return StructuredResponse(
             content=content,
             model=body.get("model", model),

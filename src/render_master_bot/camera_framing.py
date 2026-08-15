@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from itertools import product
 from math import atan2, cos, degrees, radians, sin, sqrt
+from typing import Literal
 
 from render_master_bot.contracts import AssetCard, PatchOperation, RenderSpecPatch
 from render_master_bot.models import DEFAULT_SENSOR_WIDTH_MM, RenderSpec, SceneObject, Vector3
@@ -13,6 +14,33 @@ from render_master_bot.serialization import canonical_sha256
 
 
 Point3 = tuple[float, float, float]
+ViewAxis = Literal[
+    "preserve",
+    "from-negative-x",
+    "from-positive-x",
+    "from-negative-y",
+    "from-positive-y",
+    "from-negative-z",
+    "from-positive-z",
+]
+VIEW_AXES: tuple[ViewAxis, ...] = (
+    "preserve",
+    "from-negative-x",
+    "from-positive-x",
+    "from-negative-y",
+    "from-positive-y",
+    "from-negative-z",
+    "from-positive-z",
+)
+_VIEW_FORWARDS: dict[ViewAxis, Point3] = {
+    "preserve": (0.0, 0.0, 0.0),
+    "from-negative-x": (1.0, 0.0, 0.0),
+    "from-positive-x": (-1.0, 0.0, 0.0),
+    "from-negative-y": (0.0, 1.0, 0.0),
+    "from-positive-y": (0.0, -1.0, 0.0),
+    "from-negative-z": (0.0, 0.0, 1.0),
+    "from-positive-z": (0.0, 0.0, -1.0),
+}
 
 
 class CameraFramingError(RuntimeError):
@@ -26,6 +54,7 @@ class CameraFramingResult:
     target_cm: Vector3
     distance_cm: float
     object_ids: tuple[str, ...]
+    view_axis: ViewAxis
 
 
 def _add(left: Point3, right: Point3) -> Point3:
@@ -110,11 +139,14 @@ def frame_camera(
     asset_cards: list[AssetCard],
     *,
     margin_fraction: float = 0.1,
+    view_axis: ViewAxis = "preserve",
 ) -> CameraFramingResult:
-    """Frame all visible bounded objects while preserving the current viewing side."""
+    """Frame visible bounded objects from a preserved or explicit Unreal-axis view."""
 
     if not 0 <= margin_fraction < 0.45:
         raise CameraFramingError("margin_fraction must be at least 0 and below 0.45")
+    if view_axis not in VIEW_AXES:
+        raise CameraFramingError(f"unsupported framing view_axis: {view_axis!r}")
     catalog = {card.asset_id: card for card in asset_cards}
     if len(catalog) != len(asset_cards):
         raise CameraFramingError("asset catalog contains duplicate asset IDs")
@@ -134,13 +166,16 @@ def frame_camera(
     minimum = tuple(min(point[axis] for point in points) for axis in range(3))
     maximum = tuple(max(point[axis] for point in points) for axis in range(3))
     target = _multiply(_add(minimum, maximum), 0.5)
-    camera_location = spec.camera.transform.location_cm
-    current = (camera_location.x, camera_location.y, camera_location.z)
-    toward_target = _subtract(target, current)
-    if _length(toward_target) <= 1e-9:
-        forward = _rotation_basis(spec.camera.transform.rotation_deg)[0]
+    if view_axis == "preserve":
+        camera_location = spec.camera.transform.location_cm
+        current = (camera_location.x, camera_location.y, camera_location.z)
+        toward_target = _subtract(target, current)
+        if _length(toward_target) <= 1e-9:
+            forward = _rotation_basis(spec.camera.transform.rotation_deg)[0]
+        else:
+            forward = _normalize(toward_target)
     else:
-        forward = _normalize(toward_target)
+        forward = _VIEW_FORWARDS[view_axis]
 
     reference_up: Point3 = (0.0, 0.0, 1.0)
     if abs(_dot(reference_up, forward)) > 0.999:
@@ -173,30 +208,36 @@ def frame_camera(
     yaw = degrees(atan2(forward[1], forward[0]))
     framed_rotation = (0.0, pitch, yaw)
 
-    operations = [
-        PatchOperation(
+    framed_location_value = _rounded_vector(framed_location)
+    framed_rotation_value = _rounded_vector(framed_rotation)
+    operations = []
+    if spec.camera.transform.location_cm.model_dump(mode="json") != framed_location_value:
+        operations.append(PatchOperation(
             op="replace",
             path="/camera/transform/location_cm",
-            value=_rounded_vector(framed_location),
-        ),
-        PatchOperation(
+            value=framed_location_value,
+        ))
+    if spec.camera.transform.rotation_deg.model_dump(mode="json") != framed_rotation_value:
+        operations.append(PatchOperation(
             op="replace",
             path="/camera/transform/rotation_deg",
-            value=_rounded_vector(framed_rotation),
-        ),
-        PatchOperation(
+            value=framed_rotation_value,
+        ))
+    if spec.camera.focus_distance_cm != distance:
+        operations.append(PatchOperation(
             op="replace",
             path="/camera/focus_distance_cm",
             value=distance,
-        ),
-    ]
+        ))
+    if not operations:
+        raise CameraFramingError("camera already matches the requested deterministic framing")
     object_ids = tuple(item.object_id for item in visible)
     patch = RenderSpecPatch(
         base_spec_sha256=canonical_sha256(spec),
         rationale=(
             f"Frame {len(object_ids)} visible bounded object(s) with "
             f"{margin_fraction:.1%} margin per edge using the adapter's "
-            f"{DEFAULT_SENSOR_WIDTH_MM:g} mm sensor."
+            f"{DEFAULT_SENSOR_WIDTH_MM:g} mm sensor from view {view_axis!r}."
         ),
         proposed_by={"provider": "local", "model": "deterministic_autoframe_v1"},
         operations=operations,
@@ -208,4 +249,5 @@ def frame_camera(
         target_cm=Vector3.model_validate(_rounded_vector(target)),
         distance_cm=distance,
         object_ids=object_ids,
+        view_axis=view_axis,
     )

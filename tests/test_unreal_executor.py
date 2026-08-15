@@ -91,6 +91,7 @@ def actor_record(
     actor_kind: str,
     transform=None,
     materials=None,
+    exposure=None,
 ) -> SpawnedActorRecord:
     return SpawnedActorRecord(
         actor_id=actor_id,
@@ -99,7 +100,16 @@ def actor_record(
         class_name="TestActor",
         transform=transform or {},
         materials=materials or [],
+        exposure=exposure,
     )
+
+
+def exposure_record(request) -> dict:
+    return {
+        "mode": request.camera.exposure.mode,
+        "fixed_ev100": request.camera.exposure.fixed_ev100,
+        "extended_luminance_range": True,
+    }
 
 
 class UnrealSceneBuildTests(unittest.TestCase):
@@ -185,7 +195,12 @@ class UnrealSceneBuildTests(unittest.TestCase):
             render_spec_sha256=request.render_spec_sha256,
             actors=[
                 actor_record("door", "static_mesh", request.objects[0].transform),
-                actor_record("camera", "camera", request.camera.transform),
+                actor_record(
+                    "camera",
+                    "camera",
+                    request.camera.transform,
+                    exposure=exposure_record(request),
+                ),
                 actor_record("key", "directional", request.lights[0].transform),
             ],
         )
@@ -227,7 +242,12 @@ class UnrealSceneBuildTests(unittest.TestCase):
                     request.objects[0].transform,
                     material_evidence,
                 ),
-                actor_record("camera", "camera", request.camera.transform),
+                actor_record(
+                    "camera",
+                    "camera",
+                    request.camera.transform,
+                    exposure=exposure_record(request),
+                ),
                 actor_record("key", "directional", request.lights[0].transform),
             ],
         )
@@ -235,6 +255,36 @@ class UnrealSceneBuildTests(unittest.TestCase):
 
         result.actors[0].materials[0].engine_path = "/Game/Materials/M_Other"
         with self.assertRaisesRegex(UnrealSceneBuildError, "material evidence"):
+            _validate_observed_result(request, result)
+
+    def test_fixed_exposure_evidence_must_match_requested_ev100(self):
+        value = scene_spec().model_dump(mode="json")
+        value["camera"]["exposure"] = {"mode": "fixed", "fixed_ev100": 12.0}
+        request = resolve_scene_build_request(
+            RenderSpec.model_validate(value),
+            [asset_card()],
+        )
+        result = UnrealSceneBuildResult(
+            status="succeeded",
+            project_name="Example",
+            world_name="Map",
+            scene_name=request.scene_name,
+            render_spec_sha256=request.render_spec_sha256,
+            actors=[
+                actor_record("door", "static_mesh", request.objects[0].transform),
+                actor_record(
+                    "camera",
+                    "camera",
+                    request.camera.transform,
+                    exposure=exposure_record(request),
+                ),
+                actor_record("key", "directional", request.lights[0].transform),
+            ],
+        )
+        _validate_observed_result(request, result)
+
+        result.actors[1].exposure.fixed_ev100 = 11.0
+        with self.assertRaisesRegex(UnrealSceneBuildError, "fixed EV100 evidence"):
             _validate_observed_result(request, result)
 
     def test_result_loader_requires_failure_details(self):
@@ -297,6 +347,11 @@ class UnrealSceneBuildTests(unittest.TestCase):
                         "actor_name": "camera",
                         "class_name": "CineCameraActor",
                         "transform": request["camera"]["transform"],
+                        "exposure": {
+                            "mode": request["camera"].get("exposure", {}).get("mode", "auto"),
+                            "fixed_ev100": request["camera"].get("exposure", {}).get("fixed_ev100"),
+                            "extended_luminance_range": True,
+                        },
                     }
                 )
                 actors.extend(

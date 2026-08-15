@@ -68,14 +68,17 @@ See `contracts.md` for the eight public JSON boundaries used by both tracks.
     adapter, then verify it in transient scene-build and MRQ preview paths.~~
 11. ~~Add or ingest a suitable wood material, rerender a failed material preview,
     and compare the before-and-after evaluations.~~
-12. Add explicit exposure control and semantic product-view camera constraints,
+12. ~~Add explicit exposure control and semantic product-view camera constraints,
     then rerun the wood-material correction until the visual evaluator passes or
-    reports a narrower asset/geometry capability gap.
+    reports a narrower asset/geometry capability gap.~~
+13. Benchmark the dedicated vision evaluator on a small render suite, then add
+    deterministic image statistics or a second-model review for contradictory
+    high-severity findings.
 
 ## Default model roles
 
 - `gpt-oss:20b`: text planning, structured RenderSpec generation, and correction planning.
-- `qwen3.5:9b`: preview-image inspection and structured visual findings.
+- `qwen3-vl:8b-instruct`: preview-image inspection and structured visual findings.
 - `qwen3-embedding:0.6b`: multilingual AssetCard indexing and semantic retrieval.
 
 Only one role needs to be resident on the GPU at a time.

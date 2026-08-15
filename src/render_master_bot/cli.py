@@ -16,11 +16,12 @@ from render_master_bot.asset_index import (
     load_asset_card_catalog,
     open_persistent_asset_index,
 )
-from render_master_bot.camera_framing import CameraFramingError, frame_camera
-from render_master_bot.contracts import CONTRACT_MODELS
+from render_master_bot.camera_framing import VIEW_AXES, CameraFramingError, frame_camera
+from render_master_bot.contracts import CONTRACT_MODELS, RenderSpecPatch
 from render_master_bot.correction_planner import CorrectionPlanningError, plan_correction
 from render_master_bot.models import RenderSpec
 from render_master_bot.ollama import OllamaClient, OllamaError
+from render_master_bot.patching import PatchApplicationError, apply_render_spec_patch
 from render_master_bot.planner import PlanningError, ScenePlanner
 from render_master_bot.preflight import run_preflight
 from render_master_bot.schemas import contract_model, contract_schema
@@ -40,9 +41,16 @@ def _settings() -> Settings:
     return Settings.from_env()
 
 
-def _client(settings: Settings | None = None) -> OllamaClient:
+def _client(
+    settings: Settings | None = None,
+    *,
+    num_ctx: int | None = None,
+) -> OllamaClient:
     settings = settings or _settings()
-    return OllamaClient(settings.ollama_base_url, num_ctx=settings.num_ctx)
+    return OllamaClient(
+        settings.ollama_base_url,
+        num_ctx=num_ctx if num_ctx is not None else settings.num_ctx,
+    )
 
 
 def _asset_index(settings: Settings):
@@ -115,6 +123,7 @@ def cmd_doctor(_: argparse.Namespace) -> int:
         f"({'ready' if embedding_ready else 'missing'})"
     )
     print(f"Context: {settings.num_ctx} tokens")
+    print(f"Vision context: {settings.vision_num_ctx} tokens")
     return 0 if planner_ready and vision_ready and embedding_ready else 1
 
 
@@ -127,6 +136,7 @@ def cmd_config(_: argparse.Namespace) -> int:
             "vision_model": settings.vision_model,
             "embedding_model": settings.embedding_model,
             "num_ctx": settings.num_ctx,
+            "vision_num_ctx": settings.vision_num_ctx,
             "data_dir": str(settings.data_dir),
             "chroma_dir": str(settings.chroma_dir),
             "asset_collection": settings.asset_collection,
@@ -172,6 +182,33 @@ def cmd_preflight(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_apply_patch(args: argparse.Namespace) -> int:
+    input_path = Path(args.path).expanduser().resolve()
+    patch_path = Path(args.patch).expanduser().resolve()
+    output_path = Path(args.output).expanduser().resolve()
+    if len({input_path, patch_path, output_path}) != 3:
+        print(
+            "ERROR: source, patch, and output paths must be distinct",
+            file=sys.stderr,
+        )
+        return 1
+    if output_path.exists():
+        print("ERROR: patch output already exists; choose a new path", file=sys.stderr)
+        return 1
+    try:
+        spec = RenderSpec.model_validate_json(input_path.read_text(encoding="utf-8-sig"))
+        patch = RenderSpecPatch.model_validate_json(
+            patch_path.read_text(encoding="utf-8-sig")
+        )
+        corrected = apply_render_spec_patch(spec, patch)
+        _write_json(corrected.model_dump(mode="json"), args.output)
+    except (OSError, ValidationError, PatchApplicationError) as exc:
+        print(f"ERROR: patch application failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"PATCH APPLIED: operations={len(patch.operations)}")
+    return 0
+
+
 def cmd_frame_camera(args: argparse.Namespace) -> int:
     input_path = Path(args.path).expanduser().resolve()
     output_path = Path(args.output).expanduser().resolve()
@@ -189,6 +226,7 @@ def cmd_frame_camera(args: argparse.Namespace) -> int:
             spec,
             cards,
             margin_fraction=args.margin,
+            view_axis=args.view_axis,
         )
         _write_json(result.spec.model_dump(mode="json"), args.output)
         _write_json(result.patch.model_dump(mode="json"), args.patch_output)
@@ -199,7 +237,8 @@ def cmd_frame_camera(args: argparse.Namespace) -> int:
     print(
         "CAMERA FRAMED: "
         f"objects={len(result.object_ids)} distance_cm={result.distance_cm:g} "
-        f"target_cm=({target.x:g}, {target.y:g}, {target.z:g})"
+        f"target_cm=({target.x:g}, {target.y:g}, {target.z:g}) "
+        f"view={result.view_axis}"
     )
     return 0
 
@@ -224,7 +263,7 @@ def cmd_evaluate_preview(args: argparse.Namespace) -> int:
         return 1
     try:
         result = evaluate_preview_run(
-            _client(settings),
+            _client(settings, num_ctx=settings.vision_num_ctx),
             model=model,
             run_directory=run_root,
         )
@@ -561,6 +600,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     preflight.set_defaults(handler=cmd_preflight)
 
+    apply_patch_parser = subparsers.add_parser(
+        "apply-patch",
+        help="apply a hash-bound RenderSpecPatch and write a new RenderSpec",
+    )
+    apply_patch_parser.add_argument("path", help="source RenderSpec JSON file")
+    apply_patch_parser.add_argument("--patch", required=True, help="RenderSpecPatch JSON file")
+    apply_patch_parser.add_argument(
+        "--output",
+        "-o",
+        required=True,
+        help="write the corrected RenderSpec without modifying the source",
+    )
+    apply_patch_parser.set_defaults(handler=cmd_apply_patch)
+
     frame_camera_parser = subparsers.add_parser(
         "frame-camera",
         help="create an auditable camera-framing patch from AssetCard bounds",
@@ -587,6 +640,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.1,
         help="fractional safety margin on each image edge (default: 0.1)",
+    )
+    frame_camera_parser.add_argument(
+        "--view-axis",
+        choices=VIEW_AXES,
+        default="preserve",
+        help="preserve the current view or frame from an explicit Unreal world axis",
     )
     frame_camera_parser.set_defaults(handler=cmd_frame_camera)
 

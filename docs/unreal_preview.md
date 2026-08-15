@@ -16,8 +16,8 @@ Movie Render Queue, and records the run as reproducible artifacts.
 6. Replace the project's startup level with an unsaved blank Editor world, then
    spawn the scene and camera without inherited level geometry.
 7. Create an in-memory Level Sequence and one-frame Movie Render Queue job.
-8. Validate Unreal's structured result, observed actor transforms, and exactly
-   one non-empty PNG inside the run directory.
+8. Validate Unreal's structured result, observed actor transforms and exposure,
+   and exactly one non-empty PNG inside the run directory.
 9. Hash the outputs and replace the manifest with terminal status `succeeded`.
    Any host or Unreal error instead produces terminal status `failed` with a
    bounded diagnostic message.
@@ -25,6 +25,8 @@ Movie Render Queue, and records the run as reproducible artifacts.
 An Unreal process exit code of zero is insufficient by itself. The host also
 checks the RenderSpec identity, scene name, actor IDs and kinds, transforms,
 preview containment, file type, file count, and file size.
+Fixed-exposure runs additionally require matching EV100 readback and proof that
+the project uses Unreal's extended luminance range.
 
 ## Persistence boundary
 

@@ -14,7 +14,8 @@ For every visible scene object, the framing stage:
 3. constructs all eight local bounding-box corners around `pivot_offset_cm`;
 4. applies the RenderSpec scale and Unreal roll/pitch/yaw rotation;
 5. transforms the corners into world space and finds the combined bounds;
-6. preserves the side from which the existing camera observes that center;
+6. preserves the side from which the existing camera observes that center, or
+   uses an explicitly requested product-view axis;
 7. solves the minimum perspective distance that keeps every corner inside the
    horizontal and vertical image limits, including the requested edge margin.
 
@@ -30,7 +31,7 @@ tighter vertical constraint determines camera distance.
 
 ## Patch boundary
 
-The generated patch contains three operations:
+The generated patch contains only the changed fields, selected from:
 
 - replace `/camera/transform/location_cm`;
 - replace `/camera/transform/rotation_deg`;
@@ -42,6 +43,24 @@ out-of-range list operations, malformed pointers, and any result that fails the
 complete RenderSpec contract. This is the same boundary intended for future
 visual-evaluator corrections.
 
+## Product-view axes
+
+The default `--view-axis preserve` keeps the source camera's viewing direction.
+For repeatable product tests, an axis can be selected explicitly:
+
+| Option | Camera position | Looking direction |
+| --- | --- | --- |
+| `from-negative-x` | negative X side | toward positive X |
+| `from-positive-x` | positive X side | toward negative X |
+| `from-negative-y` | negative Y side | toward positive Y |
+| `from-positive-y` | positive Y side | toward negative Y |
+| `from-negative-z` | below the subject | toward positive Z |
+| `from-positive-z` | above the subject | toward negative Z |
+
+An explicit axis changes only the deterministic framing calculation. The
+result is still recorded through the same bounded camera patch paths, with
+unchanged fields omitted.
+
 ## Usage
 
 ```powershell
@@ -50,6 +69,7 @@ render-master frame-camera `
   --assets "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\assets\optimization-plugin\asset_cards.json" `
   --output "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\retrieval-001\door_plan_v3.json" `
   --patch-output "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\retrieval-001\door_plan_v3.patch.json" `
+  --view-axis from-negative-x `
   --margin 0.1
 ```
 

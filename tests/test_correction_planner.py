@@ -257,6 +257,43 @@ class CorrectionPlannerTests(unittest.TestCase):
         self.assertEqual(result.corrected_spec.lights[0].intensity, 100)
         self.assertEqual(result.decision.patch.base_spec_sha256, canonical_sha256(spec))
 
+    def test_no_op_replacement_is_rejected(self):
+        content = json.dumps({
+            "outcome": "patch",
+            "rationale": "Claim the existing light value is a correction.",
+            "operations": [{"path": "/lights/0/intensity", "value": 10}],
+            "missing_capabilities": [],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            run_root, _ = prepare_run(Path(directory), report_category="lighting")
+            with self.assertRaisesRegex(CorrectionPlanningError, "does not change"):
+                plan_correction(
+                    FakeCorrectionClient(content),
+                    model="gpt-oss:20b",
+                    run_directory=run_root,
+                )
+
+    def test_fixed_exposure_replacement_is_applied_from_default_auto(self):
+        content = json.dumps({
+            "outcome": "patch",
+            "rationale": "Lock exposure so brightness corrections are measurable.",
+            "operations": [{
+                "path": "/camera/exposure",
+                "value": {"mode": "fixed", "fixed_ev100": 12.0},
+            }],
+            "missing_capabilities": [],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            run_root, _ = prepare_run(Path(directory), report_category="lighting")
+            result = plan_correction(
+                FakeCorrectionClient(content),
+                model="gpt-oss:20b",
+                run_directory=run_root,
+            )
+
+        self.assertEqual(result.corrected_spec.camera.exposure.mode, "fixed")
+        self.assertEqual(result.corrected_spec.camera.exposure.fixed_ev100, 12.0)
+
     def test_asset_replacement_path_is_rejected(self):
         content = json.dumps({
             "outcome": "patch",

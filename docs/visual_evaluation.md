@@ -2,7 +2,7 @@
 
 `render-master evaluate-preview` sends one verified Unreal beauty preview to
 the configured local vision model and emits a strict `EvaluationReport`. The
-first adapter uses `qwen3.5:9b` through the local Ollama REST API.
+default adapter uses `qwen3-vl:8b-instruct` through the local Ollama REST API.
 
 ## Trust boundary
 
@@ -51,6 +51,13 @@ passes the Pydantic-derived JSON Schema in `format`, disables streaming, and
 sets temperature to zero. The prompt also contains the exact RenderSpec, the
 allowed object IDs, and the output schema.
 
+The vision role uses `RENDERMASTER_VISION_NUM_CTX` (default 16384), separately
+from the planner's `RENDERMASTER_NUM_CTX`. The structured evaluator disables
+Qwen thinking because local tests showed its reasoning trace could consume both
+8K and 16K contexts without leaving a final answer. The role-specific context
+still leaves room for image tokens, the RenderSpec, and schema-constrained JSON;
+RenderMaster trusts only final content, never a reasoning trace.
+
 ## Usage
 
 ```powershell
@@ -75,3 +82,14 @@ seconds. It produced 146 output tokens from 5,780 prompt tokens and correctly
 reported a blocking material problem: the requested wooden door appeared as a
 featureless grey surface without visible wood detail. The resulting public
 `EvaluationReport` passed independent contract validation.
+
+## Dedicated vision-model validation
+
+A fixed-EV100, top-down wood-material rerender exposed a reliability problem
+in the general `qwen3.5:9b` model: disabling thinking produced a false
+"completely black" verdict, while enabling thinking exhausted both 8K and 16K
+contexts before final content. The similarly sized `qwen3-vl:8b-instruct`
+correctly identified the visible dark weathered planks in a probe and then
+returned a schema-valid `pass` with zero issues in 14.98 seconds. It is now the
+default vision role; the earlier model remains useful as historical benchmark
+evidence, not the acceptance authority for new runs.

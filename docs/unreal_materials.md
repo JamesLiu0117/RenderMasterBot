@@ -54,9 +54,11 @@ should remain attached as separate engine evidence.
 Large catalogs are embedded in batches of 32 documents. This keeps input order stable while
 avoiding one oversized Ollama tokenizer request during full-catalog synchronization.
 
-## Current limitation found by the first real test
+## Limitation found by the first real test
 
-The imported material can be retrieved, assigned, and rendered, but lowering light intensity did
-not reliably darken the final preview because the adapter does not yet freeze Unreal exposure.
-Product-view camera framing also needs an orientation constraint in addition to bounds fitting.
-These are explicit next capabilities rather than reasons to weaken visual evaluation.
+The imported material was retrieved, assigned, and rendered, but lowering light intensity did not
+reliably darken the first preview because the adapter had not frozen Unreal exposure. The initial
+bounds-only camera framing also preserved a poor source viewing direction. Those findings led to
+the fixed-EV100 exposure contract and explicit product-view axes documented in `exposure.md` and
+`camera_framing.md`. The corrected material must now be rerendered under those controls before the
+visual failure can be considered resolved.

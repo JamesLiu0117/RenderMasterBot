@@ -114,6 +114,7 @@ class VisualEvaluatorTests(unittest.TestCase):
         encoded = client.last_request["messages"][1]["images"][0]
         self.assertEqual(base64.b64decode(encoded), PNG_BYTES)
         self.assertEqual(client.last_request["json_schema"]["title"], "VisualEvaluationDraft")
+        self.assertIs(client.last_request["think"], False)
 
     def test_unknown_scene_object_ids_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

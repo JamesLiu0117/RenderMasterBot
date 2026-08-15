@@ -2,7 +2,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from render_master_bot.models import Camera, RenderSpec, Transform
+from render_master_bot.models import Camera, ExposureSettings, RenderSpec, Transform
 
 
 def minimal_spec(**overrides):
@@ -73,6 +73,32 @@ class RenderSpecTests(unittest.TestCase):
                     "material": {"asset_id": "wood_material"},
                 }],
             }])
+
+    def test_exposure_mode_requires_a_consistent_bounded_ev100(self):
+        self.assertEqual(ExposureSettings().mode, "auto")
+        self.assertEqual(
+            ExposureSettings(mode="fixed", fixed_ev100=12).fixed_ev100,
+            12,
+        )
+        with self.assertRaisesRegex(ValidationError, "requires fixed_ev100"):
+            ExposureSettings(mode="fixed")
+        with self.assertRaisesRegex(ValidationError, "cannot specify fixed_ev100"):
+            ExposureSettings(mode="auto", fixed_ev100=10)
+        with self.assertRaises(ValidationError):
+            ExposureSettings(mode="fixed", fixed_ev100=31)
+
+    def test_default_auto_exposure_does_not_change_v01_serialization(self):
+        automatic = minimal_spec().model_dump(mode="json")
+        self.assertNotIn("exposure", automatic["camera"])
+
+        fixed = minimal_spec(camera={
+            "transform": {},
+            "exposure": {"mode": "fixed", "fixed_ev100": 12.0},
+        }).model_dump(mode="json")
+        self.assertEqual(
+            fixed["camera"]["exposure"],
+            {"mode": "fixed", "fixed_ev100": 12.0},
+        )
 
 
 if __name__ == "__main__":

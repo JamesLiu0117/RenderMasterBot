@@ -45,7 +45,7 @@ def apply_scale(actor, transform):
     actor.set_actor_scale3d(vector(scale))
 
 
-def actor_record(actor, actor_id, actor_kind, materials=None):
+def actor_record(actor, actor_id, actor_kind, materials=None, exposure=None):
     location = actor.get_actor_location()
     rotation = actor.get_actor_rotation()
     scale = actor.get_actor_scale3d()
@@ -72,6 +72,7 @@ def actor_record(actor, actor_id, actor_kind, materials=None):
             },
         },
         "materials": materials or [],
+        "exposure": exposure,
     }
 
 
@@ -164,6 +165,58 @@ def spawn_object(actor_subsystem, value, transient=True):
     return record
 
 
+def apply_camera_exposure(component, value):
+    exposure = value.get("exposure", {"mode": "auto", "fixed_ev100": None})
+    extended = bool(unreal.SystemLibrary.get_console_variable_bool_value(
+        "r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange"
+    ))
+    if exposure["mode"] == "auto":
+        component.set_editor_property("post_process_blend_weight", 0.0)
+        return {
+            "mode": "auto",
+            "fixed_ev100": None,
+            "extended_luminance_range": extended,
+        }
+
+    if not extended:
+        raise RuntimeError(
+            "fixed EV100 requires ExtendDefaultLuminanceRange in Unreal project settings"
+        )
+    fixed_ev100 = float(exposure["fixed_ev100"])
+    settings = component.get_editor_property("post_process_settings")
+    settings.set_editor_property("override_auto_exposure_method", True)
+    settings.set_editor_property(
+        "auto_exposure_method",
+        unreal.AutoExposureMethod.AEM_HISTOGRAM,
+    )
+    settings.set_editor_property("override_auto_exposure_min_brightness", True)
+    settings.set_editor_property("override_auto_exposure_max_brightness", True)
+    settings.set_editor_property("auto_exposure_min_brightness", fixed_ev100)
+    settings.set_editor_property("auto_exposure_max_brightness", fixed_ev100)
+    component.set_editor_property("post_process_settings", settings)
+    component.set_editor_property("post_process_blend_weight", 1.0)
+
+    observed = component.get_editor_property("post_process_settings")
+    observed_min = float(observed.get_editor_property("auto_exposure_min_brightness"))
+    observed_max = float(observed.get_editor_property("auto_exposure_max_brightness"))
+    observed_weight = float(component.get_editor_property("post_process_blend_weight"))
+    if (
+        abs(observed_min - fixed_ev100) > 1e-4
+        or abs(observed_max - fixed_ev100) > 1e-4
+        or abs(observed_weight - 1.0) > 1e-4
+    ):
+        raise RuntimeError(
+            "fixed exposure readback mismatch: "
+            f"requested={fixed_ev100} min={observed_min} max={observed_max} "
+            f"blend={observed_weight}"
+        )
+    return {
+        "mode": "fixed",
+        "fixed_ev100": observed_min,
+        "extended_luminance_range": extended,
+    }
+
+
 def spawn_camera(actor_subsystem, value, transient=True, return_actor=False):
     transform = value["transform"]
     actor = actor_subsystem.spawn_actor_from_class(
@@ -184,7 +237,12 @@ def spawn_camera(actor_subsystem, value, transient=True, return_actor=False):
         focus.set_editor_property("focus_method", unreal.CameraFocusMethod.MANUAL)
         focus.set_editor_property("manual_focus_distance", float(value["focus_distance_cm"]))
         component.set_editor_property("focus_settings", focus)
-    record = actor_record(actor, value["camera_id"], "camera")
+    exposure = apply_camera_exposure(component, value)
+    unreal.log(
+        f"RENDERMASTER_SCENE_STEP camera_exposure id={value['camera_id']} "
+        f"mode={exposure['mode']} ev100={exposure['fixed_ev100']}"
+    )
+    record = actor_record(actor, value["camera_id"], "camera", exposure=exposure)
     if return_actor:
         return actor, record
     return record

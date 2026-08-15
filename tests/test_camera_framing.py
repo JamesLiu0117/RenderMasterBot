@@ -79,6 +79,43 @@ class CameraFramingTests(unittest.TestCase):
         self.assertLess(location.y, 0)
         self.assertAlmostEqual(rotation.z, 45.0)
 
+    def test_explicit_negative_x_view_ignores_a_bad_planner_direction(self):
+        original = framing_scene(camera={
+            "camera_id": "camera",
+            "transform": {"location_cm": {"x": 500, "y": 400, "z": 500}},
+            "focal_length_mm": 50,
+        })
+
+        result = frame_camera(
+            original,
+            [cube_card()],
+            view_axis="from-negative-x",
+        )
+
+        location = result.spec.camera.transform.location_cm
+        rotation = result.spec.camera.transform.rotation_deg
+        self.assertLess(location.x, 0)
+        self.assertAlmostEqual(location.y, result.target_cm.y)
+        self.assertAlmostEqual(location.z, result.target_cm.z)
+        self.assertEqual(rotation.model_dump(), {"x": 0.0, "y": 0.0, "z": 0.0})
+        self.assertEqual(result.view_axis, "from-negative-x")
+        self.assertIn("from-negative-x", result.patch.rationale)
+
+    def test_explicit_positive_z_view_creates_a_top_down_material_view(self):
+        result = frame_camera(
+            framing_scene(),
+            [cube_card()],
+            view_axis="from-positive-z",
+        )
+
+        location = result.spec.camera.transform.location_cm
+        rotation = result.spec.camera.transform.rotation_deg
+        self.assertAlmostEqual(location.x, result.target_cm.x)
+        self.assertAlmostEqual(location.y, result.target_cm.y)
+        self.assertGreater(location.z, result.target_cm.z)
+        self.assertEqual(rotation.model_dump(), {"x": 0.0, "y": -90.0, "z": 0.0})
+        self.assertEqual(result.view_axis, "from-positive-z")
+
     def test_object_scale_increases_required_distance(self):
         normal = frame_camera(framing_scene(), [cube_card()])
         scaled = frame_camera(framing_scene(objects=[{

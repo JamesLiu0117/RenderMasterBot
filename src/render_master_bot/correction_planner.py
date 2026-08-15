@@ -40,8 +40,14 @@ RenderSpec replacement paths. Return outcome 'patch' only when those operations 
 every error or blocking issue. Otherwise return 'unresolved' and name the missing capabilities.
 Never claim that camera, lighting, or transform changes can create a missing texture or material.
 Never modify a scene object's primary asset reference, object IDs, scene identity, schema metadata,
-or source prompts. A listed materials path may reference only supplied material asset IDs and the
-target object's listed material slot names. Do not invent assets, materials, lights, or objects.
+or source prompts. Treat constraints stated in the source prompt as binding: in particular, do not
+modify geometry or transforms declared fixed or out of scope. A listed materials path may reference
+only supplied material asset IDs and the target object's listed material slot names. Do not invent
+assets, materials, lights, or objects. Never emit a replacement whose value is already present in
+the RenderSpec; an identical material assignment is not a correction.
+Use /camera/exposure only when fixed EV100 directly addresses exposure adaptation or brightness.
+Its replacement value must be a complete object such as
+{"mode":"fixed","fixed_ev100":12.0}, never a scalar exposure-compensation value.
 Patch values must be literal JSON values of the target field type. For example, replace a numeric
 intensity with "value": 2000.0, never with a wrapper such as {"type":"number","value":2000.0}.
 Return exactly one JSON object matching the schema, without Markdown or extra prose.
@@ -50,7 +56,7 @@ Return exactly one JSON object matching the schema, without Markdown or extra pr
 _ALLOWED_PATH = re.compile(
     r"^/(?:"
     r"camera/(?:transform/(?:location_cm|rotation_deg)|focal_length_mm|"
-    r"focus_distance_cm|aperture_f_stop)|"
+    r"focus_distance_cm|aperture_f_stop|exposure)|"
     r"lights/[0-9]+/(?:transform/(?:location_cm|rotation_deg)|intensity|"
     r"color_rgb|cast_shadows)|"
     r"objects/[0-9]+/(?:materials|transform/(?:location_cm|rotation_deg|scale))|"
@@ -207,6 +213,7 @@ def _allowed_paths(spec: RenderSpec) -> list[str]:
         "/camera/focal_length_mm",
         "/camera/focus_distance_cm",
         "/camera/aperture_f_stop",
+        "/camera/exposure",
         "/render/width_px",
         "/render/height_px",
         "/render/quality",
@@ -247,6 +254,12 @@ def _relevant_asset_context(
             "asset_type": card.asset_type,
             "description": card.description,
             "tags": card.tags,
+            "dimensions_cm": (
+                card.dimensions_cm.model_dump(mode="json")
+                if card.dimensions_cm is not None
+                else None
+            ),
+            "pivot_offset_cm": card.pivot_offset_cm.model_dump(mode="json"),
             "material_slots": card.material_slots,
         }
         for card in relevant

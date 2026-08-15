@@ -64,7 +64,7 @@ correction records, and a reproducible run manifest.
 
 - `RenderSpec` schema version 0.1
 - Pydantic validation and JSON Schema export
-- Dual-model defaults: `gpt-oss:20b` planning and `qwen3.5:9b` visual evaluation
+- Dual-model defaults: `gpt-oss:20b` planning and `qwen3-vl:8b-instruct` visual evaluation
 - Ollama structured-output client over the local REST API
 - Deterministic semantic preflight with structured `EvaluationReport` output
 - Read-only Unreal project capability probing with evidence provenance
@@ -78,14 +78,17 @@ correction records, and a reproducible run manifest.
 - Verified CC0 wood-material acquisition, Unreal import, multilingual retrieval, and planner assignment
 - Verified planner refusal to hide a remaining geometry gap after a material becomes available
 - Deterministic AssetCard-bounds camera framing through auditable `RenderSpecPatch` output
+- Explicit six-axis product-view framing, including top-down material inspection
+- Backward-compatible automatic or fixed-EV100 camera exposure with Unreal readback evidence
 - Transient Unreal scene construction for static meshes, camera, and physical lights
 - One-frame Unreal Movie Render Queue previews with terminal, artifact-hashed `RunManifest` records
 - Verified local Qwen preview evaluation with strict, evidence-linked `EvaluationReport` output
+- Verified Qwen3-VL material evaluation after fixed-exposure, top-down UE 5.7 rerender
 - Bounded local correction planning that emits a validated patch or an explicit capability gap
 - Command-line doctor, schema, validate, preflight, Unreal, retrieval, planning, evaluation, and correction commands
 - Standard-library unit tests for contracts, planning, preflight, Unreal execution, and preview orchestration
 
-Exposure-aware rerendering, semantic product-view framing, broader scene editing, and model
+Broader scene editing, evaluator benchmarking, Unreal Editor UI integration, and model
 fine-tuning are later milestones.
 
 ## Local setup
@@ -102,9 +105,11 @@ Verify the local Ollama server:
 render-master doctor
 ```
 
-Install the lightweight multilingual embedding model used by asset retrieval:
+Install the default local models for planning, visual evaluation, and retrieval:
 
 ```powershell
+ollama pull gpt-oss:20b
+ollama pull qwen3-vl:8b-instruct
 ollama pull qwen3-embedding:0.6b
 ```
 
@@ -182,6 +187,11 @@ render-master unreal-build-scene `
 Render one offscreen PNG through Unreal Movie Render Queue and finalize a hashed run record:
 
 ```powershell
+render-master apply-patch `
+  "C:\path\to\source_render_spec.json" `
+  --patch "C:\path\to\validated_patch.json" `
+  --output "C:\path\to\corrected_render_spec.json"
+
 render-master frame-camera `
   "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\retrieval-001\door_plan_v2.json" `
   --assets "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\assets\optimization-plugin\asset_cards.json" `
@@ -263,6 +273,7 @@ See [docs/architecture.md](docs/architecture.md) for the design boundaries and n
 The public AI/engine contracts are documented in [docs/contracts.md](docs/contracts.md).
 The deterministic scene rules are documented in [docs/preflight.md](docs/preflight.md).
 Asset-bounds camera framing is documented in [docs/camera_framing.md](docs/camera_framing.md).
+Deterministic camera exposure is documented in [docs/exposure.md](docs/exposure.md).
 Unreal capability discovery is documented in [docs/unreal_probe.md](docs/unreal_probe.md).
 Real Asset Registry scanning is documented in [docs/unreal_assets.md](docs/unreal_assets.md).
 Automated PBR material import is documented in [docs/unreal_materials.md](docs/unreal_materials.md).
