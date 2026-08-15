@@ -15,10 +15,11 @@ The integration remains schema-gated: a language model is not allowed to run arb
 - Headless Unreal Asset Registry scanning into validated `AssetCard` records
 - Persistent Chroma indexing with explicit local Ollama embeddings
 - Retrieval-constrained planning that rejects assets outside the returned catalog
+- Transient Unreal scene construction for static meshes, camera, and physical lights
 - Command-line doctor, schema, validate, preflight, Unreal, asset-index, asset-search, and plan commands
 - Standard-library unit tests for contracts, planning, and scene preflight
 
-Scene execution, visual evaluation, and model fine-tuning are later milestones.
+Preview rendering, visual evaluation, and model fine-tuning are later milestones.
 
 ## Local setup
 
@@ -80,6 +81,18 @@ render-master unreal-scan-assets `
 
 The raw file preserves what Unreal observed. The second file contains records that have each passed the strict `AssetCard` contract.
 
+Build a validated scene as transient actors without saving or modifying project Content:
+
+```powershell
+render-master unreal-build-scene `
+  "E:\OptimizationPlugin\OptimizationPlugin.uproject" `
+  --engine-root "E:\Unreal Engine\UE_5.7" `
+  --spec "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\retrieval-001\door_plan.json" `
+  --assets "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\assets\optimization-plugin\asset_cards.json" `
+  --output "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\unreal-build-001\scene_build.json" `
+  --fail-on-warning
+```
+
 Synchronize those cards into the local Chroma collection:
 
 ```powershell
@@ -137,6 +150,7 @@ The public AI/engine contracts are documented in [docs/contracts.md](docs/contra
 The deterministic scene rules are documented in [docs/preflight.md](docs/preflight.md).
 Unreal capability discovery is documented in [docs/unreal_probe.md](docs/unreal_probe.md).
 Real Asset Registry scanning is documented in [docs/unreal_assets.md](docs/unreal_assets.md).
+Transient scene execution is documented in [docs/unreal_execution.md](docs/unreal_execution.md).
 Chroma indexing and retrieval constraints are documented in [docs/retrieval.md](docs/retrieval.md).
 
 Export or validate any contract:

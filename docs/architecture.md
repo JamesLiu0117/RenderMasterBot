@@ -52,7 +52,7 @@ See `contracts.md` for the seven public JSON boundaries used by both tracks.
 3. ~~Enable and verify the required Unreal integration plugins, then scan 10-20
    real Unreal assets into `AssetCard` records.~~
 4. ~~Index those cards in Chroma and constrain planning to the returned asset IDs.~~
-5. Execute one hand-written `RenderSpec` through the Unreal adapter.
+5. ~~Execute one validated `RenderSpec` through the transient Unreal adapter.~~
 6. Capture the first preview and `RunManifest`, then connect Qwen evaluation.
 
 ## Default model roles

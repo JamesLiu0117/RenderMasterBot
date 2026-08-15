@@ -35,6 +35,28 @@ class CliOutputTests(unittest.TestCase):
         self.assertEqual(args.path_prefix, "/Game")
         self.assertEqual(args.raw_output, "raw.json")
 
+    def test_unreal_build_parser_captures_validated_inputs(self):
+        args = build_parser().parse_args(
+            [
+                "unreal-build-scene",
+                "E:/Project/Project.uproject",
+                "--engine-root",
+                "E:/Unreal Engine/UE_5.7",
+                "--spec",
+                "scene.json",
+                "--assets",
+                "asset_cards.json",
+                "--output",
+                "scene_build.json",
+                "--fail-on-warning",
+            ]
+        )
+
+        self.assertEqual(args.spec, "scene.json")
+        self.assertEqual(args.assets, "asset_cards.json")
+        self.assertEqual(args.output, "scene_build.json")
+        self.assertTrue(args.fail_on_warning)
+
     def test_plan_parser_enables_retrieval_constraints(self):
         args = build_parser().parse_args(
             ["plan", "--prompt", "add a door", "--retrieve-assets", "4"]

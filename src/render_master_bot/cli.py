@@ -23,6 +23,7 @@ from render_master_bot.preflight import run_preflight
 from render_master_bot.schemas import contract_model, contract_schema
 from render_master_bot.settings import Settings
 from render_master_bot.unreal_assets import UnrealAssetScanError, run_unreal_asset_scan
+from render_master_bot.unreal_executor import UnrealSceneBuildError, run_unreal_scene_build
 from render_master_bot.unreal_probe import UnrealProbeError, probe_unreal_project
 
 
@@ -210,6 +211,32 @@ def cmd_unreal_scan_assets(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_unreal_build_scene(args: argparse.Namespace) -> int:
+    try:
+        request, result = run_unreal_scene_build(
+            args.path,
+            engine_root=args.engine_root,
+            render_spec_path=args.spec,
+            asset_catalog_path=args.assets,
+            output=args.output,
+            timeout_seconds=args.timeout,
+            fail_on_warning=args.fail_on_warning,
+        )
+    except UnrealSceneBuildError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(
+        "UNREAL SCENE BUILD: "
+        f"project={result.project_name} "
+        f"world={result.world_name} "
+        f"scene={result.scene_name} "
+        f"actors={len(result.actors)} "
+        f"spec_sha256={request.render_spec_sha256}"
+    )
+    print(f"Wrote {args.output}")
+    return 0
+
+
 def cmd_asset_index(args: argparse.Namespace) -> int:
     settings = _settings()
     try:
@@ -376,6 +403,41 @@ def build_parser() -> argparse.ArgumentParser:
     unreal_scan.add_argument("--path-prefix", default="/Game")
     unreal_scan.add_argument("--timeout", type=int, default=300, help="Unreal timeout in seconds")
     unreal_scan.set_defaults(handler=cmd_unreal_scan_assets)
+
+    unreal_build = subparsers.add_parser(
+        "unreal-build-scene",
+        help="build a validated RenderSpec as transient actors inside Unreal",
+    )
+    unreal_build.add_argument("path", help="path to a compiled .uproject file")
+    unreal_build.add_argument(
+        "--engine-root",
+        required=True,
+        help="Unreal installation root containing the Engine directory",
+    )
+    unreal_build.add_argument("--spec", required=True, help="validated RenderSpec JSON file")
+    unreal_build.add_argument(
+        "--assets",
+        required=True,
+        help="validated AssetCard JSON array used to resolve asset IDs",
+    )
+    unreal_build.add_argument(
+        "--output",
+        "-o",
+        required=True,
+        help="write validated transient scene-build evidence",
+    )
+    unreal_build.add_argument(
+        "--timeout",
+        type=int,
+        default=300,
+        help="Unreal timeout in seconds",
+    )
+    unreal_build.add_argument(
+        "--fail-on-warning",
+        action="store_true",
+        help="refuse to launch Unreal when semantic preflight needs review",
+    )
+    unreal_build.set_defaults(handler=cmd_unreal_build_scene)
 
     asset_index = subparsers.add_parser(
         "asset-index",
