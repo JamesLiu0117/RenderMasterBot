@@ -12,6 +12,7 @@ PositiveFiniteFloat = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 NonNegativeFiniteFloat = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 UnitFloat = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 Identifier = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_\-]{0,63}$")]
+DEFAULT_SENSOR_WIDTH_MM = 36.0
 
 
 class StrictModel(BaseModel):

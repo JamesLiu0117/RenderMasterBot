@@ -13,7 +13,8 @@ Movie Render Queue, and records the run as reproducible artifacts.
 4. Copy the exact RenderSpec, asset catalog, and private scene request into
    `inputs/`, then hash them.
 5. Write a `RunManifest` with `status="running"` before Unreal starts.
-6. Spawn the scene and camera in the unsaved Editor world.
+6. Replace the project's startup level with an unsaved blank Editor world, then
+   spawn the scene and camera without inherited level geometry.
 7. Create an in-memory Level Sequence and one-frame Movie Render Queue job.
 8. Validate Unreal's structured result, observed actor transforms, and exactly
    one non-empty PNG inside the run directory.
@@ -37,6 +38,14 @@ directory outside the Unreal project.
 The PIE executor is explicitly allowed to use unsaved levels, runs offscreen,
 and keeps the Python script alive until its completion callback has written the
 structured result.
+
+The adapter creates the blank world with
+`EditorLoadingAndSavingUtils.new_blank_map(False)`. This prevents the project's
+EditorStartupMap geometry from occluding generated subjects, while the `False`
+argument prevents the previous map from being saved. The camera uses a fixed
+36 mm sensor width and derives sensor height from the RenderSpec output aspect
+ratio. The private scene request records that width so deterministic framing
+and Unreal projection use the same filmback.
 
 ## Run directory
 
@@ -70,7 +79,7 @@ render-master unreal-render-preview `
   --fail-on-warning
 ```
 
-The initial preview intentionally evaluates execution, not aesthetics. The
-next slice will use AssetCard bounds to estimate framing before render, then ask
-the visual evaluator to report composition, lighting, material, and visibility
-issues as a structured `EvaluationReport`.
+The initial preview intentionally evaluates execution, not aesthetics.
+`render-master frame-camera` can now fit known AssetCard bounds before render.
+The next slice will ask the visual evaluator to report composition, lighting,
+material, and visibility issues as a structured `EvaluationReport`.

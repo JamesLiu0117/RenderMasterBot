@@ -82,6 +82,7 @@ class UnrealSceneBuildTests(unittest.TestCase):
         self.assertEqual(request.objects[0].asset_id, "door_asset")
         self.assertEqual(request.objects[0].engine_path, "/Game/Props/SM_Door")
         self.assertEqual(len(request.render_spec_sha256), 64)
+        self.assertEqual(request.sensor_width_mm, 36.0)
 
     def test_missing_asset_is_rejected_before_unreal_launches(self):
         with self.assertRaisesRegex(UnrealSceneBuildError, "missing asset"):

@@ -54,8 +54,9 @@ See `contracts.md` for the seven public JSON boundaries used by both tracks.
 4. ~~Index those cards in Chroma and constrain planning to the returned asset IDs.~~
 5. ~~Execute one validated `RenderSpec` through the transient Unreal adapter.~~
 6. ~~Capture the first Movie Render Queue preview and terminal `RunManifest`.~~
-7. Use AssetCard bounds for deterministic camera framing, then connect Qwen
-   preview evaluation and bounded `RenderSpecPatch` correction.
+7. ~~Use AssetCard bounds for deterministic camera framing through an auditable
+   `RenderSpecPatch`.~~
+8. Connect Qwen preview evaluation and bounded `RenderSpecPatch` correction.
 
 ## Default model roles
 

@@ -29,6 +29,8 @@ plugins or render passes that a specific Unreal project does not have.
   evaluation must point to at least one rendered image.
 - Suggested patches must target the exact SHA-256 identity of the evaluated
   `RenderSpec`.
+- Patch application rechecks the base hash, applies only the bounded JSON Patch
+  subset, and validates the complete resulting `RenderSpec` before use.
 - Artifact paths are run-relative and portable; absolute and parent paths are
   rejected.
 - Terminal runs require an end timestamp, and failed runs require an error.

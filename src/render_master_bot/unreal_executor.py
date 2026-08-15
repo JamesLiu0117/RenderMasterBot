@@ -15,8 +15,10 @@ from render_master_bot.asset_index import AssetIndexError, load_asset_card_catal
 from render_master_bot.contracts import AssetCard, Sha256
 from render_master_bot.models import (
     Camera,
+    DEFAULT_SENSOR_WIDTH_MM,
     Identifier,
     Light,
+    PositiveFiniteFloat,
     RenderSettings,
     RenderSpec,
     StrictModel,
@@ -51,6 +53,7 @@ class UnrealSceneBuildRequest(StrictModel):
     camera: Camera
     lights: list[Light] = Field(max_length=64)
     render: RenderSettings
+    sensor_width_mm: PositiveFiniteFloat = DEFAULT_SENSOR_WIDTH_MM
 
 
 class SpawnedActorRecord(StrictModel):

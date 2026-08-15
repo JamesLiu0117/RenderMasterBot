@@ -154,9 +154,10 @@ def main():
     }
 
     try:
+        world = unreal.EditorLoadingAndSavingUtils.new_blank_map(False)
+        if world is None:
+            raise RuntimeError("Unreal could not create an unsaved blank preview world")
         actor_subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-        editor_subsystem = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
-        world = editor_subsystem.get_editor_world()
         if actor_subsystem is None or world is None:
             raise RuntimeError("the Unreal Editor world or actor subsystem is unavailable")
         RESULT["world_name"] = str(world.get_name())
@@ -172,6 +173,16 @@ def main():
             return_actor=True,
         )
         RESULT["actors"].append(camera_record)
+        camera_component = camera_actor_object.get_cine_camera_component()
+        sensor_width = float(request["sensor_width_mm"])
+        output_aspect = float(request["render"]["width_px"]) / float(
+            request["render"]["height_px"]
+        )
+        filmback = camera_component.get_editor_property("filmback")
+        filmback.set_editor_property("sensor_width", sensor_width)
+        filmback.set_editor_property("sensor_height", sensor_width / output_aspect)
+        camera_component.set_editor_property("filmback", filmback)
+        camera_component.set_editor_property("constrain_aspect_ratio", True)
 
         for light in request["lights"]:
             RESULT["actors"].append(

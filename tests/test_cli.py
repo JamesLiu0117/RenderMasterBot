@@ -79,6 +79,24 @@ class CliOutputTests(unittest.TestCase):
         self.assertEqual(args.run_id, "preview_001")
         self.assertEqual(args.timeout, 600)
 
+    def test_frame_camera_parser_captures_auditable_outputs(self):
+        args = build_parser().parse_args(
+            [
+                "frame-camera",
+                "source.json",
+                "--assets",
+                "assets.json",
+                "--output",
+                "framed.json",
+                "--patch-output",
+                "framing_patch.json",
+            ]
+        )
+
+        self.assertEqual(args.output, "framed.json")
+        self.assertEqual(args.patch_output, "framing_patch.json")
+        self.assertEqual(args.margin, 0.1)
+
     def test_plan_parser_enables_retrieval_constraints(self):
         args = build_parser().parse_args(
             ["plan", "--prompt", "add a door", "--retrieve-assets", "4"]

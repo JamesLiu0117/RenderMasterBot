@@ -15,6 +15,7 @@ The integration remains schema-gated: a language model is not allowed to run arb
 - Headless Unreal Asset Registry scanning into validated `AssetCard` records
 - Persistent Chroma indexing with explicit local Ollama embeddings
 - Retrieval-constrained planning that rejects assets outside the returned catalog
+- Deterministic AssetCard-bounds camera framing through auditable `RenderSpecPatch` output
 - Transient Unreal scene construction for static meshes, camera, and physical lights
 - One-frame Unreal Movie Render Queue previews with terminal, artifact-hashed `RunManifest` records
 - Command-line doctor, schema, validate, preflight, Unreal, asset-index, asset-search, and plan commands
@@ -97,10 +98,16 @@ render-master unreal-build-scene `
 Render one offscreen PNG through Unreal Movie Render Queue and finalize a hashed run record:
 
 ```powershell
+render-master frame-camera `
+  "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\retrieval-001\door_plan_v2.json" `
+  --assets "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\assets\optimization-plugin\asset_cards.json" `
+  --output "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\retrieval-001\door_plan_v3.json" `
+  --patch-output "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\retrieval-001\door_plan_v3.patch.json"
+
 render-master unreal-render-preview `
   "E:\OptimizationPlugin\OptimizationPlugin.uproject" `
   --engine-root "E:\Unreal Engine\UE_5.7" `
-  --spec "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\retrieval-001\door_plan_v2.json" `
+  --spec "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\retrieval-001\door_plan_v3.json" `
   --assets "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\assets\optimization-plugin\asset_cards.json" `
   --run-dir "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\preview-002" `
   --run-id "preview_002" `
@@ -162,6 +169,7 @@ python -m unittest discover -s tests -v
 See [docs/architecture.md](docs/architecture.md) for the design boundaries and next milestones.
 The public AI/engine contracts are documented in [docs/contracts.md](docs/contracts.md).
 The deterministic scene rules are documented in [docs/preflight.md](docs/preflight.md).
+Asset-bounds camera framing is documented in [docs/camera_framing.md](docs/camera_framing.md).
 Unreal capability discovery is documented in [docs/unreal_probe.md](docs/unreal_probe.md).
 Real Asset Registry scanning is documented in [docs/unreal_assets.md](docs/unreal_assets.md).
 Transient scene execution is documented in [docs/unreal_execution.md](docs/unreal_execution.md).

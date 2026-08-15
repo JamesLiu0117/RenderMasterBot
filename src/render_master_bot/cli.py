@@ -15,6 +15,7 @@ from render_master_bot.asset_index import (
     load_asset_card_catalog,
     open_persistent_asset_index,
 )
+from render_master_bot.camera_framing import CameraFramingError, frame_camera
 from render_master_bot.contracts import CONTRACT_MODELS
 from render_master_bot.models import RenderSpec
 from render_master_bot.ollama import OllamaClient, OllamaError
@@ -161,6 +162,38 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         return 1
     if report.verdict == "needs_review" and args.fail_on_warning:
         return 2
+    return 0
+
+
+def cmd_frame_camera(args: argparse.Namespace) -> int:
+    input_path = Path(args.path).expanduser().resolve()
+    output_path = Path(args.output).expanduser().resolve()
+    patch_path = Path(args.patch_output).expanduser().resolve()
+    if len({input_path, output_path, patch_path}) != 3:
+        print(
+            "ERROR: input, framed output, and patch output paths must be distinct",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        spec = RenderSpec.model_validate_json(input_path.read_text(encoding="utf-8-sig"))
+        cards = load_asset_card_catalog(args.assets)
+        result = frame_camera(
+            spec,
+            cards,
+            margin_fraction=args.margin,
+        )
+        _write_json(result.spec.model_dump(mode="json"), args.output)
+        _write_json(result.patch.model_dump(mode="json"), args.patch_output)
+    except (OSError, ValidationError, AssetIndexError, CameraFramingError) as exc:
+        print(f"ERROR: camera framing failed: {exc}", file=sys.stderr)
+        return 1
+    target = result.target_cm
+    print(
+        "CAMERA FRAMED: "
+        f"objects={len(result.object_ids)} distance_cm={result.distance_cm:g} "
+        f"target_cm=({target.x:g}, {target.y:g}, {target.z:g})"
+    )
     return 0
 
 
@@ -395,6 +428,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="return exit code 2 when the verdict is needs_review",
     )
     preflight.set_defaults(handler=cmd_preflight)
+
+    frame_camera_parser = subparsers.add_parser(
+        "frame-camera",
+        help="create an auditable camera-framing patch from AssetCard bounds",
+    )
+    frame_camera_parser.add_argument("path", help="source RenderSpec JSON file")
+    frame_camera_parser.add_argument(
+        "--assets",
+        required=True,
+        help="validated AssetCard JSON array supplying object bounds",
+    )
+    frame_camera_parser.add_argument(
+        "--output",
+        "-o",
+        required=True,
+        help="write the newly framed RenderSpec without modifying the source",
+    )
+    frame_camera_parser.add_argument(
+        "--patch-output",
+        required=True,
+        help="write the exact RenderSpecPatch used to produce the framed spec",
+    )
+    frame_camera_parser.add_argument(
+        "--margin",
+        type=float,
+        default=0.1,
+        help="fractional safety margin on each image edge (default: 0.1)",
+    )
+    frame_camera_parser.set_defaults(handler=cmd_frame_camera)
 
     unreal_probe = subparsers.add_parser(
         "unreal-probe",
