@@ -57,6 +57,28 @@ class CliOutputTests(unittest.TestCase):
         self.assertEqual(args.output, "scene_build.json")
         self.assertTrue(args.fail_on_warning)
 
+    def test_unreal_preview_parser_requires_run_identity_and_directory(self):
+        args = build_parser().parse_args(
+            [
+                "unreal-render-preview",
+                "E:/Project/Project.uproject",
+                "--engine-root",
+                "E:/Unreal Engine/UE_5.7",
+                "--spec",
+                "scene.json",
+                "--assets",
+                "asset_cards.json",
+                "--run-dir",
+                "preview-001",
+                "--run-id",
+                "preview_001",
+            ]
+        )
+
+        self.assertEqual(args.run_dir, "preview-001")
+        self.assertEqual(args.run_id, "preview_001")
+        self.assertEqual(args.timeout, 600)
+
     def test_plan_parser_enables_retrieval_constraints(self):
         args = build_parser().parse_args(
             ["plan", "--prompt", "add a door", "--retrieve-assets", "4"]

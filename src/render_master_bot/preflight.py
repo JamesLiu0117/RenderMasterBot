@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha1
-from math import dist
+from math import cos, dist, radians, sin, sqrt
 from typing import Iterable
 
 from render_master_bot.contracts import EvaluationIssue, EvaluationReport
@@ -32,6 +32,18 @@ DEFAULT_PREFLIGHT_CONFIG = PreflightConfig()
 
 def _location(vector: Vector3) -> tuple[float, float, float]:
     return (vector.x, vector.y, vector.z)
+
+
+def _camera_forward(rotation: Vector3) -> tuple[float, float, float]:
+    """Return Unreal's +X camera-forward vector for the RenderSpec axis mapping."""
+
+    pitch = radians(rotation.y)
+    yaw = radians(rotation.z)
+    return (
+        cos(pitch) * cos(yaw),
+        cos(pitch) * sin(yaw),
+        sin(pitch),
+    )
 
 
 def _transform_key(transform: Transform) -> tuple[float, ...]:
@@ -186,6 +198,46 @@ def run_preflight(
                     "the camera may start inside the geometry."
                 ),
                 object_ids=[spec.camera.camera_id, *camera_collisions],
+            )
+        )
+
+    camera_forward = _camera_forward(spec.camera.transform.rotation_deg)
+    facing_dots: list[tuple[str, float]] = []
+    for item in visible_objects:
+        object_position = _location(item.transform.location_cm)
+        to_object = tuple(
+            object_axis - camera_axis
+            for object_axis, camera_axis in zip(object_position, camera_position, strict=True)
+        )
+        distance_to_object = sqrt(sum(axis * axis for axis in to_object))
+        if distance_to_object <= config.coincidence_distance_cm:
+            continue
+        facing_dots.append(
+            (
+                item.object_id,
+                sum(
+                    forward_axis * object_axis / distance_to_object
+                    for forward_axis, object_axis in zip(
+                        camera_forward,
+                        to_object,
+                        strict=True,
+                    )
+                ),
+            )
+        )
+    if facing_dots and all(dot <= 0 for _, dot in facing_dots):
+        object_ids = [object_id for object_id, _ in facing_dots]
+        issues.append(
+            _issue(
+                "visible_objects_behind_camera",
+                category="camera",
+                severity="warning",
+                confidence=0.99,
+                message=(
+                    "Every visible object pivot is behind or perpendicular to the camera's "
+                    "forward direction; the intended subjects are unlikely to appear."
+                ),
+                object_ids=[spec.camera.camera_id, *object_ids],
             )
         )
 

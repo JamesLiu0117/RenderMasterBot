@@ -16,10 +16,11 @@ The integration remains schema-gated: a language model is not allowed to run arb
 - Persistent Chroma indexing with explicit local Ollama embeddings
 - Retrieval-constrained planning that rejects assets outside the returned catalog
 - Transient Unreal scene construction for static meshes, camera, and physical lights
+- One-frame Unreal Movie Render Queue previews with terminal, artifact-hashed `RunManifest` records
 - Command-line doctor, schema, validate, preflight, Unreal, asset-index, asset-search, and plan commands
-- Standard-library unit tests for contracts, planning, and scene preflight
+- Standard-library unit tests for contracts, planning, preflight, Unreal execution, and preview orchestration
 
-Preview rendering, visual evaluation, and model fine-tuning are later milestones.
+Visual evaluation, bounded correction, and model fine-tuning are later milestones.
 
 ## Local setup
 
@@ -93,6 +94,19 @@ render-master unreal-build-scene `
   --fail-on-warning
 ```
 
+Render one offscreen PNG through Unreal Movie Render Queue and finalize a hashed run record:
+
+```powershell
+render-master unreal-render-preview `
+  "E:\OptimizationPlugin\OptimizationPlugin.uproject" `
+  --engine-root "E:\Unreal Engine\UE_5.7" `
+  --spec "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\retrieval-001\door_plan_v2.json" `
+  --assets "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\assets\optimization-plugin\asset_cards.json" `
+  --run-dir "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\preview-002" `
+  --run-id "preview_002" `
+  --fail-on-warning
+```
+
 Synchronize those cards into the local Chroma collection:
 
 ```powershell
@@ -151,6 +165,7 @@ The deterministic scene rules are documented in [docs/preflight.md](docs/preflig
 Unreal capability discovery is documented in [docs/unreal_probe.md](docs/unreal_probe.md).
 Real Asset Registry scanning is documented in [docs/unreal_assets.md](docs/unreal_assets.md).
 Transient scene execution is documented in [docs/unreal_execution.md](docs/unreal_execution.md).
+Offscreen preview runs are documented in [docs/unreal_preview.md](docs/unreal_preview.md).
 Chroma indexing and retrieval constraints are documented in [docs/retrieval.md](docs/retrieval.md).
 
 Export or validate any contract:

@@ -70,6 +70,21 @@ class SemanticPreflightTests(unittest.TestCase):
             any(issue.issue_id.startswith("camera_at_object_pivot") for issue in report.issues)
         )
 
+    def test_camera_facing_away_from_every_object_requires_review(self):
+        report = run_preflight(scene(camera={
+            "camera_id": "main_camera",
+            "transform": {
+                "location_cm": {"x": -500, "y": 0, "z": 150},
+                "rotation_deg": {"x": 0, "y": 90, "z": 0},
+            },
+        }))
+        self.assertEqual(report.verdict, "needs_review")
+        self.assertEqual(
+            report.issues[0].issue_id,
+            "visible_objects_behind_camera_main_camera_subject",
+        )
+        self.assertEqual(report.issues[0].object_ids, ["main_camera", "subject"])
+
     def test_coincident_local_lights_are_grouped(self):
         lights = [
             {

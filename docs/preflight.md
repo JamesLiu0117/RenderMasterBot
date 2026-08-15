@@ -27,6 +27,7 @@ turning subjective checks into hard failures.
 | --- | --- | --- |
 | `duplicate_asset_transform` | error | identical asset instances with identical transforms overlap exactly |
 | `camera_at_object_pivot` | warning | camera may start inside geometry |
+| `visible_objects_behind_camera` | warning | all visible object pivots are outside the camera's forward hemisphere |
 | `no_visible_objects` | warning | most render requests need a visible subject |
 | `no_explicit_lights` | warning | level lighting may exist, so this is not a hard error |
 | `zero_intensity_lights` | warning | defined lights cannot affect the image |

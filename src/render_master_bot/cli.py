@@ -24,6 +24,7 @@ from render_master_bot.schemas import contract_model, contract_schema
 from render_master_bot.settings import Settings
 from render_master_bot.unreal_assets import UnrealAssetScanError, run_unreal_asset_scan
 from render_master_bot.unreal_executor import UnrealSceneBuildError, run_unreal_scene_build
+from render_master_bot.unreal_preview import UnrealPreviewError, run_unreal_preview
 from render_master_bot.unreal_probe import UnrealProbeError, probe_unreal_project
 
 
@@ -237,6 +238,30 @@ def cmd_unreal_build_scene(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_unreal_render_preview(args: argparse.Namespace) -> int:
+    try:
+        manifest, result = run_unreal_preview(
+            args.path,
+            engine_root=args.engine_root,
+            render_spec_path=args.spec,
+            asset_catalog_path=args.assets,
+            run_directory=args.run_dir,
+            run_id=args.run_id,
+            timeout_seconds=args.timeout,
+            fail_on_warning=args.fail_on_warning,
+        )
+    except UnrealPreviewError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(
+        "UNREAL PREVIEW: "
+        f"status={manifest.status} scene={result.scene_name} "
+        f"actors={len(result.actors)} previews={len(result.preview_files)}"
+    )
+    print(f"Run directory: {Path(args.run_dir).expanduser().resolve()}")
+    return 0
+
+
 def cmd_asset_index(args: argparse.Namespace) -> int:
     settings = _settings()
     try:
@@ -438,6 +463,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="refuse to launch Unreal when semantic preflight needs review",
     )
     unreal_build.set_defaults(handler=cmd_unreal_build_scene)
+
+    unreal_preview = subparsers.add_parser(
+        "unreal-render-preview",
+        help="build a temporary scene and render one PNG with Movie Render Pipeline",
+    )
+    unreal_preview.add_argument("path", help="path to a compiled .uproject file")
+    unreal_preview.add_argument(
+        "--engine-root",
+        required=True,
+        help="Unreal installation root containing the Engine directory",
+    )
+    unreal_preview.add_argument("--spec", required=True, help="validated RenderSpec JSON file")
+    unreal_preview.add_argument(
+        "--assets",
+        required=True,
+        help="validated AssetCard JSON array used to resolve asset IDs",
+    )
+    unreal_preview.add_argument(
+        "--run-dir",
+        required=True,
+        help="new or empty directory for inputs, preview, evidence, and RunManifest",
+    )
+    unreal_preview.add_argument(
+        "--run-id",
+        required=True,
+        help="stable lowercase run identifier",
+    )
+    unreal_preview.add_argument(
+        "--timeout",
+        type=int,
+        default=600,
+        help="Unreal render timeout in seconds",
+    )
+    unreal_preview.add_argument(
+        "--fail-on-warning",
+        action="store_true",
+        help="refuse to launch Unreal when semantic preflight needs review",
+    )
+    unreal_preview.set_defaults(handler=cmd_unreal_render_preview)
 
     asset_index = subparsers.add_parser(
         "asset-index",

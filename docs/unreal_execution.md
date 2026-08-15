@@ -5,9 +5,9 @@ slice. It resolves a validated `RenderSpec` against validated `AssetCard`
 records, launches Unreal Editor headlessly, builds transient actors in the
 current Editor world, and validates structured evidence returned by Unreal.
 
-This milestone deliberately stops before image rendering. Its purpose is to
-prove that the planner-to-engine contract can create the requested engine
-objects safely and reproducibly before Movie Render Pipeline is added.
+This command deliberately stops before image rendering. Its purpose is to
+isolate planner-to-engine scene construction from Movie Render Pipeline and
+make engine object failures independently testable.
 
 ## Safety boundary
 
@@ -69,8 +69,9 @@ scanning can run without an RHI, but UE 5.7 requires a real render interface
 when the adapter creates a `CineCameraActor`; the offscreen flag keeps the run
 headless while preserving the path required by the upcoming preview renderer.
 
-## Next execution milestone
+## Preview continuation
 
-The next adapter slice will keep the transient scene alive, create a bounded
-Movie Render Pipeline job from the same camera and RenderSettings, write a
-preview image into a run directory, and emit a terminal `RunManifest`.
+`render-master unreal-render-preview` continues the same validated request into
+a one-frame Movie Render Pipeline job, writes the PNG into an isolated run
+directory, and emits a terminal `RunManifest`. See `unreal_preview.md` for its
+artifact and failure semantics.

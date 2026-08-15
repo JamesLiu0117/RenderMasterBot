@@ -74,7 +74,7 @@ def actor_record(actor, actor_id, actor_kind):
     }
 
 
-def spawn_object(actor_subsystem, value):
+def spawn_object(actor_subsystem, value, transient=True):
     asset = unreal.EditorAssetLibrary.load_asset(value["engine_path"])
     if asset is None:
         raise RuntimeError(f"asset could not be loaded: {value['engine_path']}")
@@ -88,7 +88,7 @@ def spawn_object(actor_subsystem, value):
         asset,
         vector(transform["location_cm"]),
         rotator(transform["rotation_deg"]),
-        transient=True,
+        transient=transient,
     )
     if actor is None:
         raise RuntimeError(f"Unreal could not spawn asset: {value['engine_path']}")
@@ -102,13 +102,13 @@ def spawn_object(actor_subsystem, value):
     return record
 
 
-def spawn_camera(actor_subsystem, value):
+def spawn_camera(actor_subsystem, value, transient=True, return_actor=False):
     transform = value["transform"]
     actor = actor_subsystem.spawn_actor_from_class(
         unreal.CineCameraActor,
         vector(transform["location_cm"]),
         rotator(transform["rotation_deg"]),
-        transient=True,
+        transient=transient,
     )
     if actor is None:
         raise RuntimeError("Unreal could not spawn the CineCameraActor")
@@ -122,17 +122,20 @@ def spawn_camera(actor_subsystem, value):
         focus.set_editor_property("focus_method", unreal.CameraFocusMethod.MANUAL)
         focus.set_editor_property("manual_focus_distance", float(value["focus_distance_cm"]))
         component.set_editor_property("focus_settings", focus)
-    return actor_record(actor, value["camera_id"], "camera")
+    record = actor_record(actor, value["camera_id"], "camera")
+    if return_actor:
+        return actor, record
+    return record
 
 
-def spawn_light(actor_subsystem, value):
+def spawn_light(actor_subsystem, value, transient=True):
     transform = value["transform"]
     kind = value["kind"]
     actor = actor_subsystem.spawn_actor_from_class(
         LIGHT_ACTOR_CLASSES[kind],
         vector(transform["location_cm"]),
         rotator(transform["rotation_deg"]),
-        transient=True,
+        transient=transient,
     )
     if actor is None:
         raise RuntimeError(f"Unreal could not spawn {kind} light")
@@ -209,4 +212,5 @@ def main():
         unreal.log_error(traceback.format_exc())
 
 
-main()
+if __name__ == "__main__":
+    main()
