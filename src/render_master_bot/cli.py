@@ -17,6 +17,7 @@ from render_master_bot.asset_index import (
 )
 from render_master_bot.camera_framing import CameraFramingError, frame_camera
 from render_master_bot.contracts import CONTRACT_MODELS
+from render_master_bot.correction_planner import CorrectionPlanningError, plan_correction
 from render_master_bot.models import RenderSpec
 from render_master_bot.ollama import OllamaClient, OllamaError
 from render_master_bot.planner import PlanningError, ScenePlanner
@@ -231,6 +232,59 @@ def cmd_evaluate_preview(args: argparse.Namespace) -> int:
         "PREVIEW EVALUATION: "
         f"verdict={result.report.verdict} issues={len(result.report.issues)} "
         f"model={result.response.model}"
+    )
+    return 0
+
+
+def cmd_plan_correction(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.planner_model
+    run_root = Path(args.run_dir).expanduser().resolve()
+    named_outputs = {
+        "decision": args.output,
+        "metrics": args.metrics_output,
+        "corrected_spec": args.corrected_output,
+    }
+    output_paths = {
+        name: (run_root / value).resolve()
+        for name, value in named_outputs.items()
+    }
+    try:
+        for path in output_paths.values():
+            path.relative_to(run_root)
+    except ValueError:
+        print("ERROR: correction outputs must stay inside the run directory", file=sys.stderr)
+        return 1
+    if len(set(output_paths.values())) != len(output_paths):
+        print("ERROR: correction output paths must be distinct", file=sys.stderr)
+        return 1
+    if any(path.exists() for path in output_paths.values()):
+        print("ERROR: correction output already exists; choose new output names", file=sys.stderr)
+        return 1
+    try:
+        result = plan_correction(
+            _client(settings),
+            model=model,
+            run_directory=run_root,
+            evaluation_path=args.evaluation,
+        )
+        _write_json(result.decision.model_dump(mode="json"), str(output_paths["decision"]))
+        _write_json(
+            _response_metrics(result.response, status="valid"),
+            str(output_paths["metrics"]),
+        )
+        if result.corrected_spec is not None:
+            _write_json(
+                result.corrected_spec.model_dump(mode="json"),
+                str(output_paths["corrected_spec"]),
+            )
+    except (OSError, CorrectionPlanningError, OllamaError) as exc:
+        print(f"ERROR: correction planning failed: {exc}", file=sys.stderr)
+        return 1
+    print(
+        "CORRECTION PLAN: "
+        f"outcome={result.decision.outcome} model={result.response.model} "
+        f"operations={len(result.decision.patch.operations) if result.decision.patch else 0}"
     )
     return 0
 
@@ -513,6 +567,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="run-relative model metrics output path",
     )
     evaluate_preview.set_defaults(handler=cmd_evaluate_preview)
+
+    correction = subparsers.add_parser(
+        "plan-correction",
+        help="plan a bounded RenderSpec patch or report a missing capability",
+    )
+    correction.add_argument("run_dir", help="evaluated Unreal preview run directory")
+    correction.add_argument(
+        "--evaluation",
+        default="evaluation.json",
+        help="run-relative EvaluationReport input path",
+    )
+    correction.add_argument("--model", help="override the configured correction model")
+    correction.add_argument(
+        "--output",
+        default="correction.json",
+        help="run-relative CorrectionDecision output path",
+    )
+    correction.add_argument(
+        "--metrics-output",
+        default="correction_metrics.json",
+        help="run-relative model metrics output path",
+    )
+    correction.add_argument(
+        "--corrected-output",
+        default="corrected_render_spec.json",
+        help="run-relative corrected RenderSpec output when outcome is patch",
+    )
+    correction.set_defaults(handler=cmd_plan_correction)
 
     unreal_probe = subparsers.add_parser(
         "unreal-probe",

@@ -40,6 +40,10 @@ or schema violation rejects the response. The first version intentionally does
 not accept model-generated patches. Correction planning is a separate stage so
 its operations can be validated and benchmarked independently.
 
+After evaluation, `render-master plan-correction` consumes the public report
+and emits a `CorrectionDecision`. See `correction_planning.md` for the repair
+boundary and current material limitation.
+
 ## Ollama request
 
 The REST request sends the base64 image in the user message's `images` array,

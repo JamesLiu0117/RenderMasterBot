@@ -170,6 +170,33 @@ class RenderSpecPatch(StrictModel):
     operations: list[PatchOperation] = Field(min_length=1, max_length=64)
 
 
+class CorrectionDecision(StrictModel):
+    """Auditable result of deciding whether an evaluation can be repaired safely."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    render_spec_sha256: Sha256
+    evaluation_report_sha256: Sha256
+    planner: ModelIdentity
+    outcome: Literal["patch", "unresolved"]
+    rationale: LongText
+    patch: RenderSpecPatch | None = None
+    missing_capabilities: list[ShortText] = Field(default_factory=list, max_length=16)
+
+    @model_validator(mode="after")
+    def outcome_matches_payload(self) -> "CorrectionDecision":
+        if self.outcome == "patch":
+            if self.patch is None:
+                raise ValueError("patch outcomes require a RenderSpecPatch")
+            if self.patch.base_spec_sha256 != self.render_spec_sha256:
+                raise ValueError("correction patch must target the decision RenderSpec")
+        else:
+            if self.patch is not None:
+                raise ValueError("unresolved outcomes cannot contain a patch")
+            if not self.missing_capabilities:
+                raise ValueError("unresolved outcomes require missing_capabilities")
+        return self
+
+
 class EvaluationIssue(StrictModel):
     issue_id: Identifier
     category: Literal[
@@ -307,6 +334,7 @@ CONTRACT_MODELS = {
     "technique-card": TechniqueCard,
     "asset-card": AssetCard,
     "render-spec-patch": RenderSpecPatch,
+    "correction-decision": CorrectionDecision,
     "evaluation-report": EvaluationReport,
     "capability-manifest": CapabilityManifest,
     "run-manifest": RunManifest,

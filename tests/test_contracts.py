@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from render_master_bot.contracts import (
     AssetCard,
     CapabilityManifest,
+    CorrectionDecision,
     EvaluationReport,
     PatchOperation,
     RunManifest,
@@ -47,6 +48,16 @@ class SharedContractTests(unittest.TestCase):
     def test_remove_patch_must_omit_value(self):
         with self.assertRaisesRegex(ValidationError, "must omit value"):
             PatchOperation(op="remove", path="/lights/0", value=None)
+
+    def test_unresolved_correction_requires_a_capability_gap(self):
+        with self.assertRaisesRegex(ValidationError, "missing_capabilities"):
+            CorrectionDecision(
+                render_spec_sha256=HASH_A,
+                evaluation_report_sha256=HASH_B,
+                planner={"provider": "local", "model": "repair"},
+                outcome="unresolved",
+                rationale="The contract cannot express the repair.",
+            )
 
     def test_pass_evaluation_cannot_hide_a_blocking_issue(self):
         with self.assertRaisesRegex(ValidationError, "pass verdict"):

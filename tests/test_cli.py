@@ -104,6 +104,13 @@ class CliOutputTests(unittest.TestCase):
         self.assertEqual(args.output, "evaluation.json")
         self.assertEqual(args.metrics_output, "evaluation_metrics.json")
 
+    def test_plan_correction_parser_supports_patch_or_unresolved_output(self):
+        args = build_parser().parse_args(["plan-correction", "preview-005"])
+
+        self.assertEqual(args.evaluation, "evaluation.json")
+        self.assertEqual(args.output, "correction.json")
+        self.assertEqual(args.corrected_output, "corrected_render_spec.json")
+
     def test_plan_parser_enables_retrieval_constraints(self):
         args = build_parser().parse_args(
             ["plan", "--prompt", "add a door", "--retrieve-assets", "4"]

@@ -23,6 +23,7 @@ class GenerationSchemaTests(unittest.TestCase):
             "technique-card",
             "asset-card",
             "render-spec-patch",
+            "correction-decision",
             "evaluation-report",
             "capability-manifest",
             "run-manifest",

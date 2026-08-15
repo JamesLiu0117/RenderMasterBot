@@ -19,17 +19,18 @@ The integration remains schema-gated: a language model is not allowed to run arb
 - Transient Unreal scene construction for static meshes, camera, and physical lights
 - One-frame Unreal Movie Render Queue previews with terminal, artifact-hashed `RunManifest` records
 - Verified local Qwen preview evaluation with strict, evidence-linked `EvaluationReport` output
-- Command-line doctor, schema, validate, preflight, Unreal, asset-index, asset-search, and plan commands
+- Bounded local correction planning that emits a validated patch or an explicit capability gap
+- Command-line doctor, schema, validate, preflight, Unreal, retrieval, planning, evaluation, and correction commands
 - Standard-library unit tests for contracts, planning, preflight, Unreal execution, and preview orchestration
 
-Bounded correction and model fine-tuning are later milestones.
+Material assignment, iterative rerendering, and model fine-tuning are later milestones.
 
 ## Local setup
 
 Create the virtual environment outside this repository if desired, then install this package in editable mode:
 
 ```powershell
-& "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\.venv\Scripts\python.exe" -m pip install -e "E:\RenderBot\RenderMasterBot"
+& "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\.venv\Scripts\python.exe" -m pip install -e "E:\RenderBot\RenderMasterBot[dev]"
 ```
 
 Verify the local Ollama server:
@@ -116,6 +117,9 @@ render-master unreal-render-preview `
 
 render-master evaluate-preview `
   "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\preview-005"
+
+render-master plan-correction `
+  "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\preview-005"
 ```
 
 Synchronize those cards into the local Chroma collection:
@@ -167,7 +171,7 @@ C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data
 ## Run tests
 
 ```powershell
-python -m unittest discover -s tests -v
+python -m pytest -q
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the design boundaries and next milestones.
@@ -179,6 +183,7 @@ Real Asset Registry scanning is documented in [docs/unreal_assets.md](docs/unrea
 Transient scene execution is documented in [docs/unreal_execution.md](docs/unreal_execution.md).
 Offscreen preview runs are documented in [docs/unreal_preview.md](docs/unreal_preview.md).
 Local vision evaluation is documented in [docs/visual_evaluation.md](docs/visual_evaluation.md).
+Bounded correction planning is documented in [docs/correction_planning.md](docs/correction_planning.md).
 Chroma indexing and retrieval constraints are documented in [docs/retrieval.md](docs/retrieval.md).
 
 Export or validate any contract:

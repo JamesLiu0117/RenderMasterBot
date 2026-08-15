@@ -12,14 +12,18 @@ strict shared contracts:
 
 The planning model is not an unrestricted automation agent. It returns a
 `RenderSpec`; a deterministic renderer adapter decides how that specification
-maps to Unreal Engine APIs. A separate vision model evaluates preview renders
-and may propose a `RenderSpecPatch`.
+maps to Unreal Engine APIs. A separate vision model evaluates preview renders.
+The text planner then either proposes a host-validated `RenderSpecPatch` or
+records a missing capability.
 
 ```text
 knowledge + assets -> gpt-oss planner -> RenderSpec -> strict validation -> Unreal
                                              ^                              |
                                              |                              v
-                                      validated patch <- EvaluationReport <- evidence
+                                      validated patch <- correction <- EvaluationReport
+                                                               |
+                                                               v
+                                                        capability gap
 ```
 
 ## Why schema-first
@@ -42,7 +46,7 @@ Ollama's embedding endpoint explicitly instead of allowing Chroma to choose or
 download a default embedding function. The collection records its embedding
 model identity and rejects attempts to query it with a different model.
 
-See `contracts.md` for the seven public JSON boundaries used by both tracks.
+See `contracts.md` for the eight public JSON boundaries used by both tracks.
 
 ## Next milestones
 
@@ -58,12 +62,14 @@ See `contracts.md` for the seven public JSON boundaries used by both tracks.
    `RenderSpecPatch`.~~
 8. ~~Connect Qwen preview evaluation to strict, evidence-linked
    `EvaluationReport` output.~~
-9. Generate and apply a bounded correction `RenderSpecPatch`, then rerender and
-   compare evaluation results.
+9. ~~Generate a bounded correction decision that either applies a validated
+   `RenderSpecPatch` or reports an explicit capability gap.~~
+10. Add material retrieval and assignment to both the shared contract and Unreal
+    adapter, then rerender the first failed preview and compare evaluations.
 
 ## Default model roles
 
-- `gpt-oss:20b`: text planning, structured RenderSpec generation, and later correction planning.
+- `gpt-oss:20b`: text planning, structured RenderSpec generation, and correction planning.
 - `qwen3.5:9b`: preview-image inspection and structured visual findings.
 - `qwen3-embedding:0.6b`: multilingual AssetCard indexing and semantic retrieval.
 
