@@ -17,7 +17,7 @@ from render_master_bot.asset_index import (
     open_persistent_asset_index,
 )
 from render_master_bot.camera_framing import VIEW_AXES, CameraFramingError, frame_camera
-from render_master_bot.contracts import CONTRACT_MODELS, RenderSpecPatch
+from render_master_bot.contracts import CONTRACT_MODELS, RenderSpecPatch, VisualBenchmarkSuite
 from render_master_bot.correction_planner import CorrectionPlanningError, plan_correction
 from render_master_bot.models import RenderSpec
 from render_master_bot.ollama import OllamaClient, OllamaError
@@ -34,6 +34,7 @@ from render_master_bot.unreal_materials import (
 )
 from render_master_bot.unreal_preview import UnrealPreviewError, run_unreal_preview
 from render_master_bot.unreal_probe import UnrealProbeError, probe_unreal_project
+from render_master_bot.visual_benchmark import VisualBenchmarkError, run_visual_benchmark
 from render_master_bot.visual_evaluator import VisualEvaluationError, evaluate_preview_run
 
 
@@ -278,6 +279,41 @@ def cmd_evaluate_preview(args: argparse.Namespace) -> int:
         f"model={result.response.model}"
     )
     return 0
+
+
+def cmd_benchmark_evaluator(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.vision_model
+    suite_path = Path(args.path).expanduser().resolve()
+    output_path = Path(args.output).expanduser().resolve()
+    if suite_path == output_path:
+        print("ERROR: benchmark suite and output paths must be distinct", file=sys.stderr)
+        return 1
+    if output_path.exists():
+        print("ERROR: benchmark output already exists; choose a new path", file=sys.stderr)
+        return 1
+    try:
+        suite = VisualBenchmarkSuite.model_validate_json(
+            suite_path.read_text(encoding="utf-8-sig")
+        )
+        report = run_visual_benchmark(
+            _client(settings, num_ctx=settings.vision_num_ctx),
+            model=model,
+            suite=suite,
+            suite_root=suite_path.parent,
+        )
+        _write_json(report.model_dump(mode="json"), str(output_path))
+    except (OSError, ValidationError, VisualBenchmarkError, OllamaError) as exc:
+        print(f"ERROR: visual evaluator benchmark failed: {exc}", file=sys.stderr)
+        return 1
+    print(
+        "VISUAL BENCHMARK: "
+        f"passed={report.passed_case_count}/{report.case_count} "
+        f"accuracy={report.case_accuracy:.3f} "
+        f"stability={report.verdict_stability:.3f} "
+        f"contradictions={report.contradiction_count} model={report.evaluator.model}"
+    )
+    return 0 if report.passed else 2
 
 
 def cmd_plan_correction(args: argparse.Namespace) -> int:
@@ -666,6 +702,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="run-relative model metrics output path",
     )
     evaluate_preview.set_defaults(handler=cmd_evaluate_preview)
+
+    benchmark_evaluator = subparsers.add_parser(
+        "benchmark-evaluator",
+        help="benchmark the vision evaluator on labeled, verified Unreal preview runs",
+    )
+    benchmark_evaluator.add_argument("path", help="VisualBenchmarkSuite JSON file")
+    benchmark_evaluator.add_argument("--model", help="override the configured vision model")
+    benchmark_evaluator.add_argument(
+        "--output",
+        "-o",
+        required=True,
+        help="write the VisualBenchmarkReport JSON file",
+    )
+    benchmark_evaluator.set_defaults(handler=cmd_benchmark_evaluator)
 
     correction = subparsers.add_parser(
         "plan-correction",

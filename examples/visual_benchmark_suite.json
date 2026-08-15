@@ -1,0 +1,33 @@
+{
+  "schema_version": "0.1",
+  "suite_id": "product_preview_smoke",
+  "description": "Example labeled suite for repeatable visual evaluator checks.",
+  "repetitions": 2,
+  "cases": [
+    {
+      "case_id": "approved_product",
+      "description": "A verified product preview that should be accepted.",
+      "run_directory": "runs/approved-product",
+      "expectation": {
+        "accepted_verdicts": [
+          "pass"
+        ],
+        "required_issue_categories": [],
+        "forbidden_issue_categories": [
+          "geometry"
+        ],
+        "image_metrics": [
+          {
+            "metric": "foreground_fraction",
+            "minimum": 0.1,
+            "maximum": 0.8
+          },
+          {
+            "metric": "clipped_pixel_fraction",
+            "maximum": 0.05
+          }
+        ]
+      }
+    }
+  ]
+}

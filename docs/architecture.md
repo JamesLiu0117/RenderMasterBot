@@ -71,9 +71,12 @@ See `contracts.md` for the eight public JSON boundaries used by both tracks.
 12. ~~Add explicit exposure control and semantic product-view camera constraints,
     then rerun the wood-material correction until the visual evaluator passes or
     reports a narrower asset/geometry capability gap.~~
-13. Benchmark the dedicated vision evaluator on a small render suite, then add
+13. ~~Benchmark the dedicated vision evaluator on a small render suite, then add
     deterministic image statistics or a second-model review for contradictory
-    high-severity findings.
+    high-severity findings.~~
+14. Add a bounded end-to-end orchestration command that runs retrieval,
+    planning, preflight, Unreal preview, evaluation, correction, and comparison
+    with explicit iteration and stop limits.
 
 ## Default model roles
 

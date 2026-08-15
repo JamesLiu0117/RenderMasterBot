@@ -25,6 +25,8 @@ class GenerationSchemaTests(unittest.TestCase):
             "render-spec-patch",
             "correction-decision",
             "evaluation-report",
+            "visual-benchmark-suite",
+            "visual-benchmark-report",
             "capability-manifest",
             "run-manifest",
         ):

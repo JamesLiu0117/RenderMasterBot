@@ -84,6 +84,8 @@ correction records, and a reproducible run manifest.
 - One-frame Unreal Movie Render Queue previews with terminal, artifact-hashed `RunManifest` records
 - Verified local Qwen preview evaluation with strict, evidence-linked `EvaluationReport` output
 - Verified Qwen3-VL material evaluation after fixed-exposure, top-down UE 5.7 rerender
+- Repeatable visual evaluator benchmarking with frozen labels, deterministic PNG evidence, stability scoring, and contradiction detection
+- First real four-case Qwen3-VL benchmark: 8/8 valid responses, 1.000 verdict stability, 0.750 case accuracy, and one preserved hard-negative contradiction
 - Bounded local correction planning that emits a validated patch or an explicit capability gap
 - Command-line doctor, schema, validate, preflight, Unreal, retrieval, planning, evaluation, and correction commands
 - Standard-library unit tests for contracts, planning, preflight, Unreal execution, and preview orchestration
@@ -210,6 +212,10 @@ render-master unreal-render-preview `
 render-master evaluate-preview `
   "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\preview-005"
 
+render-master benchmark-evaluator `
+  "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\visual_benchmark_suite_v1.json" `
+  --output "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\visual_benchmark_qwen3vl_v1.json"
+
 render-master plan-correction `
   "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\runs\preview-005"
 ```
@@ -280,6 +286,7 @@ Automated PBR material import is documented in [docs/unreal_materials.md](docs/u
 Transient scene execution is documented in [docs/unreal_execution.md](docs/unreal_execution.md).
 Offscreen preview runs are documented in [docs/unreal_preview.md](docs/unreal_preview.md).
 Local vision evaluation is documented in [docs/visual_evaluation.md](docs/visual_evaluation.md).
+Visual evaluator accuracy and stability benchmarking is documented in [docs/visual_benchmark.md](docs/visual_benchmark.md).
 Bounded correction planning is documented in [docs/correction_planning.md](docs/correction_planning.md).
 Chroma indexing and retrieval constraints are documented in [docs/retrieval.md](docs/retrieval.md).
 

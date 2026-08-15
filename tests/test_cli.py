@@ -163,6 +163,18 @@ class CliOutputTests(unittest.TestCase):
         self.assertEqual(args.output, "evaluation.json")
         self.assertEqual(args.metrics_output, "evaluation_metrics.json")
 
+    def test_benchmark_evaluator_parser_requires_a_report_output(self):
+        args = build_parser().parse_args([
+            "benchmark-evaluator",
+            "visual_suite.json",
+            "--output",
+            "benchmark_report.json",
+        ])
+
+        self.assertEqual(args.path, "visual_suite.json")
+        self.assertEqual(args.output, "benchmark_report.json")
+        self.assertIsNone(args.model)
+
     def test_plan_correction_parser_supports_patch_or_unresolved_output(self):
         args = build_parser().parse_args(["plan-correction", "preview-005"])
 

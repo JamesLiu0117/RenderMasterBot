@@ -11,6 +11,7 @@ from render_master_bot.contracts import (
     PatchOperation,
     RunManifest,
     TechniqueCard,
+    VisualBenchmarkSuite,
 )
 from render_master_bot.serialization import canonical_sha256
 
@@ -105,6 +106,39 @@ class SharedContractTests(unittest.TestCase):
             summary="No semantic rule violations were detected.",
         )
         self.assertEqual(report.preview_paths, [])
+
+    def test_visual_benchmark_rejects_parent_run_paths(self):
+        with self.assertRaisesRegex(ValidationError, "parent segments"):
+            VisualBenchmarkSuite.model_validate({
+                "suite_id": "unsafe_suite",
+                "description": "A suite whose run escapes its portable data root.",
+                "cases": [{
+                    "case_id": "unsafe_case",
+                    "description": "This path must not be accepted.",
+                    "run_directory": "../runs/preview-001",
+                    "expectation": {"accepted_verdicts": ["fail"]},
+                }],
+            })
+
+    def test_visual_benchmark_metric_range_must_be_ordered(self):
+        with self.assertRaisesRegex(ValidationError, "minimum cannot exceed"):
+            VisualBenchmarkSuite.model_validate({
+                "suite_id": "bad_thresholds",
+                "description": "A suite with an impossible deterministic metric range.",
+                "cases": [{
+                    "case_id": "bad_case",
+                    "description": "The range is intentionally reversed.",
+                    "run_directory": "runs/preview-001",
+                    "expectation": {
+                        "accepted_verdicts": ["fail"],
+                        "image_metrics": [{
+                            "metric": "mean_luminance",
+                            "minimum": 0.8,
+                            "maximum": 0.2,
+                        }],
+                    },
+                }],
+            })
 
     def test_terminal_run_requires_finished_at(self):
         with self.assertRaisesRegex(ValidationError, "require finished_at"):

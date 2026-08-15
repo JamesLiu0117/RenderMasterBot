@@ -6,6 +6,7 @@ between probabilistic model output and deterministic renderer code.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -13,6 +14,7 @@ from pydantic import AfterValidator, Field, JsonValue, model_validator
 
 from render_master_bot.models import (
     Identifier,
+    NonNegativeFiniteFloat,
     PositiveFiniteFloat,
     RenderSpec,
     StrictModel,
@@ -247,6 +249,274 @@ class EvaluationReport(StrictModel):
         return self
 
 
+class ImageMetricExpectation(StrictModel):
+    """Accepted range for one deterministic image statistic."""
+
+    metric: Literal[
+        "mean_luminance",
+        "luminance_stddev",
+        "p05_luminance",
+        "p95_luminance",
+        "dark_pixel_fraction",
+        "clipped_pixel_fraction",
+        "foreground_fraction",
+        "center_luminance",
+        "border_luminance",
+    ]
+    minimum: UnitFloat | None = None
+    maximum: UnitFloat | None = None
+
+    @model_validator(mode="after")
+    def range_is_bounded(self) -> "ImageMetricExpectation":
+        if self.minimum is None and self.maximum is None:
+            raise ValueError("image metric expectations require a minimum or maximum")
+        if (
+            self.minimum is not None
+            and self.maximum is not None
+            and self.minimum > self.maximum
+        ):
+            raise ValueError("image metric expectation minimum cannot exceed maximum")
+        return self
+
+
+class VisualBenchmarkExpectation(StrictModel):
+    """Human-owned ground truth for one visual evaluator benchmark case."""
+
+    accepted_verdicts: list[Literal["pass", "needs_review", "fail"]] = Field(
+        min_length=1,
+        max_length=3,
+    )
+    required_issue_categories: list[
+        Literal[
+            "asset",
+            "camera",
+            "composition",
+            "geometry",
+            "lighting",
+            "material",
+            "render_quality",
+            "performance",
+            "other",
+        ]
+    ] = Field(default_factory=list, max_length=9)
+    forbidden_issue_categories: list[
+        Literal[
+            "asset",
+            "camera",
+            "composition",
+            "geometry",
+            "lighting",
+            "material",
+            "render_quality",
+            "performance",
+            "other",
+        ]
+    ] = Field(default_factory=list, max_length=9)
+    image_metrics: list[ImageMetricExpectation] = Field(default_factory=list, max_length=16)
+
+    @model_validator(mode="after")
+    def labels_are_unambiguous(self) -> "VisualBenchmarkExpectation":
+        if len(self.accepted_verdicts) != len(set(self.accepted_verdicts)):
+            raise ValueError("accepted benchmark verdicts must be unique")
+        required = set(self.required_issue_categories)
+        forbidden = set(self.forbidden_issue_categories)
+        if len(required) != len(self.required_issue_categories):
+            raise ValueError("required benchmark issue categories must be unique")
+        if len(forbidden) != len(self.forbidden_issue_categories):
+            raise ValueError("forbidden benchmark issue categories must be unique")
+        if overlap := sorted(required & forbidden):
+            raise ValueError(
+                "benchmark issue categories cannot be both required and forbidden: "
+                + ", ".join(overlap)
+            )
+        metrics = [item.metric for item in self.image_metrics]
+        if len(metrics) != len(set(metrics)):
+            raise ValueError("benchmark image metric expectations must be unique")
+        return self
+
+
+class VisualBenchmarkCase(StrictModel):
+    case_id: Identifier
+    description: ShortText
+    run_directory: RelativeArtifactPath
+    expectation: VisualBenchmarkExpectation
+
+
+class VisualBenchmarkSuite(StrictModel):
+    """Portable collection of labeled, completed Unreal preview runs."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    suite_id: Identifier
+    description: LongText
+    repetitions: Annotated[int, Field(ge=1, le=5)] = 1
+    cases: list[VisualBenchmarkCase] = Field(min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def cases_are_unique(self) -> "VisualBenchmarkSuite":
+        case_ids = [case.case_id for case in self.cases]
+        if len(case_ids) != len(set(case_ids)):
+            raise ValueError("visual benchmark case IDs must be unique")
+        run_directories = [case.run_directory.casefold() for case in self.cases]
+        if len(run_directories) != len(set(run_directories)):
+            raise ValueError("visual benchmark run directories must be unique")
+        return self
+
+
+class ImageStatistics(StrictModel):
+    """Deterministic pixel evidence extracted from one verified preview PNG."""
+
+    sha256: Sha256
+    width_px: Annotated[int, Field(gt=0, le=16384)]
+    height_px: Annotated[int, Field(gt=0, le=16384)]
+    sampled_pixels: Annotated[int, Field(gt=0)]
+    mean_luminance: UnitFloat
+    luminance_stddev: UnitFloat
+    p05_luminance: UnitFloat
+    p95_luminance: UnitFloat
+    dark_pixel_fraction: UnitFloat
+    clipped_pixel_fraction: UnitFloat
+    foreground_fraction: UnitFloat
+    center_luminance: UnitFloat
+    border_luminance: UnitFloat
+    blank_like: bool
+    underexposed_like: bool
+    overexposed_like: bool
+
+
+class VisualBenchmarkObservation(StrictModel):
+    repetition: Annotated[int, Field(ge=1, le=5)]
+    status: Literal["valid", "invalid"]
+    duration_seconds: NonNegativeFiniteFloat
+    report: EvaluationReport | None = None
+    error: LongText | None = None
+    verdict_matched: bool | None = None
+    required_categories_matched: bool | None = None
+    forbidden_categories_absent: bool | None = None
+
+    @model_validator(mode="after")
+    def status_matches_payload(self) -> "VisualBenchmarkObservation":
+        checks = (
+            self.verdict_matched,
+            self.required_categories_matched,
+            self.forbidden_categories_absent,
+        )
+        if self.status == "valid":
+            if (
+                self.report is None
+                or self.error is not None
+                or any(value is None for value in checks)
+            ):
+                raise ValueError("valid benchmark observations require a report and match results")
+        elif (
+            self.report is not None
+            or self.error is None
+            or any(value is not None for value in checks)
+        ):
+            raise ValueError("invalid benchmark observations require only an error")
+        return self
+
+
+class VisualBenchmarkCaseResult(StrictModel):
+    case_id: Identifier
+    run_directory: RelativeArtifactPath
+    image_statistics: ImageStatistics
+    image_expectation_failures: list[LongText] = Field(default_factory=list, max_length=32)
+    observations: list[VisualBenchmarkObservation] = Field(min_length=1, max_length=5)
+    verdict_stable: bool
+    contradictions: list[LongText] = Field(default_factory=list, max_length=32)
+    passed: bool
+
+    @model_validator(mode="after")
+    def passed_matches_evidence(self) -> "VisualBenchmarkCaseResult":
+        observations_passed = all(
+            observation.status == "valid"
+            and observation.verdict_matched
+            and observation.required_categories_matched
+            and observation.forbidden_categories_absent
+            for observation in self.observations
+        )
+        expected = (
+            not self.image_expectation_failures
+            and self.verdict_stable
+            and observations_passed
+        )
+        if self.passed != expected:
+            raise ValueError("benchmark case passed flag does not match its evidence")
+        return self
+
+
+class VisualBenchmarkReport(StrictModel):
+    """Auditable accuracy, stability, and contradiction summary for one model."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    suite_id: Identifier
+    suite_sha256: Sha256
+    evaluator: ModelIdentity
+    completed_at: datetime
+    case_count: Annotated[int, Field(gt=0, le=64)]
+    passed_case_count: Annotated[int, Field(ge=0, le=64)]
+    observation_count: Annotated[int, Field(gt=0, le=320)]
+    valid_observation_count: Annotated[int, Field(ge=0, le=320)]
+    case_accuracy: UnitFloat
+    verdict_stability: UnitFloat
+    contradiction_count: Annotated[int, Field(ge=0)]
+    total_duration_seconds: NonNegativeFiniteFloat
+    cases: list[VisualBenchmarkCaseResult] = Field(min_length=1, max_length=64)
+    passed: bool
+
+    @model_validator(mode="after")
+    def summary_matches_cases(self) -> "VisualBenchmarkReport":
+        if self.case_count != len(self.cases):
+            raise ValueError("benchmark case_count does not match cases")
+        if self.passed_case_count != sum(case.passed for case in self.cases):
+            raise ValueError("benchmark passed_case_count does not match cases")
+        observed = sum(len(case.observations) for case in self.cases)
+        if self.observation_count != observed:
+            raise ValueError("benchmark observation_count does not match cases")
+        valid = sum(
+            observation.status == "valid"
+            for case in self.cases
+            for observation in case.observations
+        )
+        if self.valid_observation_count != valid:
+            raise ValueError("benchmark valid_observation_count does not match cases")
+        contradictions = sum(len(case.contradictions) for case in self.cases)
+        if self.contradiction_count != contradictions:
+            raise ValueError("benchmark contradiction_count does not match cases")
+        expected_accuracy = self.passed_case_count / self.case_count
+        if not math.isclose(
+            self.case_accuracy,
+            expected_accuracy,
+            rel_tol=0,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("benchmark case_accuracy does not match cases")
+        stable_cases = sum(case.verdict_stable for case in self.cases)
+        expected_stability = stable_cases / self.case_count
+        if not math.isclose(
+            self.verdict_stability,
+            expected_stability,
+            rel_tol=0,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("benchmark verdict_stability does not match cases")
+        expected_duration = sum(
+            observation.duration_seconds
+            for case in self.cases
+            for observation in case.observations
+        )
+        if not math.isclose(
+            self.total_duration_seconds,
+            expected_duration,
+            rel_tol=0,
+            abs_tol=1e-9,
+        ):
+            raise ValueError("benchmark total_duration_seconds does not match observations")
+        if self.passed != (self.passed_case_count == self.case_count):
+            raise ValueError("benchmark passed flag does not match cases")
+        return self
+
+
 class CapabilityEvidence(StrictModel):
     """Auditable evidence supporting one capability assertion."""
 
@@ -336,6 +606,8 @@ CONTRACT_MODELS = {
     "render-spec-patch": RenderSpecPatch,
     "correction-decision": CorrectionDecision,
     "evaluation-report": EvaluationReport,
+    "visual-benchmark-suite": VisualBenchmarkSuite,
+    "visual-benchmark-report": VisualBenchmarkReport,
     "capability-manifest": CapabilityManifest,
     "run-manifest": RunManifest,
 }

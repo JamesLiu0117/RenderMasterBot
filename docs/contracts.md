@@ -12,11 +12,13 @@ these strict models. Unknown fields are rejected.
 | `RenderSpecPatch` | evaluator or human | patch validator | bounded correction proposal |
 | `EvaluationReport` | visual/rule evaluator | repair planner/benchmark | findings and verdict |
 | `CorrectionDecision` | repair planner | orchestrator/auditor | bounded patch or capability gap |
+| `VisualBenchmarkSuite` | human/dataset curator | benchmark runner | frozen evaluator ground truth |
+| `VisualBenchmarkReport` | benchmark runner | auditor/dataset builder | accuracy, stability, and contradictions |
 | `CapabilityManifest` | Unreal project probe | planner/adapter | observed engine capabilities |
 | `RunManifest` | orchestration layer | dataset builder/auditor | reproducible run evidence |
 
 Although the early planning note called these "six contracts," the actual
-boundary now contains eight top-level contracts. `CorrectionDecision` is kept
+boundary now contains ten top-level contracts. `CorrectionDecision` is kept
 separate from `EvaluationReport` so visual observation and executable repair
 remain independently testable.
 
@@ -38,6 +40,8 @@ remain independently testable.
   forbids one and must name at least one missing capability.
 - For local vision evaluation, the model produces subjective findings only;
   the host owns the model identity, RenderSpec hash, stage, and evidence paths.
+- Visual benchmark labels, suite identity, PNG statistics, and model-match
+  decisions are host-owned; the vision model cannot write its own score.
 - Patch application rechecks the base hash, applies only the bounded JSON Patch
   subset, and validates the complete resulting `RenderSpec` before use.
 - Artifact paths are run-relative and portable; absolute and parent paths are
@@ -54,6 +58,7 @@ render-master schema capability-manifest -o capability.schema.json
 render-master validate examples/asset_card.json --contract asset-card
 render-master validate examples/run_manifest.json --contract run-manifest
 render-master validate correction.json --contract correction-decision
+render-master validate visual_suite.json --contract visual-benchmark-suite
 ```
 
 `render-master schema` and `render-master validate` default to `render-spec`,

@@ -10,7 +10,11 @@ from render_master_bot.contracts import RunManifest
 from render_master_bot.models import RenderSpec
 from render_master_bot.ollama import StructuredResponse
 from render_master_bot.serialization import canonical_sha256
-from render_master_bot.visual_evaluator import VisualEvaluationError, evaluate_preview_run
+from render_master_bot.visual_evaluator import (
+    SYSTEM_PROMPT,
+    VisualEvaluationError,
+    evaluate_preview_run,
+)
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\nverified-preview"
@@ -93,6 +97,11 @@ def valid_draft(**overrides) -> str:
 
 
 class VisualEvaluatorTests(unittest.TestCase):
+    def test_system_prompt_requires_all_visible_constraints_before_pass(self):
+        self.assertIn("every non-excluded visible requirement", SYSTEM_PROMPT)
+        self.assertIn("wrong requested view", SYSTEM_PROMPT)
+        self.assertIn("rather than assuming", SYSTEM_PROMPT)
+
     def test_host_verifies_evidence_and_owns_report_identity_fields(self):
         with tempfile.TemporaryDirectory() as directory:
             run_root, spec = prepare_run(Path(directory))

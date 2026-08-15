@@ -33,6 +33,11 @@ Do not claim to see hidden geometry, metadata, intent, or materials that are not
 Treat evaluation scope and exclusions stated in source_prompt as binding. Do not report an excluded
 feature unless it prevents evaluation of an in-scope requirement. Inspect the complete frame,
 including its center, before declaring the image blank, black, or missing all geometry.
+Before returning pass, check every non-excluded visible requirement in source_prompt independently.
+One correct property does not excuse a wrong requested view, framing, material color, texture,
+lighting response, or composition. A pass means all visible in-scope requirements are satisfied.
+Judge those properties from the image rather than assuming they are correct from RenderSpec
+metadata.
 Use stable lowercase snake_case issue IDs and only the supplied scene object IDs.
 Use blocking or error only when the requested result is unusable, absent, or clearly wrong.
 Use warning for visible quality defects that permit another correction pass.
@@ -105,6 +110,13 @@ class PreviewEvaluationResult:
     response: StructuredResponse
 
 
+@dataclass(frozen=True, slots=True)
+class PreviewRunEvidence:
+    spec: RenderSpec
+    preview_path: str
+    image_bytes: bytes
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -144,7 +156,9 @@ def _verified_artifact(run_root: Path, artifact: ArtifactRecord) -> Path:
     return path
 
 
-def _load_run_evidence(run_directory: str | Path) -> tuple[RenderSpec, str, bytes]:
+def load_preview_run_evidence(run_directory: str | Path) -> PreviewRunEvidence:
+    """Load and hash-verify the RenderSpec and PNG for one successful preview run."""
+
     run_root = Path(run_directory).expanduser().resolve()
     manifest_path = run_root / "run_manifest.json"
     try:
@@ -182,7 +196,11 @@ def _load_run_evidence(run_directory: str | Path) -> tuple[RenderSpec, str, byte
         raise VisualEvaluationError(
             f"beauty_preview exceeds the {MAX_PREVIEW_BYTES} byte safety limit"
         )
-    return spec, preview_artifact.path, image_bytes
+    return PreviewRunEvidence(
+        spec=spec,
+        preview_path=preview_artifact.path,
+        image_bytes=image_bytes,
+    )
 
 
 def evaluate_preview_run(
@@ -193,7 +211,10 @@ def evaluate_preview_run(
 ) -> PreviewEvaluationResult:
     """Evaluate one verified beauty preview and build a host-owned report envelope."""
 
-    spec, preview_path, image_bytes = _load_run_evidence(run_directory)
+    evidence = load_preview_run_evidence(run_directory)
+    spec = evidence.spec
+    preview_path = evidence.preview_path
+    image_bytes = evidence.image_bytes
     schema = ollama_model_schema(VisualEvaluationDraft)
     scene_ids = [item.object_id for item in spec.objects]
     scene_ids.append(spec.camera.camera_id)
