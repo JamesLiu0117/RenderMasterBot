@@ -5,6 +5,7 @@ from pathlib import Path
 
 from render_master_bot.asset_index import (
     AssetIndexError,
+    AssetSearchHit,
     asset_document,
     load_asset_card_catalog,
     open_persistent_asset_index,
@@ -58,6 +59,31 @@ class AssetIndexTests(unittest.TestCase):
         self.assertIn("静态网格", document)
         self.assertIn("/Game/Props/SM_Door", document)
 
+    def test_planner_context_includes_material_slot_evidence(self):
+        value = AssetCard(
+            asset_id="sm_door",
+            engine_path="/Game/Props/SM_Door",
+            display_name="SM_Door",
+            asset_type="static_mesh",
+            description="A product door mesh.",
+            material_slots=["DoorSurface"],
+        )
+        hit = AssetSearchHit(
+            rank=1,
+            asset_id=value.asset_id,
+            display_name=value.display_name,
+            asset_type=value.asset_type,
+            engine_path=value.engine_path,
+            distance=0.1,
+            similarity=0.9,
+            document=asset_document(value),
+        )
+
+        context = hit.planner_context()
+
+        self.assertIn("Description: A product door mesh.", context)
+        self.assertIn("Material slots: DoorSurface", context)
+
     def test_real_chroma_sync_search_and_stale_deletion(self):
         with tempfile.TemporaryDirectory() as directory:
             first = [
@@ -106,6 +132,38 @@ class AssetIndexTests(unittest.TestCase):
                     )
             finally:
                 first.close()
+
+    def test_search_can_be_restricted_to_assignable_materials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            values = [
+                card("sm_door", "SM_Door", "static_mesh", "/Game/Props/SM_Door"),
+                card("m_grid", "M_Grid", "material", "/Game/Materials/M_Grid"),
+            ]
+            with open_persistent_asset_index(
+                directory,
+                SemanticFakeEmbedder(),
+                embedding_model="fake-embedding",
+                collection_name="typed_search",
+            ) as index:
+                index.sync(values)
+                hits = index.search("door material", asset_types=["material"])
+
+            self.assertEqual([hit.asset_id for hit in hits], ["m_grid"])
+            self.assertTrue(all(hit.asset_type == "material" for hit in hits))
+
+    def test_search_rejects_unknown_asset_types(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with open_persistent_asset_index(
+                directory,
+                SemanticFakeEmbedder(),
+                embedding_model="fake-embedding",
+                collection_name="invalid_type_search",
+            ) as index:
+                index.sync([
+                    card("sm_door", "SM_Door", "static_mesh", "/Game/Props/SM_Door")
+                ])
+                with self.assertRaisesRegex(AssetIndexError, "unknown asset types"):
+                    index.search("door", asset_types=["material_function"])
 
 
 if __name__ == "__main__":

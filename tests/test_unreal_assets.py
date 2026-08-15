@@ -52,6 +52,8 @@ class UnrealAssetConversionTests(unittest.TestCase):
             "StaticMesh": "static_mesh",
             "SkeletalMesh": "skeletal_mesh",
             "MaterialInstanceConstant": "material",
+            "MaterialFunction": "other",
+            "MaterialParameterCollection": "other",
             "Texture2D": "texture",
             "AnimSequence": "animation",
             "WidgetBlueprint": "blueprint",

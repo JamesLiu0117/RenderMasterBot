@@ -30,7 +30,7 @@ def class_group(name):
         return "static_mesh"
     if compact == "skeletalmesh":
         return "skeletal_mesh"
-    if "material" in compact:
+    if compact == "material" or compact.startswith("materialinstance"):
         return "material"
     if "texture" in compact:
         return "texture"

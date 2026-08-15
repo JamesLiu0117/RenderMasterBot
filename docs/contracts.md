@@ -25,6 +25,8 @@ remain independently testable.
 - Every model uses `extra="forbid"`; invented keys fail validation.
 - `RenderSpecPatch` can modify only scene content (`objects`, `camera`,
   `lights`, `render`, and `notes`). It cannot rewrite contract metadata.
+- Object material assignments reference catalog asset IDs and named mesh slots;
+  raw Unreal paths never cross the public planner boundary.
 - A `pass` evaluation cannot contain an error or blocking issue.
 - Preflight evaluation can run before an image exists; preview and final
   evaluation must point to at least one rendered image.

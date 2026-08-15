@@ -11,6 +11,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from render_master_bot.asset_index import (
+    ASSET_TYPES,
     AssetIndexError,
     load_asset_card_catalog,
     open_persistent_asset_index,
@@ -411,7 +412,11 @@ def cmd_asset_search(args: argparse.Namespace) -> int:
     settings = _settings()
     try:
         with _asset_index(settings) as index:
-            hits = index.search(args.query, limit=args.limit)
+            hits = index.search(
+                args.query,
+                limit=args.limit,
+                asset_types=args.asset_type,
+            )
     except (AssetIndexError, OllamaError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -429,13 +434,18 @@ def cmd_plan(args: argparse.Namespace) -> int:
     planner = ScenePlanner(_client(settings))
     asset_ids = list(dict.fromkeys(args.asset))
     asset_context = [f"{asset_id}: explicitly allowed by CLI" for asset_id in asset_ids]
-    if args.retrieve_assets:
+    if args.retrieve_assets or args.retrieve_materials:
         try:
             with _asset_index(settings) as index:
-                hits = index.search(
-                    args.prompt,
-                    limit=args.retrieve_assets,
-                )
+                hits = []
+                if args.retrieve_assets:
+                    hits.extend(index.search(args.prompt, limit=args.retrieve_assets))
+                if args.retrieve_materials:
+                    hits.extend(index.search(
+                        args.prompt,
+                        limit=args.retrieve_materials,
+                        asset_types=["material"],
+                    ))
         except (AssetIndexError, OllamaError) as exc:
             print(f"ERROR: asset retrieval failed: {exc}", file=sys.stderr)
             return 1
@@ -445,7 +455,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
                 asset_context.append(hit.planner_context())
         print(
             "Retrieved asset IDs: "
-            + (", ".join(hit.asset_id for hit in hits) if hits else "none"),
+            + (", ".join(dict.fromkeys(hit.asset_id for hit in hits)) if hits else "none"),
             file=sys.stderr,
         )
     try:
@@ -717,6 +727,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     asset_search.add_argument("--query", required=True)
     asset_search.add_argument("--limit", type=int, default=5)
+    asset_search.add_argument(
+        "--asset-type",
+        action="append",
+        choices=sorted(ASSET_TYPES),
+        help="restrict results to this asset type; repeatable",
+    )
     asset_search.add_argument("--output", "-o", help="write ranked retrieval results")
     asset_search.set_defaults(handler=cmd_asset_search)
 
@@ -730,6 +746,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         metavar="N",
         help="retrieve N semantic matches and restrict the planner to those asset IDs",
+    )
+    plan.add_argument(
+        "--retrieve-materials",
+        type=int,
+        default=0,
+        metavar="N",
+        help="also retrieve N material-only matches for bounded material assignment",
     )
     plan.add_argument("--output", "-o")
     plan.add_argument("--raw-output", help="save the model's unvalidated response")

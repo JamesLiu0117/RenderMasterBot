@@ -47,6 +47,33 @@ class RenderSpecTests(unittest.TestCase):
                 "intensity_unit": "lumens",
             }])
 
+    def test_material_assignment_requires_unique_trimmed_slot_names(self):
+        with self.assertRaisesRegex(ValidationError, "unique slot names"):
+            minimal_spec(objects=[{
+                "object_id": "door",
+                "asset": {"asset_id": "door_asset"},
+                "materials": [
+                    {
+                        "slot_name": "DoorSurface",
+                        "material": {"asset_id": "wood_material"},
+                    },
+                    {
+                        "slot_name": "doorsurface",
+                        "material": {"asset_id": "paint_material"},
+                    },
+                ],
+            }])
+
+        with self.assertRaisesRegex(ValidationError, "surrounding whitespace"):
+            minimal_spec(objects=[{
+                "object_id": "door",
+                "asset": {"asset_id": "door_asset"},
+                "materials": [{
+                    "slot_name": " DoorSurface ",
+                    "material": {"asset_id": "wood_material"},
+                }],
+            }])
+
 
 if __name__ == "__main__":
     unittest.main()

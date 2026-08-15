@@ -28,6 +28,10 @@ from render_master_bot.ollama import StructuredResponse
 from render_master_bot.patching import PatchApplicationError, apply_render_spec_patch
 from render_master_bot.schemas import ollama_model_schema
 from render_master_bot.serialization import canonical_sha256
+from render_master_bot.unreal_executor import (
+    UnrealSceneBuildError,
+    resolve_scene_build_request,
+)
 
 
 SYSTEM_PROMPT = """You are the bounded correction planner for RenderMasterBot.
@@ -35,8 +39,9 @@ Decide whether the supplied EvaluationReport can be fixed using only the explici
 RenderSpec replacement paths. Return outcome 'patch' only when those operations directly address
 every error or blocking issue. Otherwise return 'unresolved' and name the missing capabilities.
 Never claim that camera, lighting, or transform changes can create a missing texture or material.
-Never modify asset references, object IDs, scene identity, schema metadata, or source prompts.
-Do not invent new assets, materials, lights, or scene objects.
+Never modify a scene object's primary asset reference, object IDs, scene identity, schema metadata,
+or source prompts. A listed materials path may reference only supplied material asset IDs and the
+target object's listed material slot names. Do not invent assets, materials, lights, or objects.
 Return exactly one JSON object matching the schema, without Markdown or extra prose.
 """
 
@@ -46,7 +51,7 @@ _ALLOWED_PATH = re.compile(
     r"focus_distance_cm|aperture_f_stop)|"
     r"lights/[0-9]+/(?:transform/(?:location_cm|rotation_deg)|intensity|"
     r"color_rgb|cast_shadows)|"
-    r"objects/[0-9]+/transform/(?:location_cm|rotation_deg|scale)|"
+    r"objects/[0-9]+/(?:materials|transform/(?:location_cm|rotation_deg|scale))|"
     r"render/(?:width_px|height_px|quality|seed)"
     r")$"
 )
@@ -194,6 +199,7 @@ def _allowed_paths(spec: RenderSpec) -> list[str]:
     ]
     for index, _ in enumerate(spec.objects):
         paths.extend((
+            f"/objects/{index}/materials",
             f"/objects/{index}/transform/location_cm",
             f"/objects/{index}/transform/rotation_deg",
             f"/objects/{index}/transform/scale",
@@ -307,6 +313,7 @@ def plan_correction(
     )
     try:
         corrected_spec = apply_render_spec_patch(spec, patch)
+        resolve_scene_build_request(corrected_spec, cards)
         decision = CorrectionDecision(
             render_spec_sha256=spec_hash,
             evaluation_report_sha256=report_hash,
@@ -315,7 +322,7 @@ def plan_correction(
             rationale=draft.rationale,
             patch=patch,
         )
-    except (PatchApplicationError, ValidationError) as exc:
+    except (PatchApplicationError, UnrealSceneBuildError, ValidationError) as exc:
         raise CorrectionPlanningError(
             f"correction model proposed an invalid patch: {exc}",
             response=response,

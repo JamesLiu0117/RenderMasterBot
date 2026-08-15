@@ -73,7 +73,7 @@ def asset_type_for_unreal_class(class_name: str) -> str:
     compact = re.sub(r"[^a-z0-9]", "", folded)
     if compact in _CLASS_TO_ASSET_TYPE:
         return _CLASS_TO_ASSET_TYPE[compact]
-    if "material" in compact:
+    if compact == "material" or compact.startswith("materialinstance"):
         return "material"
     if "texture" in compact:
         return "texture"
@@ -110,7 +110,11 @@ def _asset_tags(asset: RawUnrealAsset) -> list[str]:
 def asset_cards_from_scan(value: dict[str, Any] | RawUnrealAssetScan) -> list[AssetCard]:
     """Validate Unreal output and convert every selected record into an AssetCard."""
 
-    scan = value if isinstance(value, RawUnrealAssetScan) else RawUnrealAssetScan.model_validate(value)
+    scan = (
+        value
+        if isinstance(value, RawUnrealAssetScan)
+        else RawUnrealAssetScan.model_validate(value)
+    )
     source_id = _identifier(f"{scan.project_name}_asset_registry", fallback="project")
     cards: list[AssetCard] = []
     for asset in scan.assets:

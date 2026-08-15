@@ -64,13 +64,41 @@ def asset_card(**overrides) -> AssetCard:
     return AssetCard.model_validate(value)
 
 
-def actor_record(actor_id: str, actor_kind: str, transform=None) -> SpawnedActorRecord:
+def material_card(**overrides) -> AssetCard:
+    value = {
+        "asset_id": "wood_material",
+        "engine_path": "/Game/Materials/M_Wood",
+        "display_name": "M_Wood",
+        "asset_type": "material",
+    }
+    value.update(overrides)
+    return AssetCard.model_validate(value)
+
+
+def material_scene_spec(**assignment_overrides) -> RenderSpec:
+    assignment = {
+        "slot_name": "DoorSurface",
+        "material": {"asset_id": "wood_material"},
+    }
+    assignment.update(assignment_overrides)
+    value = scene_spec().model_dump(mode="json")
+    value["objects"][0]["materials"] = [assignment]
+    return RenderSpec.model_validate(value)
+
+
+def actor_record(
+    actor_id: str,
+    actor_kind: str,
+    transform=None,
+    materials=None,
+) -> SpawnedActorRecord:
     return SpawnedActorRecord(
         actor_id=actor_id,
         actor_kind=actor_kind,
         actor_name=f"RMB_{actor_id}",
         class_name="TestActor",
         transform=transform or {},
+        materials=materials or [],
     )
 
 
@@ -89,7 +117,7 @@ class UnrealSceneBuildTests(unittest.TestCase):
             resolve_scene_build_request(scene_spec(), [])
 
     def test_unsupported_asset_type_is_rejected_explicitly(self):
-        with self.assertRaisesRegex(UnrealSceneBuildError, "supports static_mesh only"):
+        with self.assertRaisesRegex(UnrealSceneBuildError, "not required type 'static_mesh'"):
             resolve_scene_build_request(
                 scene_spec(),
                 [asset_card(asset_type="blueprint")],
@@ -100,6 +128,41 @@ class UnrealSceneBuildTests(unittest.TestCase):
             resolve_scene_build_request(
                 scene_spec(),
                 [asset_card(engine_path="/Game/Props/../Secret")],
+            )
+
+    def test_material_assignment_resolves_slot_and_catalog_asset(self):
+        request = resolve_scene_build_request(
+            material_scene_spec(),
+            [
+                asset_card(material_slots=["DoorSurface"]),
+                material_card(),
+            ],
+        )
+
+        assignment = request.objects[0].materials[0]
+        self.assertEqual(assignment.slot_name, "DoorSurface")
+        self.assertEqual(assignment.slot_index, 0)
+        self.assertEqual(assignment.asset_id, "wood_material")
+        self.assertEqual(assignment.engine_path, "/Game/Materials/M_Wood")
+
+    def test_material_assignment_rejects_missing_slot(self):
+        with self.assertRaisesRegex(UnrealSceneBuildError, "missing material slot"):
+            resolve_scene_build_request(
+                material_scene_spec(slot_name="UnknownSlot"),
+                [
+                    asset_card(material_slots=["DoorSurface"]),
+                    material_card(),
+                ],
+            )
+
+    def test_material_assignment_rejects_non_material_asset_type(self):
+        with self.assertRaisesRegex(UnrealSceneBuildError, "not required type 'material'"):
+            resolve_scene_build_request(
+                material_scene_spec(),
+                [
+                    asset_card(material_slots=["DoorSurface"]),
+                    material_card(asset_type="texture"),
+                ],
             )
 
     def test_preflight_failure_blocks_unreal_launch(self):
@@ -138,6 +201,41 @@ class UnrealSceneBuildTests(unittest.TestCase):
         moved.actors[0].transform.location_cm.x += 1
         with self.assertRaisesRegex(UnrealSceneBuildError, "transforms do not match"):
             _validate_observed_result(request, moved)
+
+    def test_observed_material_evidence_must_match_request(self):
+        request = resolve_scene_build_request(
+            material_scene_spec(),
+            [
+                asset_card(material_slots=["DoorSurface"]),
+                material_card(),
+            ],
+        )
+        material_evidence = [
+            material.model_dump(mode="json")
+            for material in request.objects[0].materials
+        ]
+        result = UnrealSceneBuildResult(
+            status="succeeded",
+            project_name="Example",
+            world_name="Map",
+            scene_name=request.scene_name,
+            render_spec_sha256=request.render_spec_sha256,
+            actors=[
+                actor_record(
+                    "door",
+                    "static_mesh",
+                    request.objects[0].transform,
+                    material_evidence,
+                ),
+                actor_record("camera", "camera", request.camera.transform),
+                actor_record("key", "directional", request.lights[0].transform),
+            ],
+        )
+        _validate_observed_result(request, result)
+
+        result.actors[0].materials[0].engine_path = "/Game/Materials/M_Other"
+        with self.assertRaisesRegex(UnrealSceneBuildError, "material evidence"):
+            _validate_observed_result(request, result)
 
     def test_result_loader_requires_failure_details(self):
         value = {

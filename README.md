@@ -4,6 +4,62 @@ RenderMasterBot is a local-first graphics planning system. It turns a natural-la
 
 The integration remains schema-gated: a language model is not allowed to run arbitrary engine code; it must return a versioned JSON document with known fields and constraints.
 
+## Final product vision
+
+RenderMasterBot is intended to become a local graphics AI agent, not a single
+large language model and not merely an Unreal automation script. The finished
+product combines two independently testable systems:
+
+1. **AI Core** understands a graphics request, retrieves real project assets
+   and cited graphics knowledge, produces a validated scene plan, evaluates
+   rendered evidence, and proposes bounded corrections.
+2. **Unreal Integration** observes the actual project and engine capabilities,
+   resolves asset IDs, builds or modifies a scene, renders previews and finals,
+   and returns structured execution evidence.
+
+The intended user-facing entry point is an Unreal Editor panel backed by a
+local RenderMaster service. The command line remains available for development,
+debugging, automation, and reproducible experiments.
+
+The target workflow is a closed loop:
+
+```text
+request -> project-aware retrieval -> RenderSpec -> validation -> Unreal preview
+   ^                                                               |
+   |                                                               v
+approved correction <- bounded repair decision <- visual evaluation
+```
+
+When a requested change is supported, the system should apply it to a temporary
+scene, rerender, and compare the result. When it is not supported, the system
+should name the missing asset or capability instead of inventing an Unreal path
+or claiming that an unrelated camera or lighting change solved the problem.
+
+The final deliverables include the Unreal scene changes or rendered output,
+the exact assets and materials used, the validated RenderSpec, evaluation and
+correction records, and a reproducible run manifest.
+
+## Project advantages
+
+- **Project-aware instead of generic:** planning is constrained to assets and
+  capabilities actually observed in the current Unreal project.
+- **Closed-loop instead of one-shot:** the system renders, inspects evidence,
+  plans a correction, rerenders, and measures whether the result improved.
+- **Local-first:** private assets, prompts, model execution, vector data, and
+  render evidence can remain on the workstation.
+- **Schema-gated execution:** model output crosses versioned contracts, asset
+  allowlists, semantic checks, hashes, and deterministic adapters before Unreal
+  receives an instruction.
+- **Auditable and reproducible:** every run can preserve model identities,
+  inputs, asset references, parameters, outputs, findings, and corrections.
+- **Replaceable models:** planning, vision, and embedding roles are separated,
+  so each local model can be upgraded or benchmarked independently.
+- **Domain-improvable:** cited research, engine documentation, successful runs,
+  failure cases, preference data, and later fine-tuning can improve the AI Core
+  without giving a model unrestricted engine access.
+- **Extensible beyond one renderer:** the shared contracts isolate graphics
+  intent from Unreal-specific execution and leave room for future adapters.
+
 ## Current milestone
 
 - `RenderSpec` schema version 0.1
@@ -14,7 +70,10 @@ The integration remains schema-gated: a language model is not allowed to run arb
 - Read-only Unreal project capability probing with evidence provenance
 - Headless Unreal Asset Registry scanning into validated `AssetCard` records
 - Persistent Chroma indexing with explicit local Ollama embeddings
-- Retrieval-constrained planning that rejects assets outside the returned catalog
+- Type-filtered Chroma retrieval that rejects assets outside the returned catalog
+- Catalog-backed per-slot material assignments with host and Unreal evidence validation
+- Verified UE 5.7 material override in both transient scene build and MRQ preview paths
+- Verified planner refusal to substitute unrelated materials when a requested wood asset is absent
 - Deterministic AssetCard-bounds camera framing through auditable `RenderSpecPatch` output
 - Transient Unreal scene construction for static meshes, camera, and physical lights
 - One-frame Unreal Movie Render Queue previews with terminal, artifact-hashed `RunManifest` records
@@ -23,7 +82,7 @@ The integration remains schema-gated: a language model is not allowed to run arb
 - Command-line doctor, schema, validate, preflight, Unreal, retrieval, planning, evaluation, and correction commands
 - Standard-library unit tests for contracts, planning, preflight, Unreal execution, and preview orchestration
 
-Material assignment, iterative rerendering, and model fine-tuning are later milestones.
+Iterative rerendering, broader scene editing, and model fine-tuning are later milestones.
 
 ## Local setup
 
@@ -129,10 +188,12 @@ render-master asset-index `
   "C:\Users\James\Documents\ChatGPT\Graphics AI Assistant Project\data\assets\optimization-plugin\asset_cards.json"
 ```
 
-Test multilingual semantic retrieval:
+Test multilingual semantic retrieval, optionally restricted to an assignable
+asset type:
 
 ```powershell
 render-master asset-search --query "一扇可以打开的木门" --limit 5
+render-master asset-search --query "natural wood grain" --asset-type material --limit 5
 ```
 
 Show the resolved dual-model configuration:
@@ -153,6 +214,7 @@ Retrieve real assets first and restrict the planner to those IDs:
 render-master plan `
   --prompt "Create a product-style scene featuring one usable wooden door" `
   --retrieve-assets 8 `
+  --retrieve-materials 5 `
   --output door-scene.json
 ```
 

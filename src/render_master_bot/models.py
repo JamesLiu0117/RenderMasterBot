@@ -44,11 +44,33 @@ class AssetReference(StrictModel):
     display_name: str | None = Field(default=None, max_length=120)
 
 
+class MaterialAssignment(StrictModel):
+    """Assign one catalog material asset to a named mesh material slot."""
+
+    slot_name: Annotated[str, Field(min_length=1, max_length=120)]
+    material: AssetReference
+
+    @model_validator(mode="after")
+    def slot_name_is_trimmed(self) -> "MaterialAssignment":
+        if self.slot_name != self.slot_name.strip():
+            raise ValueError("material slot names cannot have surrounding whitespace")
+        return self
+
+
 class SceneObject(StrictModel):
     object_id: Identifier
     asset: AssetReference
     transform: Transform = Field(default_factory=Transform)
     visible: bool = True
+    materials: list[MaterialAssignment] = Field(default_factory=list, max_length=64)
+
+    @model_validator(mode="after")
+    def material_slots_are_unique(self) -> "SceneObject":
+        slots = [assignment.slot_name.casefold() for assignment in self.materials]
+        duplicates = sorted({slot for slot in slots if slots.count(slot) > 1})
+        if duplicates:
+            raise ValueError("material assignments must use unique slot names")
+        return self
 
 
 class Camera(StrictModel):

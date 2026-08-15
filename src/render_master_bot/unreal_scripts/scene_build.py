@@ -45,7 +45,7 @@ def apply_scale(actor, transform):
     actor.set_actor_scale3d(vector(scale))
 
 
-def actor_record(actor, actor_id, actor_kind):
+def actor_record(actor, actor_id, actor_kind, materials=None):
     location = actor.get_actor_location()
     rotation = actor.get_actor_rotation()
     scale = actor.get_actor_scale3d()
@@ -71,7 +71,68 @@ def actor_record(actor, actor_id, actor_kind):
                 "z": float(scale.z),
             },
         },
+        "materials": materials or [],
     }
+
+
+def package_path(value):
+    return value.partition(".")[0]
+
+
+def apply_materials(actor, value):
+    component = actor.get_editor_property("static_mesh_component")
+    if component is None:
+        raise RuntimeError(
+            f"spawned actor has no StaticMeshComponent: {value['object_id']}"
+        )
+    slot_names = [str(name) for name in component.get_material_slot_names()]
+    asset_subsystem = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem)
+    if asset_subsystem is None:
+        raise RuntimeError("the Unreal Editor asset subsystem is unavailable")
+
+    records = []
+    for assignment in value.get("materials", []):
+        slot_index = int(assignment["slot_index"])
+        slot_name = assignment["slot_name"]
+        if slot_index >= len(slot_names) or slot_names[slot_index] != slot_name:
+            raise RuntimeError(
+                f"material slot evidence changed for {value['object_id']}: "
+                f"expected {slot_name!r} at index {slot_index}"
+            )
+        material = unreal.load_asset(
+            assignment["engine_path"],
+            unreal.MaterialInterface,
+        )
+        if material is None:
+            raise RuntimeError(
+                f"material could not be loaded: {assignment['engine_path']}"
+            )
+        component.set_material(slot_index, material)
+        observed = component.get_material(slot_index)
+        if observed is None:
+            raise RuntimeError(
+                f"material assignment was not observable: {assignment['engine_path']}"
+            )
+        observed_path = package_path(
+            str(asset_subsystem.get_path_name_for_loaded_asset(observed))
+        )
+        if observed_path != assignment["engine_path"]:
+            raise RuntimeError(
+                f"material assignment mismatch for {value['object_id']} slot {slot_name}: "
+                f"expected {assignment['engine_path']}, observed {observed_path}"
+            )
+        records.append({
+            "slot_name": slot_name,
+            "slot_index": slot_index,
+            "asset_id": assignment["asset_id"],
+            "engine_path": observed_path,
+            "asset_type": "material",
+        })
+        unreal.log(
+            f"RENDERMASTER_SCENE_STEP material_applied id={value['object_id']} "
+            f"slot={slot_name} asset={assignment['asset_id']}"
+        )
+    return records
 
 
 def spawn_object(actor_subsystem, value, transient=True):
@@ -97,7 +158,8 @@ def spawn_object(actor_subsystem, value, transient=True):
     unreal.log(f"RENDERMASTER_SCENE_STEP object_scaled id={value['object_id']}")
     actor.set_actor_hidden_in_game(not bool(value["visible"]))
     unreal.log(f"RENDERMASTER_SCENE_STEP object_visibility id={value['object_id']}")
-    record = actor_record(actor, value["object_id"], "static_mesh")
+    materials = apply_materials(actor, value)
+    record = actor_record(actor, value["object_id"], "static_mesh", materials)
     unreal.log(f"RENDERMASTER_SCENE_STEP object_recorded id={value['object_id']}")
     return record
 

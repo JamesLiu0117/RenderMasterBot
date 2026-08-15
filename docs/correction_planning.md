@@ -39,14 +39,17 @@ RenderSpec are accepted:
 
 - camera transform and lens/focus settings;
 - existing object transforms;
+- complete material-assignment lists for existing objects, using only supplied
+  catalog material IDs and the target mesh's observed slot names;
 - existing light transforms, intensity, color, and shadow state;
 - render width, height, quality, and seed.
 
-Asset references, object IDs, scene identity, prompts, schema metadata, new
-objects, new lights, and material invention are forbidden. Each model path is
-checked against both a fixed pattern and the exact paths that exist in the
-source RenderSpec. The finished patch is then applied by the deterministic
-patch engine and the entire resulting RenderSpec is revalidated.
+Primary mesh asset references, object IDs, scene identity, prompts, schema
+metadata, new objects, new lights, and material invention are forbidden. Each
+model path is checked against both a fixed pattern and the exact paths that
+exist in the source RenderSpec. The finished patch is then applied by the
+deterministic patch engine, the entire resulting RenderSpec is revalidated, and
+all mesh, material, and slot references are resolved against the run's catalog.
 
 ## Usage and outputs
 
@@ -72,7 +75,7 @@ cannot add the wood appearance requested by the prompt. It emitted zero patch
 operations and no corrected RenderSpec, so Unreal was not rerun under a false
 claim of repair.
 
-The next capability milestone is to retrieve a suitable material, represent a
-bounded material assignment in RenderSpec, and implement that assignment in
-the Unreal adapter. Only then should the same preview enter an automatic
-rerender-and-compare loop.
+That baseline predates material-assignment support. The contract and adapter can
+now apply catalog-backed materials, but the same preview still requires a
+suitable wood material in its bounded asset catalog. Once such an asset is
+retrieved, the run can enter the first automatic rerender-and-compare loop.

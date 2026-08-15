@@ -29,7 +29,12 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def prepare_run(root: Path, *, report_category="material") -> tuple[Path, RenderSpec]:
+def prepare_run(
+    root: Path,
+    *,
+    report_category="material",
+    include_wood_material=False,
+) -> tuple[Path, RenderSpec]:
     run_root = root / "run"
     inputs = run_root / "inputs"
     preview = run_root / "preview"
@@ -56,13 +61,23 @@ def prepare_run(root: Path, *, report_category="material") -> tuple[Path, Render
     spec_path = inputs / "render_spec.json"
     spec_path.write_text(spec.model_dump_json(indent=2), encoding="utf-8")
     assets_path = inputs / "asset_cards.json"
-    assets_path.write_text(json.dumps([{
+    cards = [{
         "asset_id": "door_asset",
         "engine_path": "/Game/SM_Door",
         "display_name": "SM_Door",
         "asset_type": "static_mesh",
         "material_slots": ["Material_0"],
-    }]), encoding="utf-8")
+    }]
+    if include_wood_material:
+        cards.append({
+            "asset_id": "wood_material",
+            "engine_path": "/Game/Materials/M_Wood",
+            "display_name": "M_Wood",
+            "asset_type": "material",
+            "description": "A visible natural wood grain material.",
+            "tags": ["wood", "grain"],
+        })
+    assets_path.write_text(json.dumps(cards), encoding="utf-8")
     preview_path = preview / "beauty.png"
     preview_path.write_bytes(PNG_BYTES)
     now = datetime.now(UTC)
@@ -121,9 +136,9 @@ class CorrectionPlannerTests(unittest.TestCase):
     def test_material_gap_can_be_reported_as_unresolved(self):
         content = json.dumps({
             "outcome": "unresolved",
-            "rationale": "The current contract cannot assign a wood material.",
+            "rationale": "No suitable wood material exists in the supplied catalog.",
             "operations": [],
-            "missing_capabilities": ["material override support", "wood material asset"],
+            "missing_capabilities": ["wood material asset"],
         })
         with tempfile.TemporaryDirectory() as directory:
             run_root, _ = prepare_run(Path(directory))
@@ -135,7 +150,58 @@ class CorrectionPlannerTests(unittest.TestCase):
 
         self.assertEqual(result.decision.outcome, "unresolved")
         self.assertIsNone(result.corrected_spec)
-        self.assertIn("material override support", result.decision.missing_capabilities)
+        self.assertIn("wood material asset", result.decision.missing_capabilities)
+
+    def test_catalog_material_assignment_is_applied_and_resolved(self):
+        content = json.dumps({
+            "outcome": "patch",
+            "rationale": "Assign the retrieved wood material to the door surface.",
+            "operations": [{
+                "path": "/objects/0/materials",
+                "value": [{
+                    "slot_name": "Material_0",
+                    "material": {"asset_id": "wood_material"},
+                }],
+            }],
+            "missing_capabilities": [],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            run_root, _ = prepare_run(
+                Path(directory),
+                include_wood_material=True,
+            )
+            result = plan_correction(
+                FakeCorrectionClient(content),
+                model="gpt-oss:20b",
+                run_directory=run_root,
+            )
+
+        assignment = result.corrected_spec.objects[0].materials[0]
+        self.assertEqual(result.decision.outcome, "patch")
+        self.assertEqual(assignment.slot_name, "Material_0")
+        self.assertEqual(assignment.material.asset_id, "wood_material")
+
+    def test_invented_material_is_rejected_after_patch_application(self):
+        content = json.dumps({
+            "outcome": "patch",
+            "rationale": "Attempt to use a material outside the catalog.",
+            "operations": [{
+                "path": "/objects/0/materials",
+                "value": [{
+                    "slot_name": "Material_0",
+                    "material": {"asset_id": "invented_material"},
+                }],
+            }],
+            "missing_capabilities": [],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            run_root, _ = prepare_run(Path(directory))
+            with self.assertRaisesRegex(CorrectionPlanningError, "invalid patch"):
+                plan_correction(
+                    FakeCorrectionClient(content),
+                    model="gpt-oss:20b",
+                    run_directory=run_root,
+                )
 
     def test_valid_lighting_replacement_is_applied_and_revalidated(self):
         content = json.dumps({

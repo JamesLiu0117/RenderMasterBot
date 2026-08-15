@@ -117,14 +117,29 @@ class CliOutputTests(unittest.TestCase):
         )
 
         self.assertEqual(args.retrieve_assets, 4)
+        self.assertEqual(args.retrieve_materials, 0)
+
+        material_args = build_parser().parse_args(
+            ["plan", "--prompt", "add a wood door", "--retrieve-materials", "3"]
+        )
+        self.assertEqual(material_args.retrieve_materials, 3)
 
     def test_asset_search_parser_captures_query_and_limit(self):
         args = build_parser().parse_args(
-            ["asset-search", "--query", "一扇门", "--limit", "3"]
+            [
+                "asset-search",
+                "--query",
+                "木门材质",
+                "--limit",
+                "3",
+                "--asset-type",
+                "material",
+            ]
         )
 
-        self.assertEqual(args.query, "一扇门")
+        self.assertEqual(args.query, "木门材质")
         self.assertEqual(args.limit, 3)
+        self.assertEqual(args.asset_type, ["material"])
 
     def test_utf8_console_setup_tolerates_captured_streams(self):
         with patch("render_master_bot.cli.sys.stdout", new=StringIO()), patch(

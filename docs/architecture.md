@@ -64,8 +64,10 @@ See `contracts.md` for the eight public JSON boundaries used by both tracks.
    `EvaluationReport` output.~~
 9. ~~Generate a bounded correction decision that either applies a validated
    `RenderSpecPatch` or reports an explicit capability gap.~~
-10. Add material retrieval and assignment to both the shared contract and Unreal
-    adapter, then rerender the first failed preview and compare evaluations.
+10. ~~Add catalog-backed material assignment to the shared contract and Unreal
+    adapter, then verify it in transient scene-build and MRQ preview paths.~~
+11. Add or ingest a suitable wood material, rerender the first failed preview,
+    and compare the before-and-after evaluations.
 
 ## Default model roles
 

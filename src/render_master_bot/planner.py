@@ -22,7 +22,13 @@ Do not emit source code, prose, Markdown, or fields not present in the schema.
 If a request is ambiguous, choose a conservative default and record it in notes.
 Only reference asset IDs explicitly listed in the available asset catalog.
 When the request names a subject with a matching available asset, instantiate that asset in objects.
-Use physical light units: directional lights use lux; point, spot, and rect lights use lumens or candelas.
+Use material assets only in an object's materials list. Target the mesh's listed material slot name.
+Never use a static mesh, texture, or other asset type as a material.
+Treat semantic retrieval as candidates, not proof of suitability. Assign a requested material only
+when its supplied name, description, or tags support the requested appearance. Otherwise leave the
+materials list empty and record the missing material asset in notes.
+Use physical light units. Directional lights use lux; point, spot, and rect lights use lumens or
+candelas.
 Represent RGB colors as normalized decimal values from 0.0 to 1.0, never as 0-255 integers.
 """
 
@@ -91,6 +97,11 @@ class ScenePlanner:
             ) from exc
         allowed_assets = set(assets)
         used_assets = {item.asset.asset_id for item in spec.objects}
+        used_assets.update(
+            assignment.material.asset_id
+            for item in spec.objects
+            for assignment in item.materials
+        )
         unavailable_assets = sorted(used_assets - allowed_assets)
         if unavailable_assets:
             raise PlanningError(

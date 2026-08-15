@@ -47,9 +47,15 @@ class AssetSearchHit:
     document: str
 
     def planner_context(self) -> str:
+        details = "; ".join(
+            line.strip()
+            for line in self.document.splitlines()
+            if line.strip().startswith(("Description:", "Tags:", "Material slots:"))
+        )
+        suffix = f"; {details}" if details else ""
         return (
             f"{self.asset_id}: {self.display_name}; type={self.asset_type}; "
-            f"unreal_path={self.engine_path}; similarity={self.similarity:.4f}"
+            f"unreal_path={self.engine_path}; similarity={self.similarity:.4f}{suffix}"
         )
 
 
@@ -65,6 +71,7 @@ _TYPE_LABELS = {
     "level": "level or map, 关卡或地图",
     "other": "other Unreal asset, 其他 Unreal 资产",
 }
+ASSET_TYPES = frozenset(_TYPE_LABELS)
 
 
 def load_asset_card_catalog(path: str | Path) -> list[AssetCard]:
@@ -195,21 +202,38 @@ class AssetIndex:
             deleted=len(stale),
         )
 
-    def search(self, query: str, *, limit: int = 5) -> list[AssetSearchHit]:
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        asset_types: list[str] | None = None,
+    ) -> list[AssetSearchHit]:
         text = query.strip()
         if not text:
             raise AssetIndexError("asset search query cannot be empty")
         if not 1 <= limit <= 100:
             raise AssetIndexError("asset search limit must be between 1 and 100")
+        selected_types = sorted(set(asset_types or []))
+        invalid_types = sorted(set(selected_types) - ASSET_TYPES)
+        if invalid_types:
+            raise AssetIndexError("unknown asset types: " + ", ".join(invalid_types))
         count = int(self.collection.count())
         if count == 0:
             return []
         embeddings = self.embedder.embed_texts(model=self.embedding_model, texts=[text])
         _validate_embeddings(embeddings, 1)
+        query_arguments: dict[str, Any] = {
+            "query_embeddings": embeddings,
+            "n_results": min(limit, count),
+            "include": ["metadatas", "documents", "distances"],
+        }
+        if len(selected_types) == 1:
+            query_arguments["where"] = {"asset_type": selected_types[0]}
+        elif selected_types:
+            query_arguments["where"] = {"asset_type": {"$in": selected_types}}
         result = self.collection.query(
-            query_embeddings=embeddings,
-            n_results=min(limit, count),
-            include=["metadatas", "documents", "distances"],
+            **query_arguments,
         )
         ids = (result.get("ids") or [[]])[0]
         metadatas = (result.get("metadatas") or [[]])[0]

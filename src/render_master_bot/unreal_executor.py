@@ -32,6 +32,16 @@ class UnrealSceneBuildError(RuntimeError):
     """Raised when a RenderSpec cannot be staged safely inside Unreal."""
 
 
+class ResolvedMaterialAssignment(StrictModel):
+    """Catalog-backed material assignment with a deterministic Unreal slot index."""
+
+    slot_name: str = Field(min_length=1, max_length=120)
+    slot_index: int = Field(ge=0, le=63)
+    asset_id: Identifier
+    engine_path: str = Field(min_length=1, max_length=500)
+    asset_type: Literal["material"]
+
+
 class ResolvedSceneObject(StrictModel):
     """Scene object whose public asset ID has been resolved to an Unreal path."""
 
@@ -41,6 +51,7 @@ class ResolvedSceneObject(StrictModel):
     asset_type: Literal["static_mesh"]
     transform: Transform
     visible: bool
+    materials: list[ResolvedMaterialAssignment] = Field(default_factory=list, max_length=64)
 
 
 class UnrealSceneBuildRequest(StrictModel):
@@ -54,6 +65,16 @@ class UnrealSceneBuildRequest(StrictModel):
     lights: list[Light] = Field(max_length=64)
     render: RenderSettings
     sensor_width_mm: PositiveFiniteFloat = DEFAULT_SENSOR_WIDTH_MM
+
+
+class AppliedMaterialRecord(StrictModel):
+    """Material assignment observed on the spawned Unreal component."""
+
+    slot_name: str = Field(min_length=1, max_length=120)
+    slot_index: int = Field(ge=0, le=63)
+    asset_id: Identifier
+    engine_path: str = Field(min_length=1, max_length=500)
+    asset_type: Literal["material"]
 
 
 class SpawnedActorRecord(StrictModel):
@@ -71,6 +92,7 @@ class SpawnedActorRecord(StrictModel):
     actor_name: str = Field(min_length=1, max_length=240)
     class_name: str = Field(min_length=1, max_length=240)
     transform: Transform
+    materials: list[AppliedMaterialRecord] = Field(default_factory=list, max_length=64)
 
 
 class UnrealSceneBuildResult(StrictModel):
@@ -99,15 +121,19 @@ class UnrealSceneBuildResult(StrictModel):
         return self
 
 
-def _safe_unreal_asset_path(card: AssetCard) -> str:
+def _safe_unreal_asset_path(
+    card: AssetCard,
+    *,
+    expected_type: Literal["static_mesh", "material"],
+) -> str:
     if card.engine != "unreal":
         raise UnrealSceneBuildError(
             f"asset {card.asset_id!r} targets {card.engine!r}, not Unreal"
         )
-    if card.asset_type != "static_mesh":
+    if card.asset_type != expected_type:
         raise UnrealSceneBuildError(
-            f"asset {card.asset_id!r} has unsupported type {card.asset_type!r}; "
-            "the first Unreal adapter supports static_mesh only"
+            f"asset {card.asset_id!r} has type {card.asset_type!r}, "
+            f"not required type {expected_type!r}"
         )
     path = card.engine_path.strip()
     if not path.startswith("/Game/") or "\\" in path or ".." in path:
@@ -148,14 +174,41 @@ def resolve_scene_build_request(
                 f"RenderSpec object {scene_object.object_id!r} references missing asset "
                 f"{scene_object.asset.asset_id!r}"
             )
+        material_assignments: list[ResolvedMaterialAssignment] = []
+        for assignment in scene_object.materials:
+            if assignment.slot_name not in card.material_slots:
+                available = ", ".join(card.material_slots) or "none"
+                raise UnrealSceneBuildError(
+                    f"RenderSpec object {scene_object.object_id!r} references missing material "
+                    f"slot {assignment.slot_name!r}; available slots: {available}"
+                )
+            material_card = catalog.get(assignment.material.asset_id)
+            if material_card is None:
+                raise UnrealSceneBuildError(
+                    f"RenderSpec object {scene_object.object_id!r} references missing material "
+                    f"asset {assignment.material.asset_id!r}"
+                )
+            material_assignments.append(
+                ResolvedMaterialAssignment(
+                    slot_name=assignment.slot_name,
+                    slot_index=card.material_slots.index(assignment.slot_name),
+                    asset_id=material_card.asset_id,
+                    engine_path=_safe_unreal_asset_path(
+                        material_card,
+                        expected_type="material",
+                    ),
+                    asset_type="material",
+                )
+            )
         resolved.append(
             ResolvedSceneObject(
                 object_id=scene_object.object_id,
                 asset_id=card.asset_id,
-                engine_path=_safe_unreal_asset_path(card),
+                engine_path=_safe_unreal_asset_path(card, expected_type="static_mesh"),
                 asset_type="static_mesh",
                 transform=scene_object.transform,
                 visible=scene_object.visible,
+                materials=material_assignments,
             )
         )
 
@@ -231,6 +284,22 @@ def _validate_observed_result(
     if mismatched:
         raise UnrealSceneBuildError(
             "Unreal actor transforms do not match the request: " + ", ".join(mismatched)
+        )
+
+    observed_actors = {actor.actor_id: actor for actor in result.actors}
+    material_mismatches = sorted(
+        item.object_id
+        for item in request.objects
+        if [material.model_dump(mode="json") for material in item.materials]
+        != [
+            material.model_dump(mode="json")
+            for material in observed_actors[item.object_id].materials
+        ]
+    )
+    if material_mismatches:
+        raise UnrealSceneBuildError(
+            "Unreal material evidence does not match the request: "
+            + ", ".join(material_mismatches)
         )
 
 

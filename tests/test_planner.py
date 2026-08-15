@@ -80,8 +80,32 @@ class PlannerTests(unittest.TestCase):
         )
 
         user_message = client.last_request["messages"][1]["content"]
+        system_message = client.last_request["messages"][0]["content"]
         self.assertIn("sm_door: SM_Door", user_message)
         self.assertIn("only the listed asset IDs may be used", user_message)
+        self.assertIn("candidates, not proof of suitability", system_message)
+
+    def test_material_assets_are_subject_to_the_same_catalog_allowlist(self):
+        client = FakeClient("""{
+          "source_prompt": "wooden door",
+          "scene_name": "door_scene",
+          "objects": [{
+            "object_id": "door",
+            "asset": {"asset_id": "sm_door"},
+            "materials": [{
+              "slot_name": "DoorSurface",
+              "material": {"asset_id": "invented_wood"}
+            }]
+          }],
+          "camera": {"camera_id": "main_camera", "transform": {}}
+        }""")
+
+        with self.assertRaisesRegex(PlanningError, "outside the available catalog"):
+            ScenePlanner(client).plan(
+                model="fake",
+                prompt="make the door wooden",
+                asset_ids=["sm_door", "real_wood"],
+            )
 
 
 if __name__ == "__main__":
