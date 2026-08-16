@@ -16,9 +16,46 @@ from render_master_bot.asset_index import (
     load_asset_card_catalog,
     open_persistent_asset_index,
 )
+from render_master_bot.assistant_materials import (
+    MaterialProposalError,
+    load_selection_context,
+    propose_material_change,
+)
+from render_master_bot.assistant_external_materials import (
+    ExternalMaterialAssistantError,
+    prepare_external_material_assistant_proposal,
+)
 from render_master_bot.camera_framing import VIEW_AXES, CameraFramingError, frame_camera
 from render_master_bot.contracts import CONTRACT_MODELS, RenderSpecPatch, VisualBenchmarkSuite
 from render_master_bot.correction_planner import CorrectionPlanningError, plan_correction
+from render_master_bot.external_materials import (
+    ExternalMaterialError,
+    acquire_polyhaven_material,
+    discover_polyhaven_materials,
+    load_external_material_search,
+)
+from render_master_bot.material_variants import (
+    MaterialVariantError,
+    ScalarParameterOverride,
+    VectorParameterOverride,
+    create_material_variant,
+    inspect_material_parameters,
+)
+from render_master_bot.material_import_workflow import (
+    MaterialImportWorkflowError,
+    create_external_material_import_proposal,
+    execute_external_material_import,
+    load_external_material_acquisition,
+    load_external_material_import_proposal,
+    load_material_import_execution,
+)
+from render_master_bot.material_catalog_sync import (
+    MaterialCatalogSyncError,
+    catalog_sync_evidence,
+    commit_asset_catalog,
+    enrich_imported_asset_cards,
+    load_and_merge_asset_catalog,
+)
 from render_master_bot.models import RenderSpec
 from render_master_bot.ollama import OllamaClient, OllamaError
 from render_master_bot.orchestrator import WorkflowError, run_render_workflow
@@ -26,6 +63,7 @@ from render_master_bot.patching import PatchApplicationError, apply_render_spec_
 from render_master_bot.planner import PlanningError, ScenePlanner
 from render_master_bot.preflight import run_preflight
 from render_master_bot.schemas import contract_model, contract_schema
+from render_master_bot.serialization import canonical_sha256
 from render_master_bot.settings import Settings
 from render_master_bot.unreal_assets import UnrealAssetScanError, run_unreal_asset_scan
 from render_master_bot.unreal_executor import UnrealSceneBuildError, run_unreal_scene_build
@@ -445,6 +483,312 @@ def cmd_unreal_import_pbr_material(args: argparse.Namespace) -> int:
     return 0
 
 
+def _scalar_overrides(values: list[str]) -> list[ScalarParameterOverride]:
+    overrides = []
+    for value in values:
+        name, separator, raw = value.partition("=")
+        if not separator or not name.strip():
+            raise ValueError(f"invalid scalar override {value!r}; expected Name=Value")
+        overrides.append(ScalarParameterOverride(name=name.strip(), value=float(raw)))
+    return overrides
+
+
+def _vector_overrides(values: list[str]) -> list[VectorParameterOverride]:
+    overrides = []
+    for value in values:
+        name, separator, raw = value.partition("=")
+        components = raw.split(",") if separator else []
+        if not name.strip() or len(components) not in {3, 4}:
+            raise ValueError(
+                f"invalid vector override {value!r}; expected Name=R,G,B or Name=R,G,B,A"
+            )
+        numbers = [float(component) for component in components]
+        if len(numbers) == 3:
+            numbers.append(1.0)
+        overrides.append(
+            VectorParameterOverride(
+                name=name.strip(),
+                r=numbers[0],
+                g=numbers[1],
+                b=numbers[2],
+                a=numbers[3],
+            )
+        )
+    return overrides
+
+
+def cmd_unreal_material_parameters(args: argparse.Namespace) -> int:
+    try:
+        result = inspect_material_parameters(
+            args.path,
+            engine_root=args.engine_root,
+            material_path=args.material,
+            output=args.output,
+            timeout_seconds=args.timeout,
+        )
+    except MaterialVariantError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(
+        "UNREAL MATERIAL PARAMETERS: "
+        f"material={result.material_path} scalar={len(result.scalar_parameters)} "
+        f"vector={len(result.vector_parameters)}"
+    )
+    print(f"Wrote {args.output}")
+    return 0
+
+
+def cmd_unreal_create_material_variant(args: argparse.Namespace) -> int:
+    try:
+        request, result = create_material_variant(
+            args.path,
+            engine_root=args.engine_root,
+            parent_material_path=args.parent_material,
+            destination_path=args.destination_path,
+            instance_name=args.instance_name,
+            scalar_parameters=_scalar_overrides(args.scalar),
+            vector_parameters=_vector_overrides(args.vector),
+            output=args.output,
+            timeout_seconds=args.timeout,
+        )
+    except (MaterialVariantError, ValidationError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(
+        "UNREAL MATERIAL VARIANT: "
+        f"parent={request.parent_material_path} instance={result.instance_engine_path} "
+        f"scalar={len(result.scalar_parameters)} vector={len(result.vector_parameters)}"
+    )
+    print(f"Wrote {args.output}")
+    return 0
+
+
+def cmd_external_material_search(args: argparse.Namespace) -> int:
+    settings = _settings()
+    try:
+        report = discover_polyhaven_materials(
+            query=args.query,
+            embedder=_client(settings),
+            embedding_model=settings.embedding_model,
+            limit=args.limit,
+            timeout_seconds=args.timeout,
+        )
+        _write_json(report.model_dump(mode="json"), args.output)
+    except (ExternalMaterialError, OllamaError, OSError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(
+        "EXTERNAL MATERIAL SEARCH: "
+        f"provider={report.provider} results={len(report.candidates)} "
+        f"license=CC0-1.0 credit={report.provider_credit!r}"
+    )
+    return 0
+
+
+def cmd_external_material_acquire(args: argparse.Namespace) -> int:
+    try:
+        report = load_external_material_search(args.search_report)
+        matches = [
+            candidate
+            for candidate in report.candidates
+            if candidate.provider_asset_id == args.asset_id
+        ]
+        if len(matches) != 1:
+            raise ExternalMaterialError(
+                f"asset {args.asset_id!r} is not a unique candidate in the search report"
+            )
+        acquisition = acquire_polyhaven_material(
+            matches[0],
+            destination_root=args.destination_root,
+            resolution=args.resolution,
+            image_format=args.image_format,
+            timeout_seconds=args.timeout,
+        )
+        _write_json(acquisition.model_dump(mode="json"), args.output)
+    except (ExternalMaterialError, OSError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(
+        "EXTERNAL MATERIAL ACQUISITION: "
+        f"asset={acquisition.candidate.provider_asset_id} maps={len(acquisition.maps)} "
+        f"resolution={acquisition.resolution} format={acquisition.image_format}"
+    )
+    return 0
+
+
+def cmd_assistant_external_material_prepare(args: argparse.Namespace) -> int:
+    settings = _settings()
+    try:
+        query = _read_run_prompt(args.prompt, args.prompt_file)
+        _, _, _, proposal = prepare_external_material_assistant_proposal(
+            query=query,
+            embedder=_client(settings),
+            embedding_model=settings.embedding_model,
+            library_root=args.library_root,
+            work_directory=args.work_dir,
+            proposal_id=args.proposal_id,
+            resolution=args.resolution,
+            image_format=args.image_format,
+            timeout_seconds=args.timeout,
+        )
+        _write_json(proposal.model_dump(mode="json"), args.output)
+    except (
+        ExternalMaterialAssistantError,
+        ExternalMaterialError,
+        MaterialImportWorkflowError,
+        OllamaError,
+        OSError,
+        ValueError,
+    ) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(
+        "ASSISTANT EXTERNAL MATERIAL: "
+        f"asset={proposal.provider_asset_id} license={proposal.license} "
+        f"maps={proposal.downloaded_map_count} status={proposal.status}"
+    )
+    print(f"APPROVAL SHA-256: {proposal.import_proposal_sha256}")
+    return 0
+
+
+def cmd_external_material_propose_import(args: argparse.Namespace) -> int:
+    try:
+        proposal = create_external_material_import_proposal(
+            acquisition_path=args.acquisition,
+            destination_path=args.destination_path,
+            material_name=args.material_name,
+            proposal_id=args.proposal_id,
+        )
+        proposal_sha256 = canonical_sha256(proposal)
+        _write_json(proposal.model_dump(mode="json"), args.output)
+    except (MaterialImportWorkflowError, OSError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(
+        "EXTERNAL MATERIAL IMPORT PROPOSAL: "
+        f"asset={proposal.provider_asset_id} planned_assets={len(proposal.planned_asset_paths)} "
+        f"status={proposal.status}"
+    )
+    print(f"APPROVAL SHA-256: {proposal_sha256}")
+    return 0
+
+
+def cmd_external_material_execute_import(args: argparse.Namespace) -> int:
+    try:
+        execution = execute_external_material_import(
+            args.proposal,
+            approved_proposal_sha256=args.approve_sha256,
+            approved_by=args.approved_by,
+            uproject_path=args.path,
+            engine_root=args.engine_root,
+            import_output=args.import_output,
+            timeout_seconds=args.timeout,
+        )
+        _write_json(execution.model_dump(mode="json"), args.output)
+        evidence = _sync_external_material_catalog(
+            uproject_path=args.path,
+            engine_root=args.engine_root,
+            proposal_path=args.proposal,
+            execution=execution,
+            asset_catalog_path=args.asset_catalog,
+            raw_scan_output=args.scan_output,
+            timeout_seconds=args.timeout,
+        )
+        _write_json(evidence.model_dump(mode="json"), args.catalog_sync_output)
+    except (
+        AssetIndexError,
+        MaterialCatalogSyncError,
+        MaterialImportWorkflowError,
+        OllamaError,
+        OSError,
+        UnrealAssetScanError,
+    ) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(
+        "EXTERNAL MATERIAL IMPORT: "
+        f"material={execution.import_result.material_engine_path} "
+        f"textures={len(execution.import_result.textures)} status={execution.status}"
+    )
+    return 0
+
+
+def _sync_external_material_catalog(
+    *,
+    uproject_path: str,
+    engine_root: str,
+    proposal_path: str,
+    execution,
+    asset_catalog_path: str,
+    raw_scan_output: str,
+    timeout_seconds: int,
+):
+    proposal = load_external_material_import_proposal(proposal_path)
+    if canonical_sha256(proposal) != execution.proposal_sha256:
+        raise MaterialCatalogSyncError("execution does not match the exact import proposal")
+    acquisition = load_external_material_acquisition(proposal.acquisition_path)
+    if canonical_sha256(acquisition) != proposal.acquisition_sha256:
+        raise MaterialCatalogSyncError("acquisition changed after approved import")
+    _, scanned_cards = run_unreal_asset_scan(
+        uproject_path,
+        engine_root=engine_root,
+        raw_output=raw_scan_output,
+        limit=20,
+        path_prefix=proposal.destination_path,
+        timeout_seconds=timeout_seconds,
+    )
+    imported_cards = enrich_imported_asset_cards(
+        scanned_cards,
+        acquisition=acquisition,
+        import_result=execution.import_result,
+    )
+    existing, merged = load_and_merge_asset_catalog(asset_catalog_path, imported_cards)
+    settings = _settings()
+    with _asset_index(settings) as index:
+        index_report = index.sync(merged)
+    backup = commit_asset_catalog(asset_catalog_path, merged)
+    return catalog_sync_evidence(
+        catalog_path=asset_catalog_path,
+        backup_path=backup,
+        raw_scan_path=raw_scan_output,
+        before_count=len(existing),
+        after_count=len(merged),
+        imported_cards=imported_cards,
+        index_report=index_report,
+    )
+
+
+def cmd_external_material_sync_import(args: argparse.Namespace) -> int:
+    try:
+        execution = load_material_import_execution(args.execution)
+        evidence = _sync_external_material_catalog(
+            uproject_path=args.path,
+            engine_root=args.engine_root,
+            proposal_path=args.proposal,
+            execution=execution,
+            asset_catalog_path=args.asset_catalog,
+            raw_scan_output=args.scan_output,
+            timeout_seconds=args.timeout,
+        )
+        _write_json(evidence.model_dump(mode="json"), args.output)
+    except (
+        AssetIndexError,
+        MaterialCatalogSyncError,
+        MaterialImportWorkflowError,
+        OllamaError,
+        OSError,
+        UnrealAssetScanError,
+    ) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(
+        "EXTERNAL MATERIAL CATALOG SYNC: "
+        f"before={evidence.before_count} after={evidence.after_count} "
+        f"inserted={evidence.index_inserted} updated={evidence.index_updated}"
+    )
+    return 0
+
+
 def cmd_unreal_build_scene(args: argparse.Namespace) -> int:
     try:
         request, result = run_unreal_scene_build(
@@ -535,6 +879,34 @@ def cmd_asset_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_assistant_material_propose(args: argparse.Namespace) -> int:
+    settings = _settings()
+    try:
+        prompt = _read_run_prompt(args.prompt, args.prompt_file)
+        context = load_selection_context(args.context)
+        with _asset_index(settings) as index:
+            proposal = propose_material_change(
+                prompt=prompt,
+                context=context,
+                asset_catalog_path=args.assets,
+                searcher=index,
+                embedding_model=settings.embedding_model,
+                limit=args.limit,
+                proposal_id=args.proposal_id,
+            )
+    except (MaterialProposalError, AssetIndexError, OllamaError, ValueError) as exc:
+        print(f"ERROR: material proposal failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(proposal.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT MATERIAL: "
+        f"status={proposal.status} target={proposal.target.actor_name} "
+        f"proposal={proposal.proposal_id}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    return 0
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
     settings = _settings()
     model = args.model or settings.planner_model
@@ -612,6 +984,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     planner_client = _client(settings)
     vision_client = _client(settings, num_ctx=settings.vision_num_ctx)
     try:
+        prompt = _read_run_prompt(args.prompt, args.prompt_file)
         with _asset_index(settings) as index:
             result = run_render_workflow(
                 planner_client=planner_client,
@@ -620,7 +993,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 asset_searcher=index,
                 planner_model=planner_model,
                 vision_model=vision_model,
-                prompt=args.prompt,
+                prompt=prompt,
                 uproject_path=args.path,
                 engine_root=args.engine_root,
                 asset_catalog_path=args.assets,
@@ -646,6 +1019,31 @@ def cmd_run(args: argparse.Namespace) -> int:
         f"directory={Path(args.workflow_dir).expanduser().resolve()}"
     )
     return 0 if manifest.status == "succeeded" else 2
+
+
+def _read_run_prompt(prompt: str | None, prompt_file: str | None) -> str:
+    """Resolve one bounded UTF-8 prompt without putting panel text on a command line."""
+
+    if prompt is not None:
+        value = prompt
+    elif prompt_file is not None:
+        path = Path(prompt_file).expanduser().resolve()
+        try:
+            if not path.is_file():
+                raise ValueError(f"prompt file does not exist: {path}")
+            if path.stat().st_size > 64 * 1024:
+                raise ValueError("prompt file exceeds the 64 KiB safety limit")
+            value = path.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"could not read prompt file {path}: {exc}") from exc
+    else:
+        raise ValueError("one prompt source is required")
+    value = value.strip()
+    if not value:
+        raise ValueError("workflow prompt cannot be empty")
+    if len(value) > 4000:
+        raise ValueError("workflow prompt cannot exceed 4000 characters")
+    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -861,6 +1259,133 @@ def build_parser() -> argparse.ArgumentParser:
     )
     unreal_material.set_defaults(handler=cmd_unreal_import_pbr_material)
 
+    material_parameters = subparsers.add_parser(
+        "unreal-material-parameters",
+        help="inspect scalar and vector parameters exposed by one Unreal material",
+    )
+    material_parameters.add_argument("path", help="path to a compiled .uproject file")
+    material_parameters.add_argument("--engine-root", required=True)
+    material_parameters.add_argument("--material", required=True, help="/Game material path")
+    material_parameters.add_argument("--output", "-o", required=True)
+    material_parameters.add_argument("--timeout", type=int, default=300)
+    material_parameters.set_defaults(handler=cmd_unreal_material_parameters)
+
+    material_variant = subparsers.add_parser(
+        "unreal-create-material-variant",
+        help="create a non-overwriting MaterialInstanceConstant from explicit parameters",
+    )
+    material_variant.add_argument("path", help="path to a compiled .uproject file")
+    material_variant.add_argument("--engine-root", required=True)
+    material_variant.add_argument("--parent-material", required=True)
+    material_variant.add_argument("--destination-path", required=True)
+    material_variant.add_argument("--instance-name", required=True)
+    material_variant.add_argument(
+        "--scalar",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+    )
+    material_variant.add_argument(
+        "--vector",
+        action="append",
+        default=[],
+        metavar="NAME=R,G,B[,A]",
+    )
+    material_variant.add_argument("--output", "-o", required=True)
+    material_variant.add_argument("--timeout", type=int, default=300)
+    material_variant.set_defaults(handler=cmd_unreal_create_material_variant)
+
+    external_material = subparsers.add_parser(
+        "external-material-search",
+        help="search official CC0 Poly Haven textures with local embeddings",
+    )
+    external_material.add_argument("--query", required=True)
+    external_material.add_argument("--limit", type=int, default=5)
+    external_material.add_argument("--timeout", type=float, default=30.0)
+    external_material.add_argument("--output", "-o", required=True)
+    external_material.set_defaults(handler=cmd_external_material_search)
+
+    acquire_material = subparsers.add_parser(
+        "external-material-acquire",
+        help="download one selected Poly Haven material with MD5 and SHA-256 evidence",
+    )
+    acquire_material.add_argument("search_report")
+    acquire_material.add_argument("--asset-id", required=True)
+    acquire_material.add_argument("--destination-root", required=True)
+    acquire_material.add_argument("--resolution", choices=("1k", "2k", "4k", "8k"), default="1k")
+    acquire_material.add_argument("--image-format", choices=("jpg", "png"), default="jpg")
+    acquire_material.add_argument("--timeout", type=float, default=60.0)
+    acquire_material.add_argument("--output", "-o", required=True)
+    acquire_material.set_defaults(handler=cmd_external_material_acquire)
+
+    assistant_external_material = subparsers.add_parser(
+        "assistant-external-material-prepare",
+        help="search and cache one CC0 Poly Haven candidate for approval in the Editor",
+    )
+    assistant_external_prompt = assistant_external_material.add_mutually_exclusive_group(
+        required=True
+    )
+    assistant_external_prompt.add_argument("--prompt")
+    assistant_external_prompt.add_argument("--prompt-file")
+    assistant_external_material.add_argument("--library-root", required=True)
+    assistant_external_material.add_argument("--work-dir", required=True)
+    assistant_external_material.add_argument("--proposal-id", required=True)
+    assistant_external_material.add_argument(
+        "--resolution", choices=("1k", "2k", "4k", "8k"), default="1k"
+    )
+    assistant_external_material.add_argument(
+        "--image-format", choices=("jpg", "png"), default="jpg"
+    )
+    assistant_external_material.add_argument("--timeout", type=float, default=60.0)
+    assistant_external_material.add_argument("--output", "-o", required=True)
+    assistant_external_material.set_defaults(handler=cmd_assistant_external_material_prepare)
+
+    propose_material_import = subparsers.add_parser(
+        "external-material-propose-import",
+        help="freeze a five-asset Unreal import proposal without modifying the project",
+    )
+    propose_material_import.add_argument("acquisition")
+    propose_material_import.add_argument("--destination-path", required=True)
+    propose_material_import.add_argument("--material-name", required=True)
+    propose_material_import.add_argument("--proposal-id", required=True)
+    propose_material_import.add_argument("--output", "-o", required=True)
+    propose_material_import.set_defaults(handler=cmd_external_material_propose_import)
+
+    execute_material_import = subparsers.add_parser(
+        "external-material-execute-import",
+        help="execute one exact approved external-material proposal in Unreal",
+    )
+    execute_material_import.add_argument("path", help="path to a compiled .uproject file")
+    execute_material_import.add_argument("--engine-root", required=True)
+    execute_material_import.add_argument("--proposal", required=True)
+    execute_material_import.add_argument(
+        "--approve-sha256",
+        required=True,
+        help="exact SHA-256 printed when the immutable proposal was created",
+    )
+    execute_material_import.add_argument("--approved-by", default="local_operator")
+    execute_material_import.add_argument("--import-output", required=True)
+    execute_material_import.add_argument("--asset-catalog", required=True)
+    execute_material_import.add_argument("--scan-output", required=True)
+    execute_material_import.add_argument("--catalog-sync-output", required=True)
+    execute_material_import.add_argument("--output", "-o", required=True)
+    execute_material_import.add_argument("--timeout", type=int, default=300)
+    execute_material_import.set_defaults(handler=cmd_external_material_execute_import)
+
+    sync_material_import = subparsers.add_parser(
+        "external-material-sync-import",
+        help="resume catalog and Chroma sync after a completed approved Unreal import",
+    )
+    sync_material_import.add_argument("path", help="path to a compiled .uproject file")
+    sync_material_import.add_argument("--engine-root", required=True)
+    sync_material_import.add_argument("--proposal", required=True)
+    sync_material_import.add_argument("--execution", required=True)
+    sync_material_import.add_argument("--asset-catalog", required=True)
+    sync_material_import.add_argument("--scan-output", required=True)
+    sync_material_import.add_argument("--output", "-o", required=True)
+    sync_material_import.add_argument("--timeout", type=int, default=300)
+    sync_material_import.set_defaults(handler=cmd_external_material_sync_import)
+
     unreal_build = subparsers.add_parser(
         "unreal-build-scene",
         help="build a validated RenderSpec as transient actors inside Unreal",
@@ -958,6 +1483,31 @@ def build_parser() -> argparse.ArgumentParser:
     asset_search.add_argument("--output", "-o", help="write ranked retrieval results")
     asset_search.set_defaults(handler=cmd_asset_search)
 
+    assistant_material = subparsers.add_parser(
+        "assistant-material-propose",
+        help="propose one catalog-backed material change for selected Unreal evidence",
+    )
+    assistant_prompt_source = assistant_material.add_mutually_exclusive_group(required=True)
+    assistant_prompt_source.add_argument("--prompt", help="natural-language material request")
+    assistant_prompt_source.add_argument(
+        "--prompt-file",
+        help="UTF-8 text file containing the material request",
+    )
+    assistant_material.add_argument(
+        "--context",
+        required=True,
+        help="UnrealSelectionContext JSON captured by the Editor plugin",
+    )
+    assistant_material.add_argument(
+        "--assets",
+        required=True,
+        help="validated complete AssetCard JSON catalog",
+    )
+    assistant_material.add_argument("--limit", type=int, default=5)
+    assistant_material.add_argument("--proposal-id", default="material_proposal")
+    assistant_material.add_argument("--output", "-o", required=True)
+    assistant_material.set_defaults(handler=cmd_assistant_material_propose)
+
     plan = subparsers.add_parser("plan", help="ask a local Ollama model for a RenderSpec")
     plan.add_argument("--model", help="override the configured planner model")
     plan.add_argument("--prompt", required=True)
@@ -991,7 +1541,12 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Unreal installation root containing the Engine directory",
     )
-    run.add_argument("--prompt", required=True, help="natural-language render request")
+    prompt_source = run.add_mutually_exclusive_group(required=True)
+    prompt_source.add_argument("--prompt", help="natural-language render request")
+    prompt_source.add_argument(
+        "--prompt-file",
+        help="UTF-8 text file containing the render request (recommended for editor panels)",
+    )
     run.add_argument(
         "--assets",
         required=True,

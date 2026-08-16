@@ -46,13 +46,23 @@ hash, or engine path differs from the frozen request.
 
 ## Catalog integration
 
-A later Asset Registry scan proves that the saved assets survive a new Unreal process. External
-source metadata such as the provider, license, human description, and semantic tags should be
-merged into the scanned material `AssetCard` before Chroma synchronization. The raw scan source
-should remain attached as separate engine evidence.
+An approved external import immediately starts a second Asset Registry process scoped to the new
+destination. The host requires the exact five executed paths, enriches their `AssetCard` records
+with CC0 provider metadata and content hashes, and preserves the raw Unreal scan source as separate
+engine evidence. It merges by engine path without changing unrelated cards, synchronizes Chroma,
+keeps a timestamped pre-import catalog backup, and atomically replaces the JSON catalog.
 
-Large catalogs are embedded in batches of 32 documents. This keeps input order stable while
-avoiding one oversized Ollama tokenizer request during full-catalog synchronization.
+Large catalogs are embedded in batches of 32 documents. Incremental synchronization compares the
+stored Chroma document and metadata first, so unchanged cards do not consume another embedding or
+GPU pass.
+
+## Parameterized variants
+
+`unreal-material-parameters` inspects scalar and vector parameters exposed by a parent material.
+`unreal-create-material-variant` creates a new `MaterialInstanceConstant`, sets only explicit
+overrides, reads every value back inside Unreal, saves the new asset, and refuses to overwrite an
+existing path. Variants are the cheaper first expansion tier when a suitable parameterized parent
+already exists; external PBR acquisition is the second tier.
 
 ## Limitation found by the first real test
 

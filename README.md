@@ -71,6 +71,7 @@ correction records, and a reproducible run manifest.
 - Headless Unreal Asset Registry scanning into validated `AssetCard` records
 - Persistent Chroma indexing with explicit local Ollama embeddings
 - Bounded 32-document embedding batches for stable full-catalog synchronization
+- Incremental Chroma synchronization that embeds only new or changed AssetCards
 - Type-filtered Chroma retrieval that rejects assets outside the returned catalog
 - Catalog-backed per-slot material assignments with host and Unreal evidence validation
 - Automated four-map PBR material import with frozen source hashes and no-overwrite behavior
@@ -95,11 +96,28 @@ correction records, and a reproducible run manifest.
 - Schema-guided one-retry recovery for truncated planner JSON, with invalid raw-output evidence
 - Unreal scratch-output isolation with copied, hashed PNG/result artifacts and persistent process logs
 - Bounded local correction planning that emits a validated patch or an explicit capability gap
+- Native Unreal Editor dashboard with prompt input, six-stage progress, live process logs,
+  latest PNG preview, visual verdict, pixel evidence, bounded cancellation, and local runtime settings
+- Assistant-centered Unreal workspace with live project, level, and actor-selection context,
+  an explicit proposed-action review, and approval required before execution
+- Catalog-verified material proposals for one selected Static Mesh Actor, with
+  automatic single-slot targeting, explicit multi-slot targeting, approval-time
+  revalidation, no automatic save, and Ctrl+Z Undo
+- Parameterized `MaterialInstanceConstant` variants with exposed-parameter
+  inspection, exact value readback, and no-overwrite behavior
+- Official Poly Haven texture discovery with local semantic ranking, visible
+  provider credit, CC0 provenance, trusted-host enforcement, provider MD5, and SHA-256
+- Hash-bound external material approval that creates exactly four textures and
+  one connected material, then automatically rescans, merges, backs up, and
+  incrementally synchronizes the AssetCard catalog and Chroma
+- Unreal Assistant buttons for separate project-only search and external CC0
+  search, with the five saved Content paths shown before **Approve Import & Apply**
 - Command-line doctor, schema, validate, preflight, Unreal, retrieval, planning, evaluation, and correction commands
 - Standard-library unit tests for contracts, planning, preflight, Unreal execution, and preview orchestration
 
-Broader scene editing, richer per-material lighting calibration, Unreal Editor UI integration,
-and model fine-tuning are later milestones.
+Broader transform, light, camera, and performance actions, richer per-material
+lighting calibration, and model fine-tuning are
+later milestones.
 
 ## Local setup
 
@@ -181,6 +199,27 @@ render-master unreal-import-pbr-material `
 The importer freezes every source SHA-256 before launching Unreal, refuses to overwrite an
 existing target asset, applies Unreal-appropriate color and compression settings, connects the
 four material properties, saves all five assets, and verifies the returned engine paths.
+
+Create a parameterized variant without touching its parent material:
+
+```powershell
+render-master unreal-create-material-variant `
+  "E:\OptimizationPlugin\OptimizationPlugin.uproject" `
+  --engine-root "E:\Unreal Engine\UE_5.7" `
+  --parent-material "/Game/LevelPrototyping/Materials/M_PrototypeGrid" `
+  --destination-path "/Game/RenderMasterBot/MaterialVariants" `
+  --instance-name "MI_DarkRough" `
+  --scalar "Roughness=0.85" `
+  --vector "SurfaceColor=0.04,0.03,0.02,1" `
+  --output "C:\local-data\dark_rough_variant.json"
+```
+
+For a material that is not already in the project, the external workflow uses
+official Poly Haven metadata, downloads four verified maps to the local data
+root, freezes a five-asset proposal, requires its exact SHA-256 for approval,
+then imports and synchronizes the catalog and Chroma in the same command. See
+[docs/external_materials.md](docs/external_materials.md) for the panel and CLI
+lifecycles, license boundary, recovery command, and evidence files.
 
 Build a validated scene as transient actors without saving or modifying project Content:
 
@@ -281,6 +320,43 @@ render-master run `
 
 Use `--model` only to benchmark or override the configured planner.
 
+## Unreal Editor panel
+
+The native Editor assistant lives in `unreal/RenderMasterBot`. Copy that plugin
+folder into the target project's `Plugins` directory, enable `RenderMasterBot`
+for the Editor target, compile the Editor target, and open **Tools >
+RenderMasterBot > RenderMasterBot Assistant**. The workspace can also be opened at
+startup with `-RenderMasterOpenPanel`.
+
+The default **Assistant** page reads the live project, level, and selected-actor
+context without modifying the scene. **Prepare Action** retrieves only
+catalog-verified project materials. **Search Poly Haven** searches official CC0
+external materials, caches and verifies four maps outside the project, and shows
+the source, license, approval hash, and exact five Content paths before any
+project mutation. A single slot is targeted automatically;
+a multi-slot mesh requires an explicit choice in the **Target material slot**
+menu. The panel shows the exact Actor, slot, current material, proposed material,
+and evidence before an approval button becomes available. Project materials use
+**Approve & Apply Material**. External materials use **Approve Import & Apply**,
+which creates and saves four textures plus one material, updates the catalog and
+Chroma, and then applies the override. Target revalidation and the scene override
+remain transactional; the new Content assets are intentionally persistent.
+
+The secondary **Render & Evaluate** page runs the existing schema-gated
+`render-master run` workflow. General transform, light, camera, and performance
+actions remain marked as not connected rather than being represented by
+nonfunctional controls.
+
+The execution page writes the prompt to a bounded UTF-8 file, starts the
+configured virtual environment without exposing prompt text to the shell,
+polls `workflow_manifest.json`, streams child-process logs, and shows the
+latest `beauty.png`, visual verdict, and deterministic pixel evidence. Cancel
+stops the Python process and its child Unreal render process tree.
+
+Generated workflows, prompts, previews, logs, Chroma data, and models remain
+outside this repository. See [docs/unreal_editor_panel.md](docs/unreal_editor_panel.md)
+for installation, configuration, lifecycle, and verification details.
+
 ## Data separation
 
 Keep source code in this repository. Store model weights, Chroma databases, generated renders, experiment logs, and private assets outside Git. Set `RENDERMASTER_DATA_DIR` to choose that local data root.
@@ -305,6 +381,7 @@ Deterministic camera exposure is documented in [docs/exposure.md](docs/exposure.
 Unreal capability discovery is documented in [docs/unreal_probe.md](docs/unreal_probe.md).
 Real Asset Registry scanning is documented in [docs/unreal_assets.md](docs/unreal_assets.md).
 Automated PBR material import is documented in [docs/unreal_materials.md](docs/unreal_materials.md).
+External CC0 discovery, approval, import, and indexing are documented in [docs/external_materials.md](docs/external_materials.md).
 Transient scene execution is documented in [docs/unreal_execution.md](docs/unreal_execution.md).
 Offscreen preview runs are documented in [docs/unreal_preview.md](docs/unreal_preview.md).
 Local vision evaluation is documented in [docs/visual_evaluation.md](docs/visual_evaluation.md).
@@ -312,6 +389,8 @@ Visual evaluator accuracy and stability benchmarking is documented in [docs/visu
 Bounded end-to-end execution is documented in [docs/orchestration.md](docs/orchestration.md).
 Bounded correction planning is documented in [docs/correction_planning.md](docs/correction_planning.md).
 Chroma indexing and retrieval constraints are documented in [docs/retrieval.md](docs/retrieval.md).
+The approval-gated selected-Actor material action is documented in [docs/assistant_materials.md](docs/assistant_materials.md).
+The native Unreal dashboard is documented in [docs/unreal_editor_panel.md](docs/unreal_editor_panel.md).
 
 Export or validate any contract:
 

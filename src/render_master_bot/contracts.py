@@ -131,6 +131,47 @@ class AssetCard(StrictModel):
     sources: list[SourceReference] = Field(default_factory=list, max_length=16)
 
 
+class MaterialSlotContext(StrictModel):
+    """One observed material slot on a selected Unreal mesh component."""
+
+    slot_index: Annotated[int, Field(ge=0, le=63)]
+    slot_name: ShortText
+    current_material_path: Annotated[str, Field(min_length=1, max_length=500)] | None = None
+
+
+class UnrealSelectionContext(StrictModel):
+    """Read-only Editor evidence captured before an assistant action is proposed."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    project_name: ShortText
+    level_path: Annotated[str, Field(min_length=1, max_length=500)]
+    actor_name: ShortText
+    actor_path: Annotated[str, Field(min_length=1, max_length=500)]
+    component_name: ShortText
+    mesh_path: Annotated[str, Field(min_length=1, max_length=500)]
+    material_slots: list[MaterialSlotContext] = Field(min_length=1, max_length=64)
+    target_slot_index: Annotated[int, Field(ge=0, le=63)] | None = None
+
+    @model_validator(mode="after")
+    def material_slot_indices_are_unique(self) -> "UnrealSelectionContext":
+        indices = [slot.slot_index for slot in self.material_slots]
+        if len(indices) != len(set(indices)):
+            raise ValueError("selection context material slot indices must be unique")
+        if self.target_slot_index is not None and self.target_slot_index not in indices:
+            raise ValueError("target material slot is not present in the selection context")
+        return self
+
+
+class MaterialCandidate(StrictModel):
+    """Catalog-verified material returned by semantic retrieval."""
+
+    rank: Annotated[int, Field(ge=1, le=100)]
+    asset_id: Identifier
+    display_name: ShortText
+    engine_path: Annotated[str, Field(min_length=1, max_length=500)]
+    similarity: Annotated[float, Field(ge=-1.0, le=1.0, allow_inf_nan=False)]
+
+
 class PatchOperation(StrictModel):
     """A bounded JSON Patch subset; metadata and identity fields are immutable."""
 
@@ -161,6 +202,50 @@ class ModelIdentity(StrictModel):
     provider: Literal["ollama", "local", "external", "human"]
     model: ShortText
     revision: Annotated[str, Field(max_length=240)] | None = None
+
+
+class AssistantMaterialProposal(StrictModel):
+    """Auditable, approval-gated material change for one selected component slot."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    proposal_id: Identifier
+    status: Literal["proposed", "unresolved"]
+    request: LongText
+    target: UnrealSelectionContext
+    proposed_by: ModelIdentity
+    selected_slot: MaterialSlotContext | None = None
+    selected_material: MaterialCandidate | None = None
+    alternatives: list[MaterialCandidate] = Field(default_factory=list, max_length=5)
+    rationale: LongText
+    missing_capabilities: list[ShortText] = Field(default_factory=list, max_length=16)
+    modifies_editor_scene: Literal[True] = True
+    auto_save: Literal[False] = False
+    undo_supported: Literal[True] = True
+
+    @model_validator(mode="after")
+    def status_matches_material_action(self) -> "AssistantMaterialProposal":
+        if self.status == "proposed":
+            if self.selected_slot is None or self.selected_material is None:
+                raise ValueError("proposed material actions require a slot and material")
+            if self.missing_capabilities:
+                raise ValueError("proposed material actions cannot report missing capabilities")
+            slot_indices = {slot.slot_index for slot in self.target.material_slots}
+            if self.selected_slot.slot_index not in slot_indices:
+                raise ValueError("selected material slot is not present in the target context")
+            if (
+                self.target.target_slot_index is not None
+                and self.selected_slot.slot_index != self.target.target_slot_index
+            ):
+                raise ValueError("selected material slot does not match the explicit target slot")
+        elif (
+            self.selected_slot is not None
+            or self.selected_material is not None
+            or not self.missing_capabilities
+        ):
+            raise ValueError(
+                "unresolved material actions require missing capabilities and no selection"
+            )
+        return self
 
 
 class RenderSpecPatch(StrictModel):
@@ -736,6 +821,8 @@ CONTRACT_MODELS = {
     "render-spec": RenderSpec,
     "technique-card": TechniqueCard,
     "asset-card": AssetCard,
+    "unreal-selection-context": UnrealSelectionContext,
+    "assistant-material-proposal": AssistantMaterialProposal,
     "render-spec-patch": RenderSpecPatch,
     "correction-decision": CorrectionDecision,
     "evaluation-report": EvaluationReport,

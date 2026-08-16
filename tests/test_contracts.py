@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from pydantic import ValidationError
 
 from render_master_bot.contracts import (
+    AssistantMaterialProposal,
     AssetCard,
     CapabilityManifest,
     CorrectionDecision,
@@ -11,6 +12,7 @@ from render_master_bot.contracts import (
     PatchOperation,
     RunManifest,
     TechniqueCard,
+    UnrealSelectionContext,
     VisualBenchmarkSuite,
 )
 from render_master_bot.serialization import canonical_sha256
@@ -21,6 +23,49 @@ HASH_B = "b" * 64
 
 
 class SharedContractTests(unittest.TestCase):
+    def test_selection_context_target_slot_must_be_observed(self):
+        with self.assertRaisesRegex(ValidationError, "target material slot is not present"):
+            UnrealSelectionContext.model_validate({
+                "project_name": "OptimizationPlugin",
+                "level_path": "/Game/Test",
+                "actor_name": "Door",
+                "actor_path": "/Game/Test.Door",
+                "component_name": "Mesh",
+                "mesh_path": "/Game/SM_Door",
+                "material_slots": [{"slot_index": 0, "slot_name": "DoorSurface"}],
+                "target_slot_index": 3,
+            })
+
+    def test_material_proposal_cannot_target_an_unobserved_slot(self):
+        with self.assertRaisesRegex(ValidationError, "not present in the target context"):
+            AssistantMaterialProposal.model_validate({
+                "proposal_id": "material_001",
+                "status": "proposed",
+                "request": "Use weathered wood",
+                "target": {
+                    "project_name": "OptimizationPlugin",
+                    "level_path": "/Game/Test",
+                    "actor_name": "Door",
+                    "actor_path": "/Game/Test.Door",
+                    "component_name": "Mesh",
+                    "mesh_path": "/Game/SM_Door",
+                    "material_slots": [{
+                        "slot_index": 0,
+                        "slot_name": "DoorSurface",
+                    }],
+                },
+                "proposed_by": {"provider": "local", "model": "embedding-test"},
+                "selected_slot": {"slot_index": 1, "slot_name": "WrongSlot"},
+                "selected_material": {
+                    "rank": 1,
+                    "asset_id": "weathered_wood",
+                    "display_name": "Weathered Wood",
+                    "engine_path": "/Game/M_Weathered",
+                    "similarity": 0.9,
+                },
+                "rationale": "The material matches the request.",
+            })
+
     def test_technique_card_requires_a_traceable_source(self):
         with self.assertRaises(ValidationError):
             TechniqueCard(

@@ -8,6 +8,8 @@ these strict models. Unknown fields are rejected.
 | --- | --- | --- | --- |
 | `TechniqueCard` | knowledge ingestion | retriever/planner | cited graphics knowledge |
 | `AssetCard` | Unreal asset scanner | retriever/planner/adapter | resolvable project assets |
+| `UnrealSelectionContext` | Unreal Editor assistant | proposal builder | captured Actor, component, mesh, and slot evidence |
+| `AssistantMaterialProposal` | catalog-backed proposal builder | Unreal Editor assistant/operator | approval-gated selected-Actor material change |
 | `RenderSpec` | planner or human | validator/engine adapter | complete requested scene |
 | `RenderSpecPatch` | evaluator or human | patch validator | bounded correction proposal |
 | `EvaluationReport` | visual/rule evaluator | repair planner/benchmark | findings and verdict |
@@ -19,7 +21,7 @@ these strict models. Unknown fields are rejected.
 | `RunManifest` | orchestration layer | dataset builder/auditor | reproducible run evidence |
 
 Although the early planning note called these "six contracts," the actual
-boundary now contains eleven top-level contracts. `CorrectionDecision` is kept
+boundary now contains thirteen top-level contracts. `CorrectionDecision` is kept
 separate from `EvaluationReport` so visual observation and executable repair
 remain independently testable.
 
@@ -30,6 +32,20 @@ remain independently testable.
   `lights`, `render`, and `notes`). It cannot rewrite contract metadata.
 - Object material assignments reference catalog asset IDs and named mesh slots;
   raw Unreal paths never cross the public planner boundary.
+- An assistant material proposal preserves the exact Editor selection evidence,
+  can select only a slot observed in that evidence, and distinguishes a valid
+  proposal from an explicit unresolved capability gap.
+- When `target_slot_index` is present, it must identify an observed slot and the
+  proposal's selected slot must match it exactly.
+- The host rechecks retrieved material IDs against the supplied catalog. Unreal
+  revalidates the captured Actor, component, mesh, slot, and current material
+  immediately before applying an approved transaction.
+- External-material operational records freeze provider metadata, four local
+  map hashes, the exact five planned Unreal paths, and the canonical proposal
+  SHA-256. A mismatched approval hash stops before Unreal is launched.
+- Imported external cards retain both Unreal Asset Registry evidence and their
+  CC0 provider source. Catalog replacement is atomic and keeps a byte-for-byte
+  pre-import backup; Chroma embeds only inserted or changed records.
 - A `pass` evaluation cannot contain an error or blocking issue.
 - Preflight evaluation can run before an image exists; preview and final
   evaluation must point to at least one rendered image.
@@ -63,6 +79,8 @@ render-master validate examples/run_manifest.json --contract run-manifest
 render-master validate correction.json --contract correction-decision
 render-master validate visual_suite.json --contract visual-benchmark-suite
 render-master validate workflow_manifest.json --contract render-workflow-manifest
+render-master validate selection_context.json --contract unreal-selection-context
+render-master validate material_proposal.json --contract assistant-material-proposal
 ```
 
 `render-master schema` and `render-master validate` default to `render-spec`,

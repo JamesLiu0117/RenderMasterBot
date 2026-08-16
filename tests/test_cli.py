@@ -5,10 +5,45 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from render_master_bot.cli import _configure_utf8_console, _write_json, build_parser
+from render_master_bot.cli import (
+    _configure_utf8_console,
+    _read_run_prompt,
+    _write_json,
+    build_parser,
+)
 
 
 class CliOutputTests(unittest.TestCase):
+    def test_run_prompt_file_preserves_utf8_and_trims_outer_whitespace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "prompt.txt"
+            path.write_text("  创建一个有风化木材质的门。\n", encoding="utf-8")
+
+            self.assertEqual(
+                _read_run_prompt(None, str(path)),
+                "创建一个有风化木材质的门。",
+            )
+
+    def test_run_prompt_file_rejects_empty_or_oversized_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            empty = Path(directory) / "empty.txt"
+            empty.write_text(" \n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "cannot be empty"):
+                _read_run_prompt(None, str(empty))
+
+            large = Path(directory) / "large.txt"
+            large.write_bytes(b"x" * (64 * 1024 + 1))
+            with self.assertRaisesRegex(ValueError, "64 KiB"):
+                _read_run_prompt(None, str(large))
+
+    def test_run_prompt_file_reports_invalid_utf8_as_input_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "invalid.txt"
+            path.write_bytes(b"\xff\xfe\xfa")
+
+            with self.assertRaisesRegex(ValueError, "could not read prompt file"):
+                _read_run_prompt(None, str(path))
+
     def test_json_output_creates_missing_parent_directories(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "nested" / "run" / "report.json"
@@ -238,6 +273,23 @@ class CliOutputTests(unittest.TestCase):
         self.assertEqual(defaults.margin, 0.02)
         self.assertFalse(defaults.no_studio_calibration)
 
+        prompt_file = build_parser().parse_args([
+            "run",
+            "E:/Project/Project.uproject",
+            "--engine-root",
+            "E:/Unreal Engine/UE_5.7",
+            "--prompt-file",
+            "request.txt",
+            "--assets",
+            "asset_cards.json",
+            "--workflow-dir",
+            "workflow-panel",
+            "--workflow-id",
+            "workflow_panel",
+        ])
+        self.assertIsNone(prompt_file.prompt)
+        self.assertEqual(prompt_file.prompt_file, "request.txt")
+
     def test_asset_search_parser_captures_query_and_limit(self):
         args = build_parser().parse_args(
             [
@@ -254,6 +306,114 @@ class CliOutputTests(unittest.TestCase):
         self.assertEqual(args.query, "木门材质")
         self.assertEqual(args.limit, 3)
         self.assertEqual(args.asset_type, ["material"])
+
+    def test_assistant_material_parser_requires_safe_context_and_output(self):
+        args = build_parser().parse_args(
+            [
+                "assistant-material-propose",
+                "--prompt-file",
+                "request.txt",
+                "--context",
+                "selection.json",
+                "--assets",
+                "asset_cards.json",
+                "--proposal-id",
+                "material_001",
+                "--output",
+                "proposal.json",
+            ]
+        )
+
+        self.assertIsNone(args.prompt)
+        self.assertEqual(args.prompt_file, "request.txt")
+        self.assertEqual(args.context, "selection.json")
+        self.assertEqual(args.proposal_id, "material_001")
+        self.assertEqual(args.limit, 5)
+
+    def test_external_material_import_parsers_separate_proposal_and_approval(self):
+        assistant_external = build_parser().parse_args(
+            [
+                "assistant-external-material-prepare",
+                "--prompt-file",
+                "request.txt",
+                "--library-root",
+                "material-library",
+                "--work-dir",
+                "external-request",
+                "--proposal-id",
+                "external_wood_001",
+                "--output",
+                "assistant_external.json",
+            ]
+        )
+        self.assertEqual(assistant_external.resolution, "1k")
+        self.assertEqual(assistant_external.image_format, "jpg")
+        self.assertEqual(assistant_external.prompt_file, "request.txt")
+
+        proposal = build_parser().parse_args(
+            [
+                "external-material-propose-import",
+                "acquisition.json",
+                "--destination-path",
+                "/Game/RenderMasterBot/Imported/Wood",
+                "--material-name",
+                "M_PH_Wood",
+                "--proposal-id",
+                "external_wood_001",
+                "--output",
+                "proposal.json",
+            ]
+        )
+        self.assertEqual(proposal.acquisition, "acquisition.json")
+        self.assertEqual(proposal.material_name, "M_PH_Wood")
+
+        execution = build_parser().parse_args(
+            [
+                "external-material-execute-import",
+                "E:/Project/Project.uproject",
+                "--engine-root",
+                "E:/Unreal Engine/UE_5.7",
+                "--proposal",
+                "proposal.json",
+                "--approve-sha256",
+                "a" * 64,
+                "--import-output",
+                "import.json",
+                "--asset-catalog",
+                "asset_cards.json",
+                "--scan-output",
+                "imported_scan.json",
+                "--catalog-sync-output",
+                "catalog_sync.json",
+                "--output",
+                "execution.json",
+            ]
+        )
+        self.assertEqual(execution.approve_sha256, "a" * 64)
+        self.assertEqual(execution.approved_by, "local_operator")
+        self.assertEqual(execution.import_output, "import.json")
+        self.assertEqual(execution.asset_catalog, "asset_cards.json")
+
+        recovery = build_parser().parse_args(
+            [
+                "external-material-sync-import",
+                "E:/Project/Project.uproject",
+                "--engine-root",
+                "E:/Unreal Engine/UE_5.7",
+                "--proposal",
+                "proposal.json",
+                "--execution",
+                "execution.json",
+                "--asset-catalog",
+                "asset_cards.json",
+                "--scan-output",
+                "imported_scan.json",
+                "--output",
+                "catalog_sync.json",
+            ]
+        )
+        self.assertEqual(recovery.execution, "execution.json")
+        self.assertEqual(recovery.asset_catalog, "asset_cards.json")
 
     def test_utf8_console_setup_tolerates_captured_streams(self):
         with patch("render_master_bot.cli.sys.stdout", new=StringIO()), patch(

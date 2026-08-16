@@ -178,21 +178,46 @@ class AssetIndex:
         if len(ids) != len(set(ids)):
             raise AssetIndexError("cannot index duplicate AssetCard IDs")
         documents = [asset_document(card) for card in ordered]
-        embeddings = self.embedder.embed_texts(
-            model=self.embedding_model,
-            texts=documents,
-        )
-        _validate_embeddings(embeddings, len(documents))
-
-        existing = set(self.collection.get(include=[]).get("ids", []))
+        metadatas = [_metadata(card) for card in ordered]
+        stored = self.collection.get(include=["documents", "metadatas"])
+        stored_ids = [str(value) for value in (stored.get("ids") or [])]
+        stored_documents = stored.get("documents") or []
+        stored_metadatas = stored.get("metadatas") or []
+        if not (
+            len(stored_ids) == len(stored_documents) == len(stored_metadatas)
+        ):
+            raise AssetIndexError("Chroma returned inconsistent stored asset records")
+        existing_state = {
+            asset_id: (document, metadata)
+            for asset_id, document, metadata in zip(
+                stored_ids,
+                stored_documents,
+                stored_metadatas,
+                strict=True,
+            )
+        }
+        existing = set(stored_ids)
         current = set(ids)
         stale = sorted(existing - current)
-        self.collection.upsert(
-            ids=ids,
-            embeddings=embeddings,
-            metadatas=[_metadata(card) for card in ordered],
-            documents=documents,
-        )
+        dirty_indexes = [
+            index
+            for index, asset_id in enumerate(ids)
+            if existing_state.get(asset_id) != (documents[index], metadatas[index])
+        ]
+        dirty_ids = [ids[index] for index in dirty_indexes]
+        if dirty_indexes:
+            dirty_documents = [documents[index] for index in dirty_indexes]
+            embeddings = self.embedder.embed_texts(
+                model=self.embedding_model,
+                texts=dirty_documents,
+            )
+            _validate_embeddings(embeddings, len(dirty_documents))
+            self.collection.upsert(
+                ids=dirty_ids,
+                embeddings=embeddings,
+                metadatas=[metadatas[index] for index in dirty_indexes],
+                documents=dirty_documents,
+            )
         if stale:
             self.collection.delete(ids=stale)
         return AssetIndexReport(
@@ -200,7 +225,7 @@ class AssetIndex:
             embedding_model=self.embedding_model,
             total=len(ids),
             inserted=len(current - existing),
-            updated=len(current & existing),
+            updated=len(set(dirty_ids) & existing),
             deleted=len(stale),
         )
 

@@ -112,9 +112,34 @@ class AssetIndexTests(unittest.TestCase):
             self.assertEqual(report.inserted, 2)
             self.assertEqual(hits[0].asset_id, "sm_door")
             self.assertEqual(hits[0].rank, 1)
-            self.assertEqual(second_report.updated, 1)
+            self.assertEqual(second_report.updated, 0)
             self.assertEqual(second_report.deleted, 1)
             self.assertEqual(final_count, 1)
+
+    def test_unchanged_cards_are_not_reembedded(self):
+        class CountingEmbedder(SemanticFakeEmbedder):
+            def __init__(self):
+                self.batch_sizes = []
+
+            def embed_texts(self, *, model: str, texts: list[str]) -> list[list[float]]:
+                self.batch_sizes.append(len(texts))
+                return super().embed_texts(model=model, texts=texts)
+
+        with tempfile.TemporaryDirectory() as directory:
+            embedder = CountingEmbedder()
+            values = [card("sm_door", "SM_Door", "static_mesh", "/Game/SM_Door")]
+            with open_persistent_asset_index(
+                directory,
+                embedder,
+                embedding_model="fake-embedding",
+                collection_name="incremental_sync",
+            ) as index:
+                first = index.sync(values)
+                second = index.sync(values)
+
+        self.assertEqual(embedder.batch_sizes, [1])
+        self.assertEqual(first.inserted, 1)
+        self.assertEqual(second.updated, 0)
 
     def test_collection_rejects_a_different_embedding_model(self):
         with tempfile.TemporaryDirectory() as directory:
