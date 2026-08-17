@@ -296,7 +296,7 @@ class TransformEditIntent(StrictModel):
 
     schema_version: Literal["0.1"] = "0.1"
     outcome: Literal["proposed", "unresolved"]
-    coordinate_space: Literal["world"] = "world"
+    coordinate_space: Literal["world", "local"] = "world"
     location: TransformAxisEdit = Field(default_factory=TransformAxisEdit)
     rotation: TransformAxisEdit = Field(default_factory=TransformAxisEdit)
     scale: TransformAxisEdit = Field(default_factory=TransformAxisEdit)
@@ -336,7 +336,7 @@ class TransformChange(StrictModel):
 
 
 class AssistantTransformProposal(StrictModel):
-    """Auditable, approval-gated world Transform change for one selected Actor."""
+    """Auditable, approval-gated Transform change for one selected Actor."""
 
     schema_version: Literal["0.1"] = "0.1"
     proposal_id: Identifier
@@ -344,7 +344,7 @@ class AssistantTransformProposal(StrictModel):
     request: LongText
     target: UnrealActorTransformContext
     proposed_by: ModelIdentity
-    coordinate_space: Literal["world"] = "world"
+    coordinate_space: Literal["world", "local"] = "world"
     before: ActorTransformSnapshot
     after: ActorTransformSnapshot | None = None
     changes: list[TransformChange] = Field(default_factory=list, max_length=3)
@@ -416,6 +416,146 @@ class AssistantTransformProposal(StrictModel):
         elif self.after is not None or self.changes or not self.missing_capabilities:
             raise ValueError(
                 "unresolved transform actions require missing capabilities and no changes"
+            )
+        return self
+
+
+class UnrealTransformSelectionContext(StrictModel):
+    """Read-only Transform evidence for an ordered Unreal Actor selection."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    project_name: ShortText
+    level_path: Annotated[str, Field(min_length=1, max_length=500)]
+    actors: list[UnrealActorTransformContext] = Field(min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def actors_share_selection_scope(self) -> "UnrealTransformSelectionContext":
+        paths = [actor.actor_path for actor in self.actors]
+        if len(paths) != len(set(paths)):
+            raise ValueError("Transform selection cannot repeat an Actor path")
+        guids = [actor.actor_guid for actor in self.actors if actor.actor_guid is not None]
+        if len(guids) != len(set(guids)):
+            raise ValueError("Transform selection cannot repeat an Actor GUID")
+        if any(actor.project_name != self.project_name for actor in self.actors):
+            raise ValueError("all selected Actors must belong to the captured project")
+        if any(actor.level_path != self.level_path for actor in self.actors):
+            raise ValueError("all selected Actors must belong to the captured level")
+        return self
+
+
+class TransformActorAction(StrictModel):
+    """Host-computed Transform evidence for one Actor in a batch proposal."""
+
+    target: UnrealActorTransformContext
+    before: ActorTransformSnapshot
+    after: ActorTransformSnapshot
+    changes: list[TransformChange] = Field(default_factory=list, max_length=3)
+
+    @model_validator(mode="after")
+    def evidence_is_complete(self) -> "TransformActorAction":
+        if self.before != self.target.transform:
+            raise ValueError("batch Transform before value must match target evidence")
+        before_channels = {
+            "location": self.before.location_cm,
+            "rotation": self.before.rotation_deg,
+            "scale": self.before.scale,
+        }
+        after_channels = {
+            "location": self.after.location_cm,
+            "rotation": self.after.rotation_deg,
+            "scale": self.after.scale,
+        }
+        allowed_operations = {
+            "location": {"set", "add"},
+            "rotation": {"set", "add"},
+            "scale": {"set", "multiply"},
+        }
+        seen_channels: set[str] = set()
+        for change in self.changes:
+            if change.channel in seen_channels:
+                raise ValueError("batch Transform action cannot repeat a changed channel")
+            seen_channels.add(change.channel)
+            if change.operation not in allowed_operations[change.channel]:
+                raise ValueError(
+                    f"unsupported {change.channel} operation in batch Transform action"
+                )
+            if change.before != before_channels[change.channel]:
+                raise ValueError(
+                    f"batch {change.channel} before value must match Actor evidence"
+                )
+            if change.after != after_channels[change.channel]:
+                raise ValueError(
+                    f"batch {change.channel} after value must match Actor evidence"
+                )
+            actual_axes = {
+                axis
+                for axis in ("x", "y", "z")
+                if getattr(change.before, axis) != getattr(change.after, axis)
+            }
+            if set(change.axes) != actual_axes:
+                raise ValueError(
+                    f"batch {change.channel} axes must match observable world differences"
+                )
+        expected_channels = {
+            channel
+            for channel in ("location", "rotation", "scale")
+            if before_channels[channel] != after_channels[channel]
+        }
+        if seen_channels != expected_channels:
+            raise ValueError(
+                "batch Transform changes must cover every changed channel exactly once"
+            )
+        return self
+
+
+class AssistantTransformBatchProposal(StrictModel):
+    """Approval-gated Transform change for one ordered Actor selection."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    proposal_id: Identifier
+    status: Literal["proposed", "unresolved"]
+    request: LongText
+    selection: UnrealTransformSelectionContext
+    proposed_by: ModelIdentity
+    coordinate_space: Literal["world", "local"] = "world"
+    actions: list[TransformActorAction] = Field(default_factory=list, max_length=32)
+    rationale: LongText
+    missing_capabilities: list[ShortText] = Field(default_factory=list, max_length=16)
+    modifies_editor_scene: Literal[True] = True
+    auto_save: Literal[False] = False
+    undo_supported: Literal[True] = True
+
+    @model_validator(mode="after")
+    def status_matches_batch_action(self) -> "AssistantTransformBatchProposal":
+        if self.status == "proposed":
+            if not self.actions:
+                raise ValueError("proposed batch Transform actions require Actor actions")
+            if self.missing_capabilities:
+                raise ValueError(
+                    "proposed batch Transform actions cannot report missing capabilities"
+                )
+            if len(self.actions) != len(self.selection.actors):
+                raise ValueError(
+                    "batch Transform actions must cover every selected Actor exactly once"
+                )
+            for selected, action in zip(self.selection.actors, self.actions, strict=True):
+                if action.target != selected:
+                    raise ValueError(
+                        "batch Transform action targets must preserve selection order and evidence"
+                    )
+                if self.coordinate_space == "local":
+                    for change in action.changes:
+                        if change.channel in {"location", "rotation"} and change.operation != "add":
+                            raise ValueError(
+                                "local-space location and rotation support only add operations"
+                            )
+            if not any(action.changes for action in self.actions):
+                raise ValueError(
+                    "proposed batch Transform action must change at least one selected Actor"
+                )
+        elif self.actions or not self.missing_capabilities:
+            raise ValueError(
+                "unresolved batch Transform actions require missing capabilities and no actions"
             )
         return self
 
@@ -654,6 +794,373 @@ class AssistantLightProposal(StrictModel):
         elif self.after is not None or self.changes or not self.missing_capabilities:
             raise ValueError(
                 "unresolved light actions require missing capabilities and no changes"
+            )
+        return self
+
+
+class UnrealLightSelectionContext(StrictModel):
+    """Read-only evidence for an ordered Unreal light selection."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    project_name: ShortText
+    level_path: Annotated[str, Field(min_length=1, max_length=500)]
+    lights: list[UnrealLightContext] = Field(min_length=1, max_length=16)
+
+    @model_validator(mode="after")
+    def lights_share_selection_scope(self) -> "UnrealLightSelectionContext":
+        paths = [light.actor_path for light in self.lights]
+        if len(paths) != len(set(paths)):
+            raise ValueError("light selection cannot repeat an Actor path")
+        guids = [light.actor_guid for light in self.lights if light.actor_guid is not None]
+        if len(guids) != len(set(guids)):
+            raise ValueError("light selection cannot repeat an Actor GUID")
+        if any(light.project_name != self.project_name for light in self.lights):
+            raise ValueError("all selected lights must belong to the captured project")
+        if any(light.level_path != self.level_path for light in self.lights):
+            raise ValueError("all selected lights must belong to the captured level")
+        return self
+
+
+class LightActorAction(StrictModel):
+    """Host-computed property evidence for one light in a batch proposal."""
+
+    target: UnrealLightContext
+    before: EditorLightSnapshot
+    after: EditorLightSnapshot
+    changes: list[LightPropertyChange] = Field(default_factory=list, max_length=9)
+
+    @model_validator(mode="after")
+    def evidence_is_complete(self) -> "LightActorAction":
+        if self.before != self.target.light:
+            raise ValueError("batch light before value must match target evidence")
+        properties = [change.property for change in self.changes]
+        if len(properties) != len(set(properties)):
+            raise ValueError("batch light action cannot repeat a changed property")
+        allowed_operations = {
+            "rotation": {"set", "add"},
+            "intensity": {"set", "add", "multiply"},
+            "color_rgb": {"set"},
+            "use_temperature": {"set"},
+            "temperature_kelvin": {"set"},
+            "cast_shadows": {"set"},
+            "attenuation_radius_cm": {"set", "add", "multiply"},
+            "inner_cone_deg": {"set", "add"},
+            "outer_cone_deg": {"set", "add"},
+        }
+        for change in self.changes:
+            if change.operation not in allowed_operations[change.property]:
+                raise ValueError(
+                    f"unsupported {change.property} operation in batch light action"
+                )
+        expected = {
+            name
+            for name in (
+                "rotation",
+                "intensity",
+                "color_rgb",
+                "use_temperature",
+                "temperature_kelvin",
+                "cast_shadows",
+                "attenuation_radius_cm",
+                "inner_cone_deg",
+                "outer_cone_deg",
+            )
+            if getattr(self.before, "rotation_deg" if name == "rotation" else name)
+            != getattr(self.after, "rotation_deg" if name == "rotation" else name)
+        }
+        if set(properties) != expected:
+            raise ValueError(
+                "batch light changes must cover every changed property exactly once"
+            )
+        if self.target.light_kind == "point" and "rotation" in expected:
+            raise ValueError("point-light rotation is not an executable visual edit")
+        if self.target.light_kind == "directional" and any(
+            name in expected
+            for name in ("attenuation_radius_cm", "inner_cone_deg", "outer_cone_deg")
+        ):
+            raise ValueError("directional lights cannot contain local-light edits")
+        if self.target.light_kind != "spot" and any(
+            name in expected for name in ("inner_cone_deg", "outer_cone_deg")
+        ):
+            raise ValueError("only spot lights can contain cone edits")
+        return self
+
+
+class AssistantLightBatchProposal(StrictModel):
+    """Approval-gated uniform property change for one ordered light selection."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    proposal_id: Identifier
+    status: Literal["proposed", "unresolved"]
+    request: LongText
+    selection: UnrealLightSelectionContext
+    proposed_by: ModelIdentity
+    actions: list[LightActorAction] = Field(default_factory=list, max_length=16)
+    rationale: LongText
+    missing_capabilities: list[ShortText] = Field(default_factory=list, max_length=16)
+    modifies_editor_scene: Literal[True] = True
+    auto_save: Literal[False] = False
+    undo_supported: Literal[True] = True
+
+    @model_validator(mode="after")
+    def status_matches_batch_action(self) -> "AssistantLightBatchProposal":
+        if self.status == "proposed":
+            if not self.actions:
+                raise ValueError("proposed batch light actions require light actions")
+            if self.missing_capabilities:
+                raise ValueError(
+                    "proposed batch light actions cannot report missing capabilities"
+                )
+            if len(self.actions) != len(self.selection.lights):
+                raise ValueError(
+                    "batch light actions must cover every selected light exactly once"
+                )
+            for selected, action in zip(self.selection.lights, self.actions, strict=True):
+                if action.target != selected:
+                    raise ValueError(
+                        "batch light action targets must preserve selection order and evidence"
+                    )
+            if not any(action.changes for action in self.actions):
+                raise ValueError(
+                    "proposed batch light action must change at least one selected light"
+                )
+        elif self.actions or not self.missing_capabilities:
+            raise ValueError(
+                "unresolved batch light actions require missing capabilities and no actions"
+            )
+        return self
+
+
+class EditorCameraSnapshot(StrictModel):
+    """Editable camera state observed directly from one Unreal camera Actor."""
+
+    location_cm: Vector3
+    rotation_deg: Vector3
+    field_of_view_deg: Annotated[
+        float, Field(ge=5.0, le=170.0, allow_inf_nan=False)
+    ] | None = None
+    focal_length_mm: PositiveFiniteFloat | None = None
+    aperture_fstop: Annotated[
+        float, Field(ge=0.1, le=64.0, allow_inf_nan=False)
+    ]
+    focus_mode: Literal["project_default", "manual", "tracking", "disabled"]
+    focus_distance_cm: NonNegativeFiniteFloat
+    exposure_compensation_enabled: bool
+    exposure_compensation_ev: Annotated[
+        float, Field(ge=-15.0, le=15.0, allow_inf_nan=False)
+    ]
+    post_process_blend_weight: UnitFloat
+
+
+class UnrealCameraContext(StrictModel):
+    """Read-only camera identity, lens limits, and property evidence from Unreal."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    project_name: ShortText
+    level_path: Annotated[str, Field(min_length=1, max_length=500)]
+    actor_name: ShortText
+    actor_path: Annotated[str, Field(min_length=1, max_length=1000)]
+    actor_class: ShortText
+    actor_guid: Annotated[str, Field(min_length=1, max_length=64)] | None = None
+    component_name: ShortText
+    camera_kind: Literal["camera", "cine_camera"]
+    component_mobility: Literal["static", "stationary", "movable"]
+    projection_mode: Literal["perspective"] = "perspective"
+    is_editable: bool
+    is_locked: bool
+    min_focal_length_mm: PositiveFiniteFloat | None = None
+    max_focal_length_mm: PositiveFiniteFloat | None = None
+    min_aperture_fstop: Annotated[
+        float, Field(ge=0.1, le=64.0, allow_inf_nan=False)
+    ]
+    max_aperture_fstop: Annotated[
+        float, Field(ge=0.1, le=64.0, allow_inf_nan=False)
+    ]
+    minimum_focus_distance_cm: NonNegativeFiniteFloat
+    camera: EditorCameraSnapshot
+
+    @model_validator(mode="after")
+    def fields_match_camera_kind(self) -> "UnrealCameraContext":
+        cine = self.camera_kind == "cine_camera"
+        has_focal_bounds = (
+            self.min_focal_length_mm is not None
+            and self.max_focal_length_mm is not None
+        )
+        if cine != has_focal_bounds:
+            raise ValueError("only Cine Cameras require focal-length bounds")
+        if cine != (self.camera.focal_length_mm is not None):
+            raise ValueError("only Cine Cameras expose focal length")
+        if cine == (self.camera.field_of_view_deg is not None):
+            raise ValueError("standard Cameras expose FOV; Cine Cameras expose focal length")
+        if has_focal_bounds and self.min_focal_length_mm > self.max_focal_length_mm:
+            raise ValueError("camera focal-length bounds are reversed")
+        if self.min_aperture_fstop > self.max_aperture_fstop:
+            raise ValueError("camera aperture bounds are reversed")
+        if (
+            self.camera.focal_length_mm is not None
+            and not self.min_focal_length_mm
+            <= self.camera.focal_length_mm
+            <= self.max_focal_length_mm
+        ):
+            raise ValueError("camera focal length is outside captured lens bounds")
+        if not self.min_aperture_fstop <= self.camera.aperture_fstop <= self.max_aperture_fstop:
+            raise ValueError("camera aperture is outside captured lens bounds")
+        if self.camera.focus_distance_cm < self.minimum_focus_distance_cm:
+            raise ValueError("camera focus distance is below the captured lens minimum")
+        if not cine and self.camera.focus_mode not in {"project_default", "manual"}:
+            raise ValueError("standard Cameras support only project-default or manual focus")
+        return self
+
+
+class CameraScalarEdit(StrictModel):
+    """Restricted scalar operation used by the camera intent model."""
+
+    operation: Literal["preserve", "set", "add", "multiply"] = "preserve"
+    value: FiniteFloat | None = None
+
+    @model_validator(mode="after")
+    def operation_matches_value(self) -> "CameraScalarEdit":
+        if self.operation == "preserve" and self.value is not None:
+            raise ValueError("preserve camera edits cannot contain a value")
+        if self.operation != "preserve" and self.value is None:
+            raise ValueError("non-preserve camera edits require a value")
+        return self
+
+
+class CameraEditIntent(StrictModel):
+    """Restricted model interpretation of one selected-camera request."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    outcome: Literal["proposed", "unresolved"]
+    location: TransformAxisEdit = Field(default_factory=TransformAxisEdit)
+    rotation: TransformAxisEdit = Field(default_factory=TransformAxisEdit)
+    field_of_view_deg: CameraScalarEdit = Field(default_factory=CameraScalarEdit)
+    focal_length_mm: CameraScalarEdit = Field(default_factory=CameraScalarEdit)
+    aperture_fstop: CameraScalarEdit = Field(default_factory=CameraScalarEdit)
+    focus_mode: Literal["preserve", "manual", "disabled"] = "preserve"
+    focus_distance_cm: CameraScalarEdit = Field(default_factory=CameraScalarEdit)
+    exposure_compensation_enabled: bool | None = None
+    exposure_compensation_ev: CameraScalarEdit = Field(default_factory=CameraScalarEdit)
+    rationale: LongText
+    missing_capabilities: list[ShortText] = Field(default_factory=list, max_length=16)
+
+    @model_validator(mode="after")
+    def outcome_matches_camera_edits(self) -> "CameraEditIntent":
+        has_edit = any((
+            self.location.operation != "preserve",
+            self.rotation.operation != "preserve",
+            self.field_of_view_deg.operation != "preserve",
+            self.focal_length_mm.operation != "preserve",
+            self.aperture_fstop.operation != "preserve",
+            self.focus_mode != "preserve",
+            self.focus_distance_cm.operation != "preserve",
+            self.exposure_compensation_enabled is not None,
+            self.exposure_compensation_ev.operation != "preserve",
+        ))
+        if self.outcome == "proposed":
+            if not has_edit:
+                raise ValueError("proposed camera intents require at least one edit")
+            if self.missing_capabilities:
+                raise ValueError("proposed camera intents cannot report missing capabilities")
+        elif has_edit or not self.missing_capabilities:
+            raise ValueError(
+                "unresolved camera intents require missing capabilities and no edits"
+            )
+        return self
+
+
+class CameraPropertyChange(StrictModel):
+    """Host-owned operation record for one changed camera property."""
+
+    property: Literal[
+        "location",
+        "rotation",
+        "field_of_view_deg",
+        "focal_length_mm",
+        "aperture_fstop",
+        "focus_mode",
+        "focus_distance_cm",
+        "exposure_compensation_enabled",
+        "exposure_compensation_ev",
+    ]
+    operation: Literal["set", "add", "multiply"]
+
+
+class AssistantCameraProposal(StrictModel):
+    """Auditable, approval-gated property change for one selected Unreal camera."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    proposal_id: Identifier
+    status: Literal["proposed", "unresolved"]
+    request: LongText
+    target: UnrealCameraContext
+    proposed_by: ModelIdentity
+    before: EditorCameraSnapshot
+    after: EditorCameraSnapshot | None = None
+    changes: list[CameraPropertyChange] = Field(default_factory=list, max_length=9)
+    rationale: LongText
+    missing_capabilities: list[ShortText] = Field(default_factory=list, max_length=16)
+    modifies_editor_scene: Literal[True] = True
+    auto_save: Literal[False] = False
+    undo_supported: Literal[True] = True
+
+    @model_validator(mode="after")
+    def status_matches_camera_action(self) -> "AssistantCameraProposal":
+        if self.before != self.target.camera:
+            raise ValueError("camera proposal before value must match target evidence")
+        if self.status == "proposed":
+            if self.after is None or not self.changes:
+                raise ValueError("proposed camera actions require after values and changes")
+            if self.missing_capabilities:
+                raise ValueError("proposed camera actions cannot report missing capabilities")
+            if self.after.post_process_blend_weight != self.before.post_process_blend_weight:
+                raise ValueError("camera actions cannot change Post Process blend weight")
+            properties = [change.property for change in self.changes]
+            if len(properties) != len(set(properties)):
+                raise ValueError("camera proposal cannot repeat a changed property")
+            allowed_operations = {
+                "location": {"set", "add"},
+                "rotation": {"set", "add"},
+                "field_of_view_deg": {"set", "add", "multiply"},
+                "focal_length_mm": {"set", "add", "multiply"},
+                "aperture_fstop": {"set", "add", "multiply"},
+                "focus_mode": {"set"},
+                "focus_distance_cm": {"set", "add", "multiply"},
+                "exposure_compensation_enabled": {"set"},
+                "exposure_compensation_ev": {"set", "add"},
+            }
+            for change in self.changes:
+                if change.operation not in allowed_operations[change.property]:
+                    raise ValueError(
+                        f"unsupported {change.property} operation in camera proposal"
+                    )
+            expected = {
+                name
+                for name in (
+                    "location",
+                    "rotation",
+                    "field_of_view_deg",
+                    "focal_length_mm",
+                    "aperture_fstop",
+                    "focus_mode",
+                    "focus_distance_cm",
+                    "exposure_compensation_enabled",
+                    "exposure_compensation_ev",
+                )
+                if getattr(self.before, f"{name}_cm" if name == "location" else f"{name}_deg" if name == "rotation" else name)
+                != getattr(self.after, f"{name}_cm" if name == "location" else f"{name}_deg" if name == "rotation" else name)
+            }
+            if set(properties) != expected:
+                raise ValueError(
+                    "camera proposal changes must cover every changed property exactly once"
+                )
+            if self.target.camera_kind == "camera" and "focal_length_mm" in expected:
+                raise ValueError("standard Cameras cannot contain focal-length edits")
+            if self.target.camera_kind == "cine_camera" and "field_of_view_deg" in expected:
+                raise ValueError("Cine Cameras cannot contain direct FOV edits")
+        elif self.after is not None or self.changes or not self.missing_capabilities:
+            raise ValueError(
+                "unresolved camera actions require missing capabilities and no changes"
             )
         return self
 
@@ -1235,8 +1742,14 @@ CONTRACT_MODELS = {
     "assistant-material-proposal": AssistantMaterialProposal,
     "unreal-actor-transform-context": UnrealActorTransformContext,
     "assistant-transform-proposal": AssistantTransformProposal,
+    "unreal-transform-selection-context": UnrealTransformSelectionContext,
+    "assistant-transform-batch-proposal": AssistantTransformBatchProposal,
     "unreal-light-context": UnrealLightContext,
     "assistant-light-proposal": AssistantLightProposal,
+    "unreal-light-selection-context": UnrealLightSelectionContext,
+    "assistant-light-batch-proposal": AssistantLightBatchProposal,
+    "unreal-camera-context": UnrealCameraContext,
+    "assistant-camera-proposal": AssistantCameraProposal,
     "render-spec-patch": RenderSpecPatch,
     "correction-decision": CorrectionDecision,
     "evaluation-report": EvaluationReport,

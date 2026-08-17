@@ -1,6 +1,7 @@
 #include "SRenderMasterWorkspace.h"
 
 #include "Editor.h"
+#include "Camera/CameraActor.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/Selection.h"
 #include "Engine/Light.h"
@@ -9,6 +10,7 @@
 #include "GameFramework/Actor.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/App.h"
+#include "RenderMasterCameraAssistant.h"
 #include "RenderMasterWorkflowController.h"
 #include "RenderMasterMaterialAssistant.h"
 #include "RenderMasterLightAssistant.h"
@@ -58,10 +60,12 @@ void SRenderMasterWorkspace::Construct(const FArguments& InArgs)
     check(Controller.IsValid());
     MaterialAssistant = MakeShared<FRenderMasterMaterialAssistant>(Controller);
     MaterialAssistant->Initialize();
-    TransformAssistant = MakeShared<FRenderMasterTransformAssistant>(Controller);
+    TransformAssistant = MakeShared<FRenderMasterTransformBatchAssistant>(Controller);
     TransformAssistant->Initialize();
-    LightAssistant = MakeShared<FRenderMasterLightAssistant>(Controller);
+    LightAssistant = MakeShared<FRenderMasterLightBatchAssistant>(Controller);
     LightAssistant->Initialize();
+    CameraAssistant = MakeShared<FRenderMasterCameraAssistant>(Controller);
+    CameraAssistant->Initialize();
     AssistantReply = TEXT("Tell me what you want to understand or change. I will inspect the current Unreal context before proposing an action.");
 
     ChildSlot
@@ -90,6 +94,11 @@ void SRenderMasterWorkspace::Construct(const FArguments& InArgs)
 
 SRenderMasterWorkspace::~SRenderMasterWorkspace()
 {
+    if (CameraAssistant.IsValid())
+    {
+        CameraAssistant->Shutdown();
+        CameraAssistant.Reset();
+    }
     if (LightAssistant.IsValid())
     {
         LightAssistant->Shutdown();
@@ -280,7 +289,7 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                 + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
                                 [
                                     SNew(SHorizontalBox)
-                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                    + SHorizontalBox::Slot().FillWidth(1.0f)
                                     [
                                         SNew(SButton)
                                         .HAlign(HAlign_Center)
@@ -315,19 +324,33 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                         .HAlign(HAlign_Center)
                                         .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
                                         .Text(LOCTEXT("PrepareTransform", "Prepare Transform"))
-                                        .ToolTipText(LOCTEXT("PrepareTransformHelp", "Prepare a world-space move, rotation, or scale proposal for exactly one selected Actor."))
+                                        .ToolTipText(LOCTEXT("PrepareTransformHelp", "Prepare one world- or local-space move, rotation, or scale proposal for one to 32 selected Actors."))
                                         .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
                                         .OnClicked(this, &SRenderMasterWorkspace::PrepareTransformAction)
+                                    ]
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SHorizontalBox)
+                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                    [
+                                        SNew(SButton)
+                                        .HAlign(HAlign_Center)
+                                        .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                        .Text(LOCTEXT("PrepareLight", "Prepare Light"))
+                                        .ToolTipText(LOCTEXT("PrepareLightHelp", "Prepare one compatible property proposal for one to 16 selected Directional, Point, Spot, or Rect Lights."))
+                                        .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
+                                        .OnClicked(this, &SRenderMasterWorkspace::PrepareLightAction)
                                     ]
                                     + SHorizontalBox::Slot().FillWidth(1.0f)
                                     [
                                         SNew(SButton)
                                         .HAlign(HAlign_Center)
                                         .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
-                                        .Text(LOCTEXT("PrepareLight", "Prepare Light"))
-                                        .ToolTipText(LOCTEXT("PrepareLightHelp", "Prepare a type-specific property proposal for exactly one selected Directional, Point, Spot, or Rect Light."))
+                                        .Text(LOCTEXT("PrepareCamera", "Prepare Camera"))
+                                        .ToolTipText(LOCTEXT("PrepareCameraHelp", "Prepare bounded Transform, lens, focus, or exposure-compensation properties for exactly one selected Camera Actor or Cine Camera Actor."))
                                         .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
-                                        .OnClicked(this, &SRenderMasterWorkspace::PrepareLightAction)
+                                        .OnClicked(this, &SRenderMasterWorkspace::PrepareCameraAction)
                                     ]
                                 ]
                             ]
@@ -359,6 +382,45 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                     SNew(STextBlock)
                                     .Text(this, &SRenderMasterWorkspace::GetSelectionContext)
                                     .AutoWrapText(true)
+                                ]
+                            ]
+                        ]
+
+                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
+                        [
+                            SNew(SBorder)
+                            .Visibility(this, &SRenderMasterWorkspace::GetCameraProposalVisibility)
+                            .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+                            .BorderBackgroundColor_Lambda([Assistant = CameraAssistant]() { return Assistant->GetStateColor(); })
+                            .Padding(16.0f)
+                            [
+                                SNew(SVerticalBox)
+                                + SVerticalBox::Slot().AutoHeight()
+                                [WorkspaceSectionTitle(LOCTEXT("CameraProposalTitle", "Camera Action"), TAttribute<FText>::CreateLambda([Assistant = CameraAssistant]() { return Assistant->GetStateText(); }))]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(STextBlock)
+                                    .Text_Lambda([Assistant = CameraAssistant]() { return Assistant->GetSummaryText(); })
+                                    .AutoWrapText(true)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 14.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SHorizontalBox)
+                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetCameraApplyVisibility)
+                                        .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                        .Text(LOCTEXT("ApproveCamera", "Approve & Apply Camera"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::ApproveCameraAction)
+                                    ]
+                                    + SHorizontalBox::Slot().AutoWidth()
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetCameraRejectVisibility)
+                                        .Text(LOCTEXT("RejectCamera", "Reject"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::RejectCameraAction)
+                                    ]
                                 ]
                             ]
                         ]
@@ -492,7 +554,7 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                 + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
                                 [
                                     SNew(STextBlock)
-                                    .Text(LOCTEXT("CapabilityList", "CONNECTED\n✓ Live project and actor-selection context\n✓ Explicit material-slot targeting\n✓ Catalog-backed project material recommendation\n✓ CC0 Poly Haven search and verified local cache\n✓ Hash-bound approval for 5-asset PBR import\n✓ Automatic catalog and Chroma synchronization\n✓ Approval-gated material override with Ctrl+Z Undo\n✓ Approval-gated single-Actor world Transform with Ctrl+Z Undo\n✓ Type-specific Directional, Point, Spot, and Rect Light properties with Ctrl+Z Undo\n✓ Schema-gated scene planning\n✓ Transient Unreal preview\n✓ Visual evaluation and bounded correction\n\nNOT CONNECTED YET\n○ Multi-Actor and local-space Transform editing\n○ Multi-light coordination and camera-property editing\n○ Performance diagnosis and optimization"))
+                                    .Text(LOCTEXT("CapabilityList", "CONNECTED\n✓ Live project and actor-selection context\n✓ Explicit material-slot targeting\n✓ Catalog-backed project material recommendation\n✓ CC0 Poly Haven search and verified local cache\n✓ Hash-bound approval for 5-asset PBR import\n✓ Automatic catalog and Chroma synchronization\n✓ Approval-gated material override with Ctrl+Z Undo\n✓ Approval-gated 1–32 Actor world/local Transform with grouped Ctrl+Z Undo\n✓ Approval-gated 1–16 Light compatible group properties with grouped Ctrl+Z Undo\n✓ Camera and Cine Camera Transform, lens, focus, and exposure compensation with Ctrl+Z Undo\n✓ Schema-gated scene planning\n✓ Transient Unreal preview\n✓ Visual evaluation and bounded correction\n\nNOT CONNECTED YET\n○ Per-light role coordination and coordinated multi-camera editing\n○ Geometry-aware arrangement\n○ Performance diagnosis and optimization"))
                                     .AutoWrapText(true)
                                     .ColorAndOpacity(FSlateColor::UseSubduedForeground())
                                 ]
@@ -695,22 +757,24 @@ FReply SRenderMasterWorkspace::PrepareTransformAction()
     const FString Prompt = AssistantPromptBox->GetText().ToString().TrimStartAndEnd();
     if (Prompt.IsEmpty())
     {
-        AssistantReply = TEXT("Enter a world-space Transform request before preparing an action. Nothing has been executed.");
+        AssistantReply = TEXT("Enter a world- or local-space Transform request before preparing an action. Nothing has been executed.");
         return FReply::Handled();
     }
 
     LastRequest = Prompt;
     LastAssistantAction = ELastAssistantAction::Transform;
     FString SelectionError;
-    AActor* Actor = GetSingleSelectedActor(SelectionError);
-    if (Actor == nullptr)
+    TArray<AActor*> Actors;
+    if (!GetSelectedActorsForTransform(Actors, SelectionError))
     {
         AssistantReply = SelectionError;
         return FReply::Handled();
     }
-    if (TransformAssistant->StartProposal(Prompt, Actor))
+    if (TransformAssistant->StartProposal(Prompt, Actors))
     {
-        AssistantReply = TEXT("I froze the selected Actor identity and current Transform, then started preparing a bounded world-space proposal. No scene change has been applied.");
+        AssistantReply = FString::Printf(
+            TEXT("I froze %d selected Actor identities and their current Transforms, then started preparing one bounded world/local-space proposal. No scene change has been applied."),
+            Actors.Num());
     }
     else
     {
@@ -731,19 +795,50 @@ FReply SRenderMasterWorkspace::PrepareLightAction()
     LastRequest = Prompt;
     LastAssistantAction = ELastAssistantAction::Light;
     FString SelectionError;
-    ALight* LightActor = GetSingleSelectedLight(SelectionError);
-    if (LightActor == nullptr)
+    TArray<ALight*> LightActors;
+    if (!GetSelectedLights(LightActors, SelectionError))
     {
         AssistantReply = SelectionError;
         return FReply::Handled();
     }
-    if (LightAssistant->StartProposal(Prompt, LightActor))
+    if (LightAssistant->StartProposal(Prompt, LightActors))
     {
-        AssistantReply = TEXT("I froze the selected light type, intensity unit, component identity, and current properties, then started preparing a bounded proposal. No scene change has been applied.");
+        AssistantReply = FString::Printf(
+            TEXT("I froze %d selected light identities, types, units, components, and current properties, then started preparing one compatible group proposal. No scene change has been applied."),
+            LightActors.Num());
     }
     else
     {
         AssistantReply = LightAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::PrepareCameraAction()
+{
+    const FString Prompt = AssistantPromptBox->GetText().ToString().TrimStartAndEnd();
+    if (Prompt.IsEmpty())
+    {
+        AssistantReply = TEXT("Enter a numeric camera Transform, lens, focus, or exposure-compensation request before preparing an action. Nothing has been executed.");
+        return FReply::Handled();
+    }
+
+    LastRequest = Prompt;
+    LastAssistantAction = ELastAssistantAction::Camera;
+    FString SelectionError;
+    ACameraActor* CameraActor = GetSingleSelectedCamera(SelectionError);
+    if (CameraActor == nullptr)
+    {
+        AssistantReply = SelectionError;
+        return FReply::Handled();
+    }
+    if (CameraAssistant->StartProposal(Prompt, CameraActor))
+    {
+        AssistantReply = TEXT("I froze the selected camera identity, type, lens limits, Transform, focus, and exposure compensation, then started preparing a bounded proposal. No scene change has been applied.");
+    }
+    else
+    {
+        AssistantReply = CameraAssistant->GetSummaryText().ToString();
     }
     return FReply::Handled();
 }
@@ -775,7 +870,7 @@ FReply SRenderMasterWorkspace::ApproveTransformAction()
     LastAssistantAction = ELastAssistantAction::Transform;
     if (TransformAssistant->ApplyProposal())
     {
-        AssistantReply = TEXT("The approved world Transform was applied to the captured Actor. The level was not saved automatically. Use Ctrl+Z to undo it.");
+        AssistantReply = TEXT("The approved Transform was applied to the complete captured selection as one grouped Editor action. The level was not saved automatically. Use Ctrl+Z once to undo the batch.");
     }
     else
     {
@@ -797,7 +892,7 @@ FReply SRenderMasterWorkspace::ApproveLightAction()
     LastAssistantAction = ELastAssistantAction::Light;
     if (LightAssistant->ApplyProposal())
     {
-        AssistantReply = TEXT("The approved light properties were applied to the captured light. The level was not saved automatically. Use Ctrl+Z to undo them.");
+        AssistantReply = TEXT("The approved light properties were applied to the complete captured selection as one grouped Editor action. The level was not saved automatically. Use Ctrl+Z once to undo the group.");
     }
     else
     {
@@ -814,6 +909,28 @@ FReply SRenderMasterWorkspace::RejectLightAction()
     return FReply::Handled();
 }
 
+FReply SRenderMasterWorkspace::ApproveCameraAction()
+{
+    LastAssistantAction = ELastAssistantAction::Camera;
+    if (CameraAssistant->ApplyProposal())
+    {
+        AssistantReply = TEXT("The approved camera properties were applied to the captured camera. The level was not saved automatically. Use Ctrl+Z to undo them.");
+    }
+    else
+    {
+        AssistantReply = CameraAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::RejectCameraAction()
+{
+    LastAssistantAction = ELastAssistantAction::Camera;
+    CameraAssistant->RejectProposal();
+    AssistantReply = TEXT("The proposed camera action was rejected. No Editor scene change was applied.");
+    return FReply::Handled();
+}
+
 void SRenderMasterWorkspace::SetPage(int32 PageIndex)
 {
     ActivePage = FMath::Clamp(PageIndex, 0, 1);
@@ -825,13 +942,15 @@ bool SRenderMasterWorkspace::CanPrepareAssistantAction() const
     if (!Controller.IsValid()
         || !MaterialAssistant.IsValid()
         || !TransformAssistant.IsValid()
-        || !LightAssistant.IsValid())
+        || !LightAssistant.IsValid()
+        || !CameraAssistant.IsValid())
     {
         return false;
     }
     const ERenderMasterMaterialAssistantState MaterialState = MaterialAssistant->GetState();
     const ERenderMasterTransformAssistantState TransformState = TransformAssistant->GetState();
     const ERenderMasterLightAssistantState LightState = LightAssistant->GetState();
+    const ERenderMasterCameraAssistantState CameraState = CameraAssistant->GetState();
     const bool bMaterialPending = MaterialState == ERenderMasterMaterialAssistantState::Searching
         || MaterialState == ERenderMasterMaterialAssistantState::Importing
         || MaterialState == ERenderMasterMaterialAssistantState::Proposed;
@@ -839,13 +958,17 @@ bool SRenderMasterWorkspace::CanPrepareAssistantAction() const
         || TransformState == ERenderMasterTransformAssistantState::Proposed;
     const bool bLightPending = LightState == ERenderMasterLightAssistantState::Planning
         || LightState == ERenderMasterLightAssistantState::Proposed;
+    const bool bCameraPending = CameraState == ERenderMasterCameraAssistantState::Planning
+        || CameraState == ERenderMasterCameraAssistantState::Proposed;
     return Controller->CanStart()
         && MaterialAssistant->CanStart()
         && TransformAssistant->CanStart()
         && LightAssistant->CanStart()
+        && CameraAssistant->CanStart()
         && !bMaterialPending
         && !bTransformPending
-        && !bLightPending;
+        && !bLightPending
+        && !bCameraPending;
 }
 
 FText SRenderMasterWorkspace::GetProjectContext() const
@@ -891,6 +1014,22 @@ FText SRenderMasterWorkspace::GetSelectionContext() const
 
 FText SRenderMasterWorkspace::GetAssistantReply() const
 {
+    if (LastAssistantAction == ELastAssistantAction::Camera && CameraAssistant.IsValid())
+    {
+        if (CameraAssistant->IsPlanning())
+        {
+            return CameraAssistant->GetSummaryText();
+        }
+        if (CameraAssistant->GetState() == ERenderMasterCameraAssistantState::Proposed)
+        {
+            return LOCTEXT("CameraProposedReply", "I prepared a type-specific camera change. Review the exact Camera or Cine Camera, frozen lens limits, changed properties, and Before/After values before approving.");
+        }
+        if (CameraAssistant->GetState() == ERenderMasterCameraAssistantState::Unresolved
+            || CameraAssistant->GetState() == ERenderMasterCameraAssistantState::Failed)
+        {
+            return CameraAssistant->GetSummaryText();
+        }
+    }
     if (LastAssistantAction == ELastAssistantAction::Light && LightAssistant.IsValid())
     {
         if (LightAssistant->IsPlanning())
@@ -899,7 +1038,7 @@ FText SRenderMasterWorkspace::GetAssistantReply() const
         }
         if (LightAssistant->GetState() == ERenderMasterLightAssistantState::Proposed)
         {
-            return LOCTEXT("LightProposedReply", "I prepared a type-specific light property change. Review the exact light, frozen intensity unit, changed properties, and Before/After values before approving.");
+            return LOCTEXT("LightProposedReply", "I prepared one compatible light-group property action. Review every selected light, frozen unit, changed property, and Before/After value before approving.");
         }
         if (LightAssistant->GetState() == ERenderMasterLightAssistantState::Unresolved
             || LightAssistant->GetState() == ERenderMasterLightAssistantState::Failed)
@@ -915,7 +1054,7 @@ FText SRenderMasterWorkspace::GetAssistantReply() const
         }
         if (TransformAssistant->GetState() == ERenderMasterTransformAssistantState::Proposed)
         {
-            return LOCTEXT("TransformProposedReply", "I prepared a bounded world-space Transform change. Review the exact Actor and Before/After values before approving.");
+            return LOCTEXT("TransformProposedReply", "I prepared one bounded world/local-space Transform action for the complete frozen selection. Review every Actor and its Before/After values before approving.");
         }
         if (TransformAssistant->GetState() == ERenderMasterTransformAssistantState::Unresolved
             || TransformAssistant->GetState() == ERenderMasterTransformAssistantState::Failed)
@@ -1073,6 +1212,96 @@ EVisibility SRenderMasterWorkspace::GetLightRejectVisibility() const
         : EVisibility::Collapsed;
 }
 
+EVisibility SRenderMasterWorkspace::GetCameraProposalVisibility() const
+{
+    if (!CameraAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterCameraAssistantState State = CameraAssistant->GetState();
+    return State == ERenderMasterCameraAssistantState::Ready
+        || State == ERenderMasterCameraAssistantState::Rejected
+        ? EVisibility::Collapsed
+        : EVisibility::Visible;
+}
+
+EVisibility SRenderMasterWorkspace::GetCameraApplyVisibility() const
+{
+    return CameraAssistant.IsValid() && CameraAssistant->CanApply()
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetCameraRejectVisibility() const
+{
+    if (!CameraAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterCameraAssistantState State = CameraAssistant->GetState();
+    return State == ERenderMasterCameraAssistantState::Planning
+        || State == ERenderMasterCameraAssistantState::Proposed
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+bool SRenderMasterWorkspace::GetSelectedActorsForTransform(
+    TArray<AActor*>& OutActors,
+    FString& OutError) const
+{
+    OutActors.Reset();
+    if (GEditor == nullptr || GEditor->GetSelectedActors() == nullptr)
+    {
+        OutError = TEXT("The Unreal selection service is unavailable.");
+        return false;
+    }
+    for (FSelectionIterator Iterator(*GEditor->GetSelectedActors()); Iterator; ++Iterator)
+    {
+        if (AActor* Actor = Cast<AActor>(*Iterator)) OutActors.Add(Actor);
+    }
+    if (OutActors.IsEmpty() || OutActors.Num() > 32)
+    {
+        OutError = TEXT("Select between one and 32 Actors before preparing a Transform action.");
+        OutActors.Reset();
+        return false;
+    }
+    OutActors.Sort([](const AActor& Left, const AActor& Right)
+    {
+        return Left.GetPathName() < Right.GetPathName();
+    });
+    return true;
+}
+
+bool SRenderMasterWorkspace::GetSelectedLights(
+    TArray<ALight*>& OutLights,
+    FString& OutError) const
+{
+    OutLights.Reset();
+    if (GEditor == nullptr || GEditor->GetSelectedActors() == nullptr)
+    {
+        OutError = TEXT("The Unreal selection service is unavailable.");
+        return false;
+    }
+    for (FSelectionIterator Iterator(*GEditor->GetSelectedActors()); Iterator; ++Iterator)
+    {
+        AActor* Actor = Cast<AActor>(*Iterator);
+        if (Actor == nullptr) continue;
+        ALight* LightActor = Cast<ALight>(Actor);
+        if (LightActor == nullptr || LightActor->GetLightComponent() == nullptr)
+        {
+            OutError = TEXT("Every selected Actor must be a supported Directional, Point, Spot, or Rect Light.");
+            OutLights.Reset();
+            return false;
+        }
+        OutLights.Add(LightActor);
+    }
+    if (OutLights.IsEmpty() || OutLights.Num() > 16)
+    {
+        OutError = TEXT("Select between one and 16 supported Light Actors before preparing a light action.");
+        OutLights.Reset();
+        return false;
+    }
+    OutLights.Sort([](const ALight& Left, const ALight& Right)
+    {
+        return Left.GetPathName() < Right.GetPathName();
+    });
+    return true;
+}
+
 AActor* SRenderMasterWorkspace::GetSingleSelectedActor(FString& OutError) const
 {
     if (GEditor == nullptr || GEditor->GetSelectedActors() == nullptr)
@@ -1110,6 +1339,19 @@ ALight* SRenderMasterWorkspace::GetSingleSelectedLight(FString& OutError) const
         return nullptr;
     }
     return LightActor;
+}
+
+ACameraActor* SRenderMasterWorkspace::GetSingleSelectedCamera(FString& OutError) const
+{
+    AActor* Actor = GetSingleSelectedActor(OutError);
+    if (Actor == nullptr) return nullptr;
+    ACameraActor* CameraActor = Cast<ACameraActor>(Actor);
+    if (CameraActor == nullptr || CameraActor->GetCameraComponent() == nullptr)
+    {
+        OutError = TEXT("Select exactly one Camera Actor or Cine Camera Actor before preparing a camera action.");
+        return nullptr;
+    }
+    return CameraActor;
 }
 
 UStaticMeshComponent* SRenderMasterWorkspace::GetSingleSelectedStaticMeshComponent(

@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,12 +10,16 @@ from render_master_bot.assistant_transforms import (
     TransformProposalError,
     compile_transform_intent,
     load_transform_context,
+    load_transform_selection_context,
+    propose_transform_batch_change,
     propose_transform_change,
 )
 from render_master_bot.contracts import (
+    AssistantTransformBatchProposal,
     AssistantTransformProposal,
     TransformEditIntent,
     UnrealActorTransformContext,
+    UnrealTransformSelectionContext,
 )
 from render_master_bot.ollama import StructuredResponse
 
@@ -82,6 +87,38 @@ class AssistantTransformTests(unittest.TestCase):
         ])
         self.assertEqual(changes[0].axes, ["z"])
 
+    def test_host_converts_local_translation_and_rotation_to_world_evidence(self):
+        local_context = context(transform={
+            "location_cm": {"x": 0, "y": 0, "z": 0},
+            "rotation_deg": {"x": 0, "y": 0, "z": 90},
+            "scale": {"x": 1, "y": 1, "z": 1},
+        })
+        intent = TransformEditIntent.model_validate({
+            "outcome": "proposed",
+            "coordinate_space": "local",
+            "location": {"operation": "add", "x": 100},
+            "rotation": {"operation": "add", "x": 30},
+            "rationale": "Move forward and roll around the Actor's own X axis.",
+        })
+        after, changes = compile_transform_intent(local_context, intent)
+        self.assertAlmostEqual(after.location_cm.x, 0, places=5)
+        self.assertAlmostEqual(after.location_cm.y, 100, places=5)
+        self.assertAlmostEqual(after.location_cm.z, 0, places=5)
+        self.assertAlmostEqual(after.rotation_deg.x, 30, places=5)
+        self.assertAlmostEqual(after.rotation_deg.z, 90, places=5)
+        self.assertEqual([change.channel for change in changes], ["location", "rotation"])
+        self.assertEqual(changes[0].axes, ["y"])
+
+    def test_local_location_and_rotation_set_are_rejected(self):
+        intent = TransformEditIntent.model_validate({
+            "outcome": "proposed",
+            "coordinate_space": "local",
+            "location": {"operation": "set", "x": 100},
+            "rationale": "Unsafe local coordinate assignment.",
+        })
+        with self.assertRaisesRegex(TransformProposalError, "local-space location"):
+            compile_transform_intent(context(), intent)
+
     def test_host_rejects_unsupported_operation_and_unsafe_delta(self):
         unsupported = TransformEditIntent.model_validate({
             "outcome": "proposed",
@@ -134,6 +171,102 @@ class AssistantTransformTests(unittest.TestCase):
         self.assertFalse(result.proposal.auto_save)
         self.assertTrue(result.proposal.undo_supported)
         self.assertEqual(client.requests[0]["json_schema"]["title"], "TransformEditIntent")
+
+    def test_batch_local_intent_uses_each_actor_basis_and_freezes_every_target(self):
+        first = context(
+            actor_name="First",
+            actor_path="/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.First",
+            actor_guid="11111111111111111111111111111111",
+            transform={
+                "location_cm": {"x": 0, "y": 0, "z": 0},
+                "rotation_deg": {"x": 0, "y": 0, "z": 0},
+                "scale": {"x": 1, "y": 1, "z": 1},
+            },
+        )
+        second = context(
+            actor_name="Second",
+            actor_path="/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.Second",
+            actor_guid="22222222222222222222222222222222",
+            transform={
+                "location_cm": {"x": 0, "y": 0, "z": 0},
+                "rotation_deg": {"x": 0, "y": 0, "z": 90},
+                "scale": {"x": 1, "y": 1, "z": 1},
+            },
+        )
+        selection = UnrealTransformSelectionContext(
+            project_name="OptimizationPlugin",
+            level_path="/Game/FirstPerson/Lvl_FirstPerson",
+            actors=[first, second],
+        )
+        client = FakeClient("""{
+          "outcome": "proposed",
+          "coordinate_space": "local",
+          "location": {"operation": "add", "x": 100},
+          "rotation": {"operation": "preserve"},
+          "scale": {"operation": "preserve"},
+          "rationale": "Move every selected Actor forward in its own local space.",
+          "missing_capabilities": []
+        }""")
+        result = propose_transform_batch_change(
+            prompt="Move all selected Actors forward 100 cm in local space",
+            selection=selection,
+            client=client,
+            model="planner",
+            proposal_id="transform_batch_001",
+        )
+        self.assertEqual(result.proposal.coordinate_space, "local")
+        self.assertEqual(len(result.proposal.actions), 2)
+        self.assertAlmostEqual(result.proposal.actions[0].after.location_cm.x, 100)
+        self.assertAlmostEqual(result.proposal.actions[0].after.location_cm.y, 0)
+        self.assertAlmostEqual(result.proposal.actions[1].after.location_cm.x, 0, places=5)
+        self.assertAlmostEqual(result.proposal.actions[1].after.location_cm.y, 100, places=5)
+
+        payload = result.proposal.model_dump(mode="json")
+        payload["actions"].pop()
+        with self.assertRaisesRegex(ValidationError, "every selected Actor"):
+            AssistantTransformBatchProposal.model_validate(payload)
+
+    def test_transform_selection_loader_rejects_duplicate_actor_paths(self):
+        selection = {
+            "project_name": "OptimizationPlugin",
+            "level_path": "/Game/FirstPerson/Lvl_FirstPerson",
+            "actors": [context().model_dump(mode="json"), context().model_dump(mode="json")],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "selection.json"
+            path.write_text(json.dumps(selection), encoding="utf-8")
+            with self.assertRaisesRegex(TransformProposalError, "repeat an Actor path"):
+                load_transform_selection_context(path)
+
+    def test_batch_all_noop_intent_uses_the_single_safety_retry(self):
+        selection = UnrealTransformSelectionContext(
+            project_name="OptimizationPlugin",
+            level_path="/Game/FirstPerson/Lvl_FirstPerson",
+            actors=[context()],
+        )
+        no_op = """{
+          "outcome": "proposed",
+          "coordinate_space": "world",
+          "location": {"operation": "add", "x": 0},
+          "rotation": {"operation": "preserve"},
+          "scale": {"operation": "preserve"},
+          "rationale": "This would not change the selected Actor.",
+          "missing_capabilities": []
+        }"""
+        client = FakeClient([no_op, no_op])
+        with self.assertRaisesRegex(
+            TransformProposalError,
+            "no observable change",
+        ) as raised:
+            propose_transform_batch_change(
+                prompt="Move all selected Actors zero centimeters",
+                selection=selection,
+                client=client,
+                model="planner",
+                proposal_id="transform_batch_noop",
+            )
+        self.assertEqual(raised.exception.attempt_count, 2)
+        self.assertEqual(len(client.requests), 2)
 
     def test_unresolved_intent_has_no_executable_after_value(self):
         client = FakeClient("""{

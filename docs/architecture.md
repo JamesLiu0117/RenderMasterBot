@@ -46,7 +46,8 @@ Ollama's embedding endpoint explicitly instead of allowing Chroma to choose or
 download a default embedding function. The collection records its embedding
 model identity and rejects attempts to query it with a different model.
 
-See `contracts.md` for the seventeen public JSON boundaries used by both tracks.
+See `contracts.md` for the twenty-three public JSON boundaries used by both
+tracks.
 
 ## Next milestones
 
@@ -92,8 +93,18 @@ See `contracts.md` for the seventeen public JSON boundaries used by both tracks.
 19. ~~Extend the same pattern to bounded type-specific properties for one
     selected Directional, Point, Spot, or Rect Light, with stale-state
     revalidation and Unreal Undo.~~
-20. Extend the same pattern to multi-Actor/local-space transforms, coordinated
-    multi-light edits, camera properties, and performance fixes.
+20. ~~Extend the same pattern to one selected Camera or Cine Camera, including
+    bounded world Transform, type-specific FOV/focal length, aperture, focus,
+    exposure compensation, stale-state revalidation, and Unreal Undo.~~
+21. ~~Extend the same pattern to one-to-32-Actor world/local-space Transform
+    edits, with complete ordered evidence, all-or-nothing stale-state rejection,
+    and one grouped Unreal Undo transaction.~~
+22. ~~Extend the pattern to one-to-16-Light compatible group edits, including
+    selection-wide type/unit checks, complete per-light evidence, all-or-nothing
+    stale-state rejection, and one grouped Unreal Undo transaction.~~
+23. Extend the pattern to per-light role coordination and coordinated
+    multi-camera edits, followed by geometry-aware Actor arrangement and
+    performance fixes.
 
 ## Default model roles
 

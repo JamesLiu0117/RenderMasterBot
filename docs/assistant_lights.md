@@ -1,9 +1,13 @@
-# Approval-gated Light property actions
+# Approval-gated Light group property actions
 
-The Unreal Assistant can prepare and apply one bounded property change for
-exactly one selected Directional, Point, Spot, or Rect Light. Proposal
-generation is read-only. The level changes only after the operator reviews a
-dedicated **Light Action** card and presses **Approve & Apply Light**.
+The Unreal Assistant can prepare and apply one bounded property intent to an
+ordered selection of one to 16 Directional, Point, Spot, or Rect Lights.
+Proposal generation is read-only. The level changes only after the operator
+reviews every light in the **Light Action** card and presses **Approve & Apply
+Light**.
+
+This milestone provides reliable compatible group editing. It does not yet
+assign different instructions to Key, Fill, Rim, or other named lighting roles.
 
 ## Supported property matrix
 
@@ -17,81 +21,92 @@ dedicated **Light Action** card and presses **Approve & Apply Light**.
 | Inner/outer cone | no | no | yes | no | 0–89 degrees; inner ≤ outer |
 | Rotation | yes | no | yes | yes | Unreal Roll/Pitch/Yaw degrees |
 
-Directional Light intensity is expressed in lux. Local lights preserve their
-captured lumens, candelas, unitless, EV, or nits setting. A percentage request
-uses a bounded multiplier except for EV, where additive stops are meaningful
-and multiplication is rejected. A direct RGB request disables temperature
-unless the request explicitly says otherwise; a Kelvin request enables it.
+One intent is applied uniformly to the complete frozen selection. The whole
+group must support every requested property:
+
+- intensity `multiply` works across mixed non-EV units, so “20% brighter” can
+  safely include lux and lumens while preserving both units;
+- intensity `set` or `add` requires one shared frozen unit across the selection;
+- attenuation requires every selected light to be Point, Spot, or Rect;
+- cone changes require an all-Spot-Light selection;
+- rotation rejects a selection containing any Point Light;
+- EV intensity supports set/add but not multiply.
+
+An incompatible selection becomes **Unresolved** or fails the bounded retry. No
+light is silently skipped. A light that already satisfies the requested value
+remains visible as a no-op action, but at least one selected light must change.
 
 ## Why the model does not own the final state
 
-The local planner returns a `LightEditIntent`, not an Unreal command. It can
-request only allowed operations for the captured light kind. Python applies
-those operations to the Editor-owned Before snapshot, clamps the capability to
-documented bounds, computes the complete After snapshot, and derives the exact
-changed-property list.
+The local planner returns one `LightEditIntent`, not Unreal commands or trusted
+per-light values. Python checks the selection-wide type/unit matrix, applies the
+intent to every Editor-owned Before snapshot, computes each complete After
+snapshot, and derives the exact changed-property list.
 
 The host rejects non-finite values, negative non-EV intensity, excessive
 intensity or edit deltas, invalid temperature, invalid cone relationships,
-meaningless Point Light rotation, type-incompatible fields, no-op results, and
-model output that disagrees with the deterministic changed-property list.
+meaningless Point Light rotation, incompatible group fields, whole-group no-op
+results, and model output that disagrees with deterministic evidence.
+
+The public `AssistantLightBatchProposal` preserves the complete ordered
+selection and one action for every light. The original single-light contracts
+and CLI remain available for backward compatibility.
 
 ## Approval boundary
 
-Before planning, the Editor freezes:
+Before planning, the Editor sorts the selection by Actor path and freezes, for
+every light:
 
-- project, level, Actor name, path, class, and GUID;
-- light component name and light kind;
-- editability, lock state, and intensity unit;
-- rotation, intensity, linear RGB color, temperature state/value, shadows, and
-  all type-specific local-light properties.
+- project, level, Actor label, path, class, and GUID;
+- component name, Mobility, light kind, editability, and lock state;
+- intensity unit and complete type-specific property snapshot.
 
-Immediately before approval, Unreal checks the live Actor and component against
-all frozen identity fields and the complete original snapshot. An intervening
-rename, replacement, unit change, property edit, lock, or deletion invalidates
-the proposal. The operator must prepare a new one.
+Immediately before approval, Unreal rereads every Actor and component. A rename,
+replacement, type/unit/Mobility change, property edit, lock, or deletion on any
+light invalidates the complete proposal before a transaction begins.
 
-Approved properties are applied inside `FScopedTransaction` through an Editor
-property-edit path that supports Static, Stationary, and Movable lights. Normal
-post-edit and render-state notifications run afterward. The level is marked
-dirty but never saved automatically; Ctrl+Z restores the previous properties.
+Successful approval applies all changed lights inside one `FScopedTransaction`
+through the Editor property-edit path used by Static, Stationary, and Movable
+lights. A rotation failure restores earlier group edits and cancels the
+transaction. Post-edit and render-state notifications run afterward. The level
+is marked dirty but never saved automatically; one Ctrl+Z restores the group.
 
 ## UI workflow
 
-1. Select exactly one supported Light Actor.
-2. Enter a request such as `Make this Spot Light 20% brighter, set it to 3200 K,
-   widen the outer cone to 45 degrees, and rotate it right by 30 degrees.`
-3. Press **Prepare Light**.
-4. Review the exact target, frozen unit, changed properties, and complete
-   Before/After state.
+1. Select between one and 16 supported Light Actors.
+2. Enter one compatible group request, for example:
+   - `Make all selected lights 20% brighter.`
+   - `Set all selected lights to 4500 K and enable shadows.`
+3. Press **Prepare Light**. No Editor scene mutation occurs.
+4. Review every target, kind, unit, changed property, and complete Before/After
+   state.
 5. Press **Approve & Apply Light**, or **Reject**.
-6. Use Ctrl+Z if the approved result should be reverted.
+6. Use Ctrl+Z once if the complete group should be restored.
 
-Spawn/delete/rename/retype requests, multi-light coordination, and unsupported
-properties resolve as **Unresolved**. The assistant does not silently substitute
-a different operation.
+Spawn/delete/rename/retype requests, per-light role instructions, and
+unsupported or incompatible property combinations resolve as **Unresolved**.
 
 ## CLI and contracts
 
-The proposal boundary can be exercised without mutating Unreal:
+Exercise the group proposal boundary without mutating Unreal:
 
 ```powershell
-render-master assistant-light-propose `
-  --prompt "Make this light 20% brighter and set it to 3200 K" `
-  --context examples/unreal_light_context.json `
-  --proposal-id light_example_001 `
-  --output light_proposal.json
+render-master assistant-light-batch-propose `
+  --prompt "Make all selected lights 20% brighter" `
+  --context examples/unreal_light_selection_context.json `
+  --proposal-id light_batch_example_001 `
+  --output light_batch_proposal.json
 ```
 
 Export or validate the public boundary:
 
 ```powershell
-render-master schema unreal-light-context
-render-master schema assistant-light-proposal
-render-master validate examples/unreal_light_context.json `
-  --contract unreal-light-context
+render-master schema unreal-light-selection-context
+render-master schema assistant-light-batch-proposal
+render-master validate examples/unreal_light_selection_context.json `
+  --contract unreal-light-selection-context
 ```
 
-Local request, context, proposal, raw model output, and process logs are written
-below the configured workflow root under `assistant-light/<proposal-id>/`; they
-remain outside Git.
+The Editor writes request, selection context, proposal, and process logs below
+the configured workflow root at `assistant-light-batch/<proposal-id>/`. These
+local artifacts remain outside Git.

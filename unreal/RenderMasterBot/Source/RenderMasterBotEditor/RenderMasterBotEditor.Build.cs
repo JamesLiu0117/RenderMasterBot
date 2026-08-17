@@ -10,6 +10,7 @@ public class RenderMasterBotEditor : ModuleRules
         {
             "ApplicationCore",
             "AssetRegistry",
+            "CinematicCamera",
             "Core",
             "CoreUObject",
             "DesktopPlatform",

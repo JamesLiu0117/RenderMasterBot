@@ -1,0 +1,32 @@
+{
+  "schema_version": "0.1",
+  "project_name": "OptimizationPlugin",
+  "level_path": "/Game/FirstPerson/Lvl_FirstPerson",
+  "actor_name": "ProductCamera",
+  "actor_path": "/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.ProductCamera",
+  "actor_class": "CineCameraActor",
+  "actor_guid": "0123456789ABCDEF0123456789ABCDEF",
+  "component_name": "CameraComponent",
+  "camera_kind": "cine_camera",
+  "component_mobility": "movable",
+  "projection_mode": "perspective",
+  "is_editable": true,
+  "is_locked": false,
+  "min_focal_length_mm": 18.0,
+  "max_focal_length_mm": 135.0,
+  "min_aperture_fstop": 1.4,
+  "max_aperture_fstop": 22.0,
+  "minimum_focus_distance_cm": 1.5,
+  "camera": {
+    "location_cm": {"x": 0.0, "y": -300.0, "z": 150.0},
+    "rotation_deg": {"x": 0.0, "y": -10.0, "z": 0.0},
+    "field_of_view_deg": null,
+    "focal_length_mm": 50.0,
+    "aperture_fstop": 2.8,
+    "focus_mode": "manual",
+    "focus_distance_cm": 500.0,
+    "exposure_compensation_enabled": false,
+    "exposure_compensation_ev": 0.0,
+    "post_process_blend_weight": 1.0
+  }
+}

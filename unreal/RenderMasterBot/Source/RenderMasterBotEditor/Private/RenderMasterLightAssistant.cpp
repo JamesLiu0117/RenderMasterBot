@@ -371,6 +371,72 @@ FString SnapshotText(const FRenderMasterLightSnapshot& Snapshot)
         Snapshot.Rotation.Pitch,
         Snapshot.Rotation.Yaw);
 }
+
+FString MobilityText(const USceneComponent* Component)
+{
+    if (Component == nullptr) return TEXT("none");
+    switch (Component->Mobility)
+    {
+        case EComponentMobility::Static: return TEXT("static");
+        case EComponentMobility::Stationary: return TEXT("stationary");
+        case EComponentMobility::Movable: return TEXT("movable");
+        default: return TEXT("none");
+    }
+}
+
+bool JsonObjectText(const TSharedPtr<FJsonObject>& Object, FString& Out)
+{
+    if (!Object.IsValid()) return false;
+    const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Out);
+    return FJsonSerializer::Serialize(Object.ToSharedRef(), Writer);
+}
+
+FString MissingCapabilitiesText(const TSharedPtr<FJsonObject>& Root)
+{
+    const TArray<TSharedPtr<FJsonValue>>* Missing = nullptr;
+    TArray<FString> Values;
+    if (Root.IsValid() && Root->TryGetArrayField(TEXT("missing_capabilities"), Missing)
+        && Missing != nullptr)
+    {
+        for (const TSharedPtr<FJsonValue>& Value : *Missing)
+        {
+            FString Item;
+            if (Value.IsValid() && Value->TryGetString(Item) && !Item.IsEmpty())
+                Values.Add(Item);
+        }
+    }
+    return FString::Join(Values, TEXT(", "));
+}
+
+bool SetLightSnapshot(
+    ALight* Actor,
+    ULightComponent* Component,
+    const FRenderMasterLightSnapshot& Before,
+    const FRenderMasterLightSnapshot& After)
+{
+    if (Actor == nullptr || Component == nullptr) return false;
+    const bool bRotationChanged = !RotationsMatch(Before.Rotation, After.Rotation);
+    if (bRotationChanged
+        && !Actor->SetActorRotation(After.Rotation, ETeleportType::TeleportPhysics))
+    {
+        return false;
+    }
+    Component->Intensity = After.Intensity;
+    Component->LightColor = After.Color.ToFColorSRGB();
+    Component->Temperature = After.TemperatureKelvin;
+    Component->bUseTemperature = After.bUseTemperature;
+    Component->CastShadows = After.bCastShadows;
+    if (ULocalLightComponent* Local = Cast<ULocalLightComponent>(Component))
+    {
+        Local->AttenuationRadius = After.AttenuationRadiusCm.GetValue();
+    }
+    if (USpotLightComponent* Spot = Cast<USpotLightComponent>(Component))
+    {
+        Spot->InnerConeAngle = After.InnerConeDeg.GetValue();
+        Spot->OuterConeAngle = After.OuterConeDeg.GetValue();
+    }
+    return true;
+}
 }
 
 bool FRenderMasterLightProposal::LoadFromFile(
@@ -423,6 +489,7 @@ bool FRenderMasterLightProposal::Parse(
         || !Target->TryGetStringField(TEXT("actor_path"), Parsed.ActorPath)
         || !Target->TryGetStringField(TEXT("actor_class"), Parsed.ActorClass)
         || !Target->TryGetStringField(TEXT("component_name"), Parsed.ComponentName)
+        || !Target->TryGetStringField(TEXT("component_mobility"), Parsed.ComponentMobility)
         || !Target->TryGetStringField(TEXT("light_kind"), Parsed.LightKind)
         || !ReadObject(Target, TEXT("light"), TargetLight)
         || !ReadSnapshot(Root, TEXT("before"), Parsed.Before))
@@ -533,6 +600,208 @@ bool FRenderMasterLightProposal::Parse(
     return true;
 }
 
+bool FRenderMasterLightBatchProposal::LoadFromFile(
+    const FString& Filename,
+    FRenderMasterLightBatchProposal& OutProposal,
+    FString& OutError)
+{
+    FString JsonText;
+    if (!FFileHelper::LoadFileToString(JsonText, *Filename))
+    {
+        OutError = FString::Printf(TEXT("Could not read batch light proposal: %s"), *Filename);
+        return false;
+    }
+    return Parse(JsonText, OutProposal, OutError);
+}
+
+bool FRenderMasterLightBatchProposal::Parse(
+    const FString& JsonText,
+    FRenderMasterLightBatchProposal& OutProposal,
+    FString& OutError)
+{
+    TSharedPtr<FJsonObject> Root;
+    const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonText);
+    if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+    {
+        OutError = TEXT("Batch light proposal is not valid JSON.");
+        return false;
+    }
+
+    FRenderMasterLightBatchProposal Parsed;
+    FString SchemaVersion;
+    bool bModifiesScene = false;
+    bool bAutoSave = true;
+    bool bUndoSupported = false;
+    if (!Root->TryGetStringField(TEXT("schema_version"), SchemaVersion)
+        || SchemaVersion != TEXT("0.1")
+        || !Root->TryGetStringField(TEXT("proposal_id"), Parsed.ProposalId)
+        || !Root->TryGetStringField(TEXT("status"), Parsed.Status)
+        || !Root->TryGetStringField(TEXT("rationale"), Parsed.Rationale)
+        || !Root->TryGetBoolField(TEXT("modifies_editor_scene"), bModifiesScene)
+        || !Root->TryGetBoolField(TEXT("auto_save"), bAutoSave)
+        || !Root->TryGetBoolField(TEXT("undo_supported"), bUndoSupported)
+        || !bModifiesScene || bAutoSave || !bUndoSupported)
+    {
+        OutError = TEXT("Batch light proposal metadata or approval flags are invalid.");
+        return false;
+    }
+    Parsed.Status.ToLowerInline();
+    Parsed.MissingCapabilities = MissingCapabilitiesText(Root);
+
+    TSharedPtr<FJsonObject> Selection;
+    const TArray<TSharedPtr<FJsonValue>>* SelectedLights = nullptr;
+    if (!ReadObject(Root, TEXT("selection"), Selection)
+        || !Selection->TryGetArrayField(TEXT("lights"), SelectedLights)
+        || SelectedLights == nullptr
+        || SelectedLights->IsEmpty()
+        || SelectedLights->Num() > 16)
+    {
+        OutError = TEXT("Batch light proposal has no valid frozen light selection.");
+        return false;
+    }
+    Parsed.SelectedLightCount = SelectedLights->Num();
+
+    const TArray<TSharedPtr<FJsonValue>>* Actions = nullptr;
+    if (!Root->TryGetArrayField(TEXT("actions"), Actions) || Actions == nullptr)
+    {
+        OutError = TEXT("Batch light proposal is missing its action array.");
+        return false;
+    }
+    if (Parsed.Status == TEXT("unresolved"))
+    {
+        if (!Actions->IsEmpty() || Parsed.MissingCapabilities.IsEmpty())
+        {
+            OutError = TEXT("Unresolved batch light proposals require a capability gap and no actions.");
+            return false;
+        }
+        OutProposal = MoveTemp(Parsed);
+        return true;
+    }
+    if (Parsed.Status != TEXT("proposed")
+        || Actions->Num() != SelectedLights->Num()
+        || !Parsed.MissingCapabilities.IsEmpty())
+    {
+        OutError = TEXT("Proposed batch light actions must cover the complete frozen selection.");
+        return false;
+    }
+
+    bool bAnyChanged = false;
+    for (int32 Index = 0; Index < Actions->Num(); ++Index)
+    {
+        const TSharedPtr<FJsonObject>* SelectedTarget = nullptr;
+        const TSharedPtr<FJsonObject>* Action = nullptr;
+        TSharedPtr<FJsonObject> ActionTarget;
+        if (!(*SelectedLights)[Index].IsValid()
+            || !(*SelectedLights)[Index]->TryGetObject(SelectedTarget)
+            || SelectedTarget == nullptr
+            || !(*Actions)[Index].IsValid()
+            || !(*Actions)[Index]->TryGetObject(Action)
+            || Action == nullptr
+            || !ReadObject(*Action, TEXT("target"), ActionTarget))
+        {
+            OutError = TEXT("Batch light proposal contains invalid target evidence.");
+            return false;
+        }
+        FString SelectedText;
+        FString ActionTargetText;
+        if (!JsonObjectText(*SelectedTarget, SelectedText)
+            || !JsonObjectText(ActionTarget, ActionTargetText)
+            || SelectedText != ActionTargetText)
+        {
+            OutError = TEXT("Batch light action target does not match the ordered selection evidence.");
+            return false;
+        }
+
+        const TArray<TSharedPtr<FJsonValue>>* Changes = nullptr;
+        if (!(*Action)->TryGetArrayField(TEXT("changes"), Changes) || Changes == nullptr)
+        {
+            OutError = TEXT("Batch light action is missing its changes array.");
+            return false;
+        }
+
+        FRenderMasterLightProposal Single;
+        if (Changes->IsEmpty())
+        {
+            if (!ActionTarget->TryGetStringField(TEXT("actor_name"), Single.ActorName)
+                || !ActionTarget->TryGetStringField(TEXT("actor_path"), Single.ActorPath)
+                || !ActionTarget->TryGetStringField(TEXT("actor_class"), Single.ActorClass)
+                || !ActionTarget->TryGetStringField(TEXT("component_name"), Single.ComponentName)
+                || !ActionTarget->TryGetStringField(TEXT("component_mobility"), Single.ComponentMobility)
+                || !ActionTarget->TryGetStringField(TEXT("light_kind"), Single.LightKind)
+                || !ReadSnapshot(*Action, TEXT("before"), Single.Before)
+                || !ReadSnapshot(*Action, TEXT("after"), Single.After))
+            {
+                OutError = TEXT("No-op batch light action has incomplete evidence.");
+                return false;
+            }
+            ActionTarget->TryGetStringField(TEXT("actor_guid"), Single.ActorGuid);
+            TSharedPtr<FJsonObject> TargetLight;
+            FRenderMasterLightSnapshot TargetSnapshot;
+            TSharedPtr<FJsonObject> TargetWrapper = MakeShared<FJsonObject>();
+            if (!ReadObject(ActionTarget, TEXT("light"), TargetLight))
+            {
+                OutError = TEXT("No-op batch light target has no property snapshot.");
+                return false;
+            }
+            TargetWrapper->SetObjectField(TEXT("value"), TargetLight);
+            if (!ReadSnapshot(TargetWrapper, TEXT("value"), TargetSnapshot)
+                || !SnapshotsMatch(TargetSnapshot, Single.Before)
+                || !SnapshotsMatch(Single.Before, Single.After)
+                || !IsBoundedSnapshot(Single.Before, Single.LightKind))
+            {
+                OutError = TEXT("No-op batch light evidence is not internally consistent.");
+                return false;
+            }
+            Single.ProposalId = Parsed.ProposalId;
+            Single.Status = TEXT("proposed");
+            Single.Rationale = Parsed.Rationale;
+            Single.ChangeSummary = TEXT("No change (already satisfies the request)");
+        }
+        else
+        {
+            TSharedRef<FJsonObject> Synthetic = MakeShared<FJsonObject>();
+            Synthetic->SetStringField(TEXT("proposal_id"), Parsed.ProposalId);
+            Synthetic->SetStringField(TEXT("status"), TEXT("proposed"));
+            Synthetic->SetStringField(TEXT("rationale"), Parsed.Rationale);
+            Synthetic->SetBoolField(TEXT("modifies_editor_scene"), true);
+            Synthetic->SetBoolField(TEXT("auto_save"), false);
+            Synthetic->SetBoolField(TEXT("undo_supported"), true);
+            Synthetic->SetObjectField(TEXT("target"), ActionTarget.ToSharedRef());
+            const TSharedPtr<FJsonObject>* Before = nullptr;
+            const TSharedPtr<FJsonObject>* After = nullptr;
+            if (!(*Action)->TryGetObjectField(TEXT("before"), Before)
+                || Before == nullptr
+                || !(*Action)->TryGetObjectField(TEXT("after"), After)
+                || After == nullptr)
+            {
+                OutError = TEXT("Batch light action is missing Before/After evidence.");
+                return false;
+            }
+            Synthetic->SetObjectField(TEXT("before"), *Before);
+            Synthetic->SetObjectField(TEXT("after"), *After);
+            Synthetic->SetArrayField(TEXT("changes"), *Changes);
+            Synthetic->SetArrayField(
+                TEXT("missing_capabilities"),
+                TArray<TSharedPtr<FJsonValue>>());
+            FString SyntheticText;
+            if (!JsonObjectText(Synthetic, SyntheticText)
+                || !FRenderMasterLightProposal::Parse(SyntheticText, Single, OutError))
+            {
+                return false;
+            }
+            bAnyChanged = true;
+        }
+        Parsed.Actions.Add(MoveTemp(Single));
+    }
+    if (!bAnyChanged)
+    {
+        OutError = TEXT("Batch light proposal does not change any selected light.");
+        return false;
+    }
+    OutProposal = MoveTemp(Parsed);
+    return true;
+}
+
 bool RenderMasterApplyLightProperties(
     ALight* LightActor,
     ULightComponent* LightComponent,
@@ -591,6 +860,672 @@ bool RenderMasterApplyLightProperties(
     if (bMarkPackageDirty) LightActor->MarkPackageDirty();
     if (GEditor != nullptr) GEditor->RedrawLevelEditingViewports();
     return true;
+}
+
+bool RenderMasterApplyLightPropertiesBatch(
+    const TArray<ALight*>& LightActors,
+    const TArray<ULightComponent*>& LightComponents,
+    const TArray<FRenderMasterLightSnapshot>& Before,
+    const TArray<FRenderMasterLightSnapshot>& After,
+    FString& OutError,
+    bool bMarkPackageDirty)
+{
+    if (LightActors.IsEmpty() || LightActors.Num() > 16
+        || LightComponents.Num() != LightActors.Num()
+        || Before.Num() != LightActors.Num()
+        || After.Num() != LightActors.Num())
+    {
+        OutError = TEXT("Batch light arrays are empty, oversized, or inconsistent.");
+        return false;
+    }
+
+    TSet<ALight*> UniqueActors;
+    TSet<ULightComponent*> UniqueComponents;
+    bool bAnyChanged = false;
+    for (int32 Index = 0; Index < LightActors.Num(); ++Index)
+    {
+        ALight* Actor = LightActors[Index];
+        ULightComponent* Component = LightComponents[Index];
+        const FString Kind = LightKind(Component);
+        if (Actor == nullptr || Component == nullptr || Kind.IsEmpty()
+            || UniqueActors.Contains(Actor) || UniqueComponents.Contains(Component)
+            || !IsBoundedSnapshot(Before[Index], Kind)
+            || !IsBoundedSnapshot(After[Index], Kind)
+            || Before[Index].IntensityUnit != After[Index].IntensityUnit)
+        {
+            OutError = TEXT("Batch light action contains an invalid, repeated, or unbounded target.");
+            return false;
+        }
+        UniqueActors.Add(Actor);
+        UniqueComponents.Add(Component);
+        bAnyChanged |= !SnapshotsMatch(Before[Index], After[Index]);
+    }
+    if (!bAnyChanged)
+    {
+        OutError = TEXT("Batch light action does not change any selected light.");
+        return false;
+    }
+
+    FScopedTransaction Transaction(
+        NSLOCTEXT("RenderMasterBot", "ApplyAssistantLightBatch", "RenderMasterBot: Apply Light Group Properties"));
+    TArray<FRenderMasterLightSnapshot> OriginalSnapshots;
+    OriginalSnapshots.Reserve(LightActors.Num());
+    for (int32 Index = 0; Index < LightActors.Num(); ++Index)
+    {
+        OriginalSnapshots.Add(SnapshotLight(LightActors[Index], LightComponents[Index]));
+        if (SnapshotsMatch(Before[Index], After[Index])) continue;
+        LightActors[Index]->Modify();
+        LightComponents[Index]->Modify();
+    }
+
+    for (int32 Index = 0; Index < LightActors.Num(); ++Index)
+    {
+        if (SnapshotsMatch(Before[Index], After[Index])) continue;
+        if (!SetLightSnapshot(
+                LightActors[Index],
+                LightComponents[Index],
+                Before[Index],
+                After[Index]))
+        {
+            for (int32 RestoreIndex = 0; RestoreIndex <= Index; ++RestoreIndex)
+            {
+                if (SnapshotsMatch(Before[RestoreIndex], After[RestoreIndex])) continue;
+                const FRenderMasterLightSnapshot Current = SnapshotLight(
+                    LightActors[RestoreIndex],
+                    LightComponents[RestoreIndex]);
+                SetLightSnapshot(
+                    LightActors[RestoreIndex],
+                    LightComponents[RestoreIndex],
+                    Current,
+                    OriginalSnapshots[RestoreIndex]);
+                LightComponents[RestoreIndex]->PostEditChange();
+                LightComponents[RestoreIndex]->MarkRenderStateDirty();
+                LightActors[RestoreIndex]->PostEditMove(true);
+            }
+            Transaction.Cancel();
+            OutError = FString::Printf(
+                TEXT("Unreal rejected the proposed rotation for %s; prior group edits were restored."),
+                *LightActors[Index]->GetActorLabel());
+            return false;
+        }
+    }
+
+    for (int32 Index = 0; Index < LightActors.Num(); ++Index)
+    {
+        if (SnapshotsMatch(Before[Index], After[Index])) continue;
+        LightComponents[Index]->PostEditChange();
+        LightComponents[Index]->MarkRenderStateDirty();
+        if (!RotationsMatch(Before[Index].Rotation, After[Index].Rotation))
+            LightActors[Index]->PostEditMove(true);
+        if (bMarkPackageDirty) LightActors[Index]->MarkPackageDirty();
+    }
+    if (GEditor != nullptr) GEditor->RedrawLevelEditingViewports();
+    return true;
+}
+
+FRenderMasterLightBatchAssistant::FRenderMasterLightBatchAssistant(
+    TSharedPtr<FRenderMasterWorkflowController> InWorkflowController)
+    : WorkflowController(MoveTemp(InWorkflowController))
+{
+}
+
+FRenderMasterLightBatchAssistant::~FRenderMasterLightBatchAssistant()
+{
+    Shutdown();
+}
+
+void FRenderMasterLightBatchAssistant::Initialize()
+{
+    TickHandle = FTSTicker::GetCoreTicker().AddTicker(
+        FTickerDelegate::CreateSP(AsShared(), &FRenderMasterLightBatchAssistant::Tick),
+        0.2f);
+}
+
+void FRenderMasterLightBatchAssistant::Shutdown()
+{
+    if (TickHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
+        TickHandle.Reset();
+    }
+    if (ProcessHandle.IsValid()) FPlatformProcess::TerminateProc(ProcessHandle, true);
+    CloseProcessResources();
+}
+
+bool FRenderMasterLightBatchAssistant::StartProposal(
+    const FString& Prompt,
+    const TArray<ALight*>& LightActors)
+{
+    if (!CanStart()) return false;
+    const FString CleanPrompt = Prompt.TrimStartAndEnd();
+    if (CleanPrompt.IsEmpty())
+    {
+        Fail(TEXT("Enter a light request before preparing an action."));
+        return false;
+    }
+    if (!WorkflowController.IsValid())
+    {
+        Fail(TEXT("RenderMasterBot runtime configuration is unavailable."));
+        return false;
+    }
+    const FString Python = WorkflowController->GetPythonExecutable();
+    const FString Root = WorkflowController->GetWorkflowRoot();
+    if (!FPaths::FileExists(Python) || Root.IsEmpty())
+    {
+        Fail(TEXT("Configure an existing Python executable and workflow root in Render & Evaluate."));
+        return false;
+    }
+    if (Python.Contains(TEXT("\"")) || Root.Contains(TEXT("\"")))
+    {
+        Fail(TEXT("Assistant runtime paths cannot contain a double quote."));
+        return false;
+    }
+
+    const FString ProposalId = FString::Printf(
+        TEXT("light_batch_%s"),
+        *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S_%s")));
+    const FString RequestDirectory = FPaths::Combine(
+        Root,
+        TEXT("assistant-light-batch"),
+        ProposalId);
+    IFileManager::Get().MakeDirectory(*RequestDirectory, true);
+    const FString PromptPath = FPaths::Combine(RequestDirectory, TEXT("request.txt"));
+    const FString ContextPath = FPaths::Combine(
+        RequestDirectory,
+        TEXT("light_selection_context.json"));
+    ProposalOutputPath = FPaths::Combine(
+        RequestDirectory,
+        TEXT("light_batch_proposal.json"));
+
+    FString Error;
+    if (!FFileHelper::SaveStringToFile(
+            CleanPrompt,
+            *PromptPath,
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)
+        || !WriteLightSelectionContext(ContextPath, LightActors, Error))
+    {
+        Fail(Error.IsEmpty() ? TEXT("Could not write the batch light request.") : Error);
+        return false;
+    }
+
+    const FString Arguments = FString::Printf(
+        TEXT("-m render_master_bot assistant-light-batch-propose --prompt-file %s --context %s --proposal-id %s --output %s"),
+        *QuoteLightArgument(PromptPath),
+        *QuoteLightArgument(ContextPath),
+        *QuoteLightArgument(ProposalId),
+        *QuoteLightArgument(ProposalOutputPath));
+
+    Proposal = FRenderMasterLightBatchProposal();
+    ErrorText.Reset();
+    ProcessLog.Reset();
+    if (!FPlatformProcess::CreatePipe(StdOutRead, StdOutWrite)
+        || !FPlatformProcess::CreatePipe(StdErrRead, StdErrWrite))
+    {
+        CloseProcessResources();
+        Fail(TEXT("Could not create batch light assistant process pipes."));
+        return false;
+    }
+    uint32 ProcessId = 0;
+    ProcessHandle = FPlatformProcess::CreateProc(
+        *Python,
+        *Arguments,
+        false,
+        true,
+        true,
+        &ProcessId,
+        0,
+        nullptr,
+        StdOutWrite,
+        nullptr,
+        StdErrWrite);
+    if (!ProcessHandle.IsValid())
+    {
+        CloseProcessResources();
+        Fail(FString::Printf(TEXT("Could not start Python: %s"), *Python));
+        return false;
+    }
+    State = ERenderMasterLightAssistantState::Planning;
+    AppendLog(FString::Printf(
+        TEXT("Preparing one bounded property proposal for %d light(s) (process %u)."),
+        CapturedTargets.Num(),
+        ProcessId));
+    return true;
+}
+
+bool FRenderMasterLightBatchAssistant::WriteLightSelectionContext(
+    const FString& Filename,
+    const TArray<ALight*>& LightActors,
+    FString& OutError)
+{
+    if (LightActors.IsEmpty() || LightActors.Num() > 16)
+    {
+        OutError = TEXT("Select between one and 16 supported Light Actors.");
+        return false;
+    }
+    TArray<ALight*> SortedLights = LightActors;
+    SortedLights.Sort([](const ALight& Left, const ALight& Right)
+    {
+        return Left.GetPathName() < Right.GetPathName();
+    });
+
+    UWorld* SelectionWorld = nullptr;
+    TSet<FString> ActorPaths;
+    TSet<FString> ActorGuids;
+    TSet<ULightComponent*> Components;
+    CapturedTargets.Reset();
+    TArray<TSharedPtr<FJsonValue>> LightValues;
+    LightValues.Reserve(SortedLights.Num());
+    for (ALight* Actor : SortedLights)
+    {
+        if (Actor == nullptr || Actor->GetWorld() == nullptr || Actor->IsTemplate())
+        {
+            OutError = TEXT("The light selection contains an invalid or template Actor.");
+            CapturedTargets.Reset();
+            return false;
+        }
+        if (SelectionWorld == nullptr) SelectionWorld = Actor->GetWorld();
+        if (Actor->GetWorld() != SelectionWorld)
+        {
+            OutError = TEXT("All selected lights must belong to the same open level.");
+            CapturedTargets.Reset();
+            return false;
+        }
+        ULightComponent* Component = Actor->GetLightComponent();
+        const FString Kind = LightKind(Component);
+        if (Component == nullptr || Kind.IsEmpty())
+        {
+            OutError = FString::Printf(
+                TEXT("%s is not a supported Directional, Point, Spot, or Rect Light."),
+                *Actor->GetActorLabel());
+            CapturedTargets.Reset();
+            return false;
+        }
+        if (!Actor->IsEditable() || Actor->IsLockLocation())
+        {
+            OutError = FString::Printf(
+                TEXT("%s is not editable or its location is locked."),
+                *Actor->GetActorLabel());
+            CapturedTargets.Reset();
+            return false;
+        }
+
+        FRenderMasterCapturedLightTarget Captured;
+        Captured.Actor = Actor;
+        Captured.Component = Component;
+        Captured.ActorName = Actor->GetActorLabel();
+        Captured.ActorPath = Actor->GetPathName();
+        Captured.ActorClass = Actor->GetClass()->GetName();
+        Captured.ActorGuid = Actor->GetActorGuid().IsValid()
+            ? Actor->GetActorGuid().ToString(EGuidFormats::Digits)
+            : FString();
+        Captured.ComponentName = Component->GetName();
+        Captured.ComponentMobility = MobilityText(Component);
+        Captured.LightKind = Kind;
+        Captured.Light = SnapshotLight(Actor, Component);
+        if (!IsBoundedSnapshot(Captured.Light, Kind))
+        {
+            OutError = FString::Printf(
+                TEXT("%s has properties outside the supported safety boundary."),
+                *Captured.ActorName);
+            CapturedTargets.Reset();
+            return false;
+        }
+        if (ActorPaths.Contains(Captured.ActorPath)
+            || Components.Contains(Component)
+            || (!Captured.ActorGuid.IsEmpty() && ActorGuids.Contains(Captured.ActorGuid)))
+        {
+            OutError = TEXT("The light selection contains a repeated Actor or component identity.");
+            CapturedTargets.Reset();
+            return false;
+        }
+        ActorPaths.Add(Captured.ActorPath);
+        Components.Add(Component);
+        if (!Captured.ActorGuid.IsEmpty()) ActorGuids.Add(Captured.ActorGuid);
+
+        TSharedRef<FJsonObject> LightJson = MakeShared<FJsonObject>();
+        LightJson->SetStringField(TEXT("schema_version"), TEXT("0.1"));
+        LightJson->SetStringField(TEXT("project_name"), FApp::GetProjectName());
+        LightJson->SetStringField(
+            TEXT("level_path"),
+            SelectionWorld->GetPackage()->GetName());
+        LightJson->SetStringField(TEXT("actor_name"), Captured.ActorName);
+        LightJson->SetStringField(TEXT("actor_path"), Captured.ActorPath);
+        LightJson->SetStringField(TEXT("actor_class"), Captured.ActorClass);
+        if (!Captured.ActorGuid.IsEmpty())
+            LightJson->SetStringField(TEXT("actor_guid"), Captured.ActorGuid);
+        LightJson->SetStringField(TEXT("component_name"), Captured.ComponentName);
+        LightJson->SetStringField(TEXT("light_kind"), Captured.LightKind);
+        LightJson->SetStringField(TEXT("component_mobility"), Captured.ComponentMobility);
+        LightJson->SetBoolField(TEXT("is_editable"), true);
+        LightJson->SetBoolField(TEXT("is_locked"), false);
+        LightJson->SetObjectField(TEXT("light"), SnapshotJson(Captured.Light));
+        LightValues.Add(MakeShared<FJsonValueObject>(LightJson));
+        CapturedTargets.Add(MoveTemp(Captured));
+    }
+
+    TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+    Root->SetStringField(TEXT("schema_version"), TEXT("0.1"));
+    Root->SetStringField(TEXT("project_name"), FApp::GetProjectName());
+    Root->SetStringField(TEXT("level_path"), SelectionWorld->GetPackage()->GetName());
+    Root->SetArrayField(TEXT("lights"), LightValues);
+    FString JsonText;
+    const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonText);
+    if (!FJsonSerializer::Serialize(Root, Writer)
+        || !FFileHelper::SaveStringToFile(
+            JsonText,
+            *Filename,
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+    {
+        OutError = FString::Printf(
+            TEXT("Could not write light selection context: %s"),
+            *Filename);
+        CapturedTargets.Reset();
+        return false;
+    }
+    return true;
+}
+
+bool FRenderMasterLightBatchAssistant::ApplyProposal()
+{
+    FString Error;
+    if (!CanApply() || !RevalidateTargets(Error))
+    {
+        Fail(Error.IsEmpty() ? TEXT("No batch light proposal is ready to apply.") : Error);
+        return false;
+    }
+
+    TArray<ALight*> Actors;
+    TArray<ULightComponent*> Components;
+    TArray<FRenderMasterLightSnapshot> Before;
+    TArray<FRenderMasterLightSnapshot> After;
+    Actors.Reserve(CapturedTargets.Num());
+    Components.Reserve(CapturedTargets.Num());
+    Before.Reserve(CapturedTargets.Num());
+    After.Reserve(CapturedTargets.Num());
+    for (int32 Index = 0; Index < CapturedTargets.Num(); ++Index)
+    {
+        Actors.Add(CapturedTargets[Index].Actor.Get());
+        Components.Add(CapturedTargets[Index].Component.Get());
+        Before.Add(Proposal.Actions[Index].Before);
+        After.Add(Proposal.Actions[Index].After);
+    }
+    if (!RenderMasterApplyLightPropertiesBatch(
+            Actors,
+            Components,
+            Before,
+            After,
+            Error))
+    {
+        Fail(Error);
+        return false;
+    }
+    State = ERenderMasterLightAssistantState::Applied;
+    AppendLog(FString::Printf(
+        TEXT("Applied the approved property action to %d light(s) in one Undo transaction. The level was not saved."),
+        CapturedTargets.Num()));
+    return true;
+}
+
+bool FRenderMasterLightBatchAssistant::RevalidateTargets(FString& OutError) const
+{
+    if (CapturedTargets.IsEmpty() || Proposal.Actions.Num() != CapturedTargets.Num())
+    {
+        OutError = TEXT("The frozen light selection no longer matches the proposal.");
+        return false;
+    }
+    for (int32 Index = 0; Index < CapturedTargets.Num(); ++Index)
+    {
+        const FRenderMasterCapturedLightTarget& Captured = CapturedTargets[Index];
+        const FRenderMasterLightProposal& Action = Proposal.Actions[Index];
+        ALight* Actor = Captured.Actor.Get();
+        ULightComponent* Component = Captured.Component.Get();
+        if (Actor == nullptr || Component == nullptr || Actor->GetWorld() == nullptr
+            || Actor->GetLightComponent() != Component)
+        {
+            OutError = FString::Printf(
+                TEXT("Captured light %d no longer exists. Prepare a new action."),
+                Index + 1);
+            return false;
+        }
+        const FString CurrentGuid = Actor->GetActorGuid().IsValid()
+            ? Actor->GetActorGuid().ToString(EGuidFormats::Digits)
+            : FString();
+        if (Actor->GetActorLabel() != Captured.ActorName
+            || Actor->GetPathName() != Captured.ActorPath
+            || Actor->GetClass()->GetName() != Captured.ActorClass
+            || CurrentGuid != Captured.ActorGuid
+            || Component->GetName() != Captured.ComponentName
+            || MobilityText(Component) != Captured.ComponentMobility
+            || LightKind(Component) != Captured.LightKind
+            || Action.ActorName != Captured.ActorName
+            || Action.ActorPath != Captured.ActorPath
+            || Action.ActorClass != Captured.ActorClass
+            || Action.ActorGuid != Captured.ActorGuid
+            || Action.ComponentName != Captured.ComponentName
+            || Action.ComponentMobility != Captured.ComponentMobility
+            || Action.LightKind != Captured.LightKind)
+        {
+            OutError = FString::Printf(
+                TEXT("Light identity, type, unit, or component state changed for item %d."),
+                Index + 1);
+            return false;
+        }
+        if (!Actor->IsEditable() || Actor->IsLockLocation())
+        {
+            OutError = FString::Printf(
+                TEXT("%s is no longer editable or is now locked."),
+                *Captured.ActorName);
+            return false;
+        }
+        if (!SnapshotsMatch(Action.Before, Captured.Light)
+            || !SnapshotsMatch(SnapshotLight(Actor, Component), Captured.Light))
+        {
+            OutError = FString::Printf(
+                TEXT("The properties of %s changed after planning. Nothing was applied; prepare a new action."),
+                *Captured.ActorName);
+            return false;
+        }
+    }
+    return true;
+}
+
+void FRenderMasterLightBatchAssistant::RejectProposal()
+{
+    if (State == ERenderMasterLightAssistantState::Planning)
+    {
+        Cancel();
+        CloseProcessResources();
+    }
+    State = ERenderMasterLightAssistantState::Rejected;
+    AppendLog(TEXT("Batch light proposal rejected. No Editor scene change was applied."));
+}
+
+void FRenderMasterLightBatchAssistant::Cancel()
+{
+    if (ProcessHandle.IsValid()) FPlatformProcess::TerminateProc(ProcessHandle, true);
+}
+
+bool FRenderMasterLightBatchAssistant::CanStart() const
+{
+    return !ProcessHandle.IsValid();
+}
+
+bool FRenderMasterLightBatchAssistant::CanApply() const
+{
+    if (State != ERenderMasterLightAssistantState::Proposed
+        || CapturedTargets.IsEmpty()
+        || Proposal.Actions.Num() != CapturedTargets.Num())
+    {
+        return false;
+    }
+    for (const FRenderMasterCapturedLightTarget& Captured : CapturedTargets)
+    {
+        if (!Captured.Actor.IsValid() || !Captured.Component.IsValid()) return false;
+    }
+    return true;
+}
+
+bool FRenderMasterLightBatchAssistant::IsPlanning() const
+{
+    return State == ERenderMasterLightAssistantState::Planning;
+}
+
+FText FRenderMasterLightBatchAssistant::GetStateText() const
+{
+    switch (State)
+    {
+        case ERenderMasterLightAssistantState::Planning: return NSLOCTEXT("RenderMasterBot", "LightBatchPlanning", "Planning");
+        case ERenderMasterLightAssistantState::Proposed: return NSLOCTEXT("RenderMasterBot", "LightBatchProposed", "Approval required");
+        case ERenderMasterLightAssistantState::Unresolved: return NSLOCTEXT("RenderMasterBot", "LightBatchUnresolved", "Unresolved");
+        case ERenderMasterLightAssistantState::Failed: return NSLOCTEXT("RenderMasterBot", "LightBatchFailed", "Failed");
+        case ERenderMasterLightAssistantState::Applied: return NSLOCTEXT("RenderMasterBot", "LightBatchApplied", "Applied");
+        case ERenderMasterLightAssistantState::Rejected: return NSLOCTEXT("RenderMasterBot", "LightBatchRejected", "Rejected");
+        default: return NSLOCTEXT("RenderMasterBot", "LightBatchReady", "Ready");
+    }
+}
+
+FText FRenderMasterLightBatchAssistant::GetSummaryText() const
+{
+    if (State == ERenderMasterLightAssistantState::Planning)
+    {
+        return FText::FromString(FString::Printf(
+            TEXT("Interpreting one uniform property request against a frozen selection of %d light(s). Nothing is being changed."),
+            CapturedTargets.Num()));
+    }
+    if (State == ERenderMasterLightAssistantState::Proposed)
+    {
+        TArray<FString> Sections;
+        Sections.Reserve(Proposal.Actions.Num());
+        for (int32 Index = 0; Index < Proposal.Actions.Num(); ++Index)
+        {
+            const FRenderMasterLightProposal& Action = Proposal.Actions[Index];
+            Sections.Add(FString::Printf(
+                TEXT("Light %d — %s\n%s\nType  %s | Unit  %s\n\nChanges\n%s\n\nBefore\n%s\n\nAfter\n%s"),
+                Index + 1,
+                *Action.ActorName,
+                *Action.ActorPath,
+                *Action.LightKind,
+                *Action.Before.IntensityUnit,
+                *Action.ChangeSummary,
+                *SnapshotText(Action.Before),
+                *SnapshotText(Action.After)));
+        }
+        return FText::FromString(FString::Printf(
+            TEXT("%d LIGHTS | GROUP ACTION\n\n%s\n\nWhy\n%s\n\nApproval applies the complete selection as one grouped Editor action. If any light is stale, nothing is applied. The level is not saved automatically; one Ctrl+Z undoes the group."),
+            Proposal.Actions.Num(),
+            *FString::Join(Sections, TEXT("\n\n────────────────────────\n\n")),
+            *Proposal.Rationale));
+    }
+    if (State == ERenderMasterLightAssistantState::Unresolved)
+    {
+        return FText::FromString(FString::Printf(
+            TEXT("%s\n\nMissing capability\n%s"),
+            *Proposal.Rationale,
+            *Proposal.MissingCapabilities));
+    }
+    if (State == ERenderMasterLightAssistantState::Failed)
+        return FText::FromString(ErrorText);
+    if (State == ERenderMasterLightAssistantState::Applied)
+    {
+        return FText::FromString(FString::Printf(
+            TEXT("Applied the approved properties to %d light(s) as one grouped action. The level was not saved automatically. Use Ctrl+Z once to undo the complete group."),
+            Proposal.Actions.Num()));
+    }
+    if (State == ERenderMasterLightAssistantState::Rejected)
+    {
+        return NSLOCTEXT("RenderMasterBot", "LightBatchRejectedSummary", "The batch light proposal was rejected. No scene change was applied.");
+    }
+    return NSLOCTEXT("RenderMasterBot", "LightBatchReadySummary", "Select one to 16 supported lights and describe one property change for the complete selection.");
+}
+
+FText FRenderMasterLightBatchAssistant::GetLogText() const
+{
+    return FText::FromString(ProcessLog);
+}
+
+FLinearColor FRenderMasterLightBatchAssistant::GetStateColor() const
+{
+    if (State == ERenderMasterLightAssistantState::Proposed) return FLinearColor(0.95f, 0.55f, 0.12f);
+    if (State == ERenderMasterLightAssistantState::Applied) return FLinearColor(0.12f, 0.62f, 0.38f);
+    if (State == ERenderMasterLightAssistantState::Failed) return FLinearColor(0.9f, 0.2f, 0.2f);
+    if (State == ERenderMasterLightAssistantState::Unresolved) return FLinearColor(0.95f, 0.55f, 0.15f);
+    return FLinearColor(0.2f, 0.23f, 0.28f);
+}
+
+bool FRenderMasterLightBatchAssistant::Tick(float DeltaTime)
+{
+    ReadProcessOutput();
+    if (ProcessHandle.IsValid() && !FPlatformProcess::IsProcRunning(ProcessHandle))
+        FinishProcess();
+    return true;
+}
+
+void FRenderMasterLightBatchAssistant::FinishProcess()
+{
+    ReadProcessOutput();
+    int32 ExitCode = -1;
+    FPlatformProcess::GetProcReturnCode(ProcessHandle, &ExitCode);
+    CloseProcessResources();
+    if (ExitCode != 0)
+    {
+        Fail(FString::Printf(
+            TEXT("Batch light assistant process exited with code %d.\n%s"),
+            ExitCode,
+            *ProcessLog));
+        return;
+    }
+    FString Error;
+    if (!FRenderMasterLightBatchProposal::LoadFromFile(
+            ProposalOutputPath,
+            Proposal,
+            Error))
+    {
+        Fail(Error);
+        return;
+    }
+    if (Proposal.Status == TEXT("proposed") && !RevalidateTargets(Error))
+    {
+        Fail(Error);
+        return;
+    }
+    State = Proposal.Status == TEXT("proposed")
+        ? ERenderMasterLightAssistantState::Proposed
+        : ERenderMasterLightAssistantState::Unresolved;
+}
+
+void FRenderMasterLightBatchAssistant::ReadProcessOutput()
+{
+    if (StdOutRead != nullptr) AppendLog(FPlatformProcess::ReadPipe(StdOutRead));
+    if (StdErrRead != nullptr) AppendLog(FPlatformProcess::ReadPipe(StdErrRead));
+}
+
+void FRenderMasterLightBatchAssistant::CloseProcessResources()
+{
+    if (ProcessHandle.IsValid())
+    {
+        FPlatformProcess::CloseProc(ProcessHandle);
+        ProcessHandle.Reset();
+    }
+    if (StdOutRead != nullptr || StdOutWrite != nullptr)
+        FPlatformProcess::ClosePipe(StdOutRead, StdOutWrite);
+    if (StdErrRead != nullptr || StdErrWrite != nullptr)
+        FPlatformProcess::ClosePipe(StdErrRead, StdErrWrite);
+    StdOutRead = StdOutWrite = StdErrRead = StdErrWrite = nullptr;
+}
+
+void FRenderMasterLightBatchAssistant::AppendLog(const FString& Text)
+{
+    if (Text.IsEmpty()) return;
+    ProcessLog += Text;
+    if (!ProcessLog.EndsWith(TEXT("\n"))) ProcessLog += TEXT("\n");
+    if (ProcessLog.Len() > 12000) ProcessLog.RightInline(12000, EAllowShrinking::No);
+}
+
+void FRenderMasterLightBatchAssistant::Fail(const FString& Error)
+{
+    ErrorText = Error;
+    State = ERenderMasterLightAssistantState::Failed;
+    AppendLog(Error);
 }
 
 FRenderMasterLightAssistant::FRenderMasterLightAssistant(

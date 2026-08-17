@@ -1,0 +1,43 @@
+{
+  "schema_version": "0.1",
+  "project_name": "OptimizationPlugin",
+  "level_path": "/Game/FirstPerson/Lvl_FirstPerson",
+  "actors": [
+    {
+      "schema_version": "0.1",
+      "project_name": "OptimizationPlugin",
+      "level_path": "/Game/FirstPerson/Lvl_FirstPerson",
+      "actor_name": "FirstProp",
+      "actor_path": "/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.FirstProp",
+      "actor_class": "StaticMeshActor",
+      "actor_guid": "11111111111111111111111111111111",
+      "root_component_name": "StaticMeshComponent0",
+      "root_mobility": "movable",
+      "is_editable": true,
+      "is_locked": false,
+      "transform": {
+        "location_cm": {"x": 0.0, "y": 0.0, "z": 100.0},
+        "rotation_deg": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
+    },
+    {
+      "schema_version": "0.1",
+      "project_name": "OptimizationPlugin",
+      "level_path": "/Game/FirstPerson/Lvl_FirstPerson",
+      "actor_name": "SecondProp",
+      "actor_path": "/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.SecondProp",
+      "actor_class": "StaticMeshActor",
+      "actor_guid": "22222222222222222222222222222222",
+      "root_component_name": "StaticMeshComponent0",
+      "root_mobility": "movable",
+      "is_editable": true,
+      "is_locked": false,
+      "transform": {
+        "location_cm": {"x": 200.0, "y": 0.0, "z": 100.0},
+        "rotation_deg": {"x": 0.0, "y": 0.0, "z": 90.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      }
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-"""Approval-gated natural-language property proposals for one Unreal light."""
+"""Approval-gated property proposals for selected Unreal lights."""
 
 from __future__ import annotations
 
@@ -10,14 +10,17 @@ from typing import Any, Protocol
 from pydantic import ValidationError
 
 from render_master_bot.contracts import (
+    AssistantLightBatchProposal,
     AssistantLightProposal,
     EditorLightSnapshot,
+    LightActorAction,
     LightEditIntent,
     LightPropertyChange,
     LightScalarEdit,
     ModelIdentity,
     TransformAxisEdit,
     UnrealLightContext,
+    UnrealLightSelectionContext,
 )
 from render_master_bot.models import Vector3
 from render_master_bot.ollama import StructuredResponse
@@ -39,6 +42,36 @@ spot, and rect lights. Point-light rotation must be unresolved.
 Do not output Unreal commands, code, Markdown, or prose outside the JSON.
 If the request needs exposure/camera changes, geometry reasoning, multiple lights, unsupported light
 properties, or is ambiguous, return outcome=unresolved and name the concrete missing capability.
+Always include every top-level field. Use this exact shape and replace only requested values:
+{"schema_version":"0.1","outcome":"proposed",
+"intensity":{"operation":"preserve","value":null},"color_rgb":null,
+"use_temperature":null,"temperature_kelvin":null,"cast_shadows":null,
+"attenuation_radius_cm":{"operation":"preserve","value":null},
+"inner_cone_deg":{"operation":"preserve","value":null},
+"outer_cone_deg":{"operation":"preserve","value":null},
+"rotation":{"operation":"preserve","x":null,"y":null,"z":null},
+"rationale":"...","missing_capabilities":[]}
+For unresolved, keep every edit preserved/null and provide at least one missing capability.
+"""
+
+BATCH_SYSTEM_PROMPT = """You interpret one user's uniform property edit for an ordered selection of Unreal lights.
+Return exactly one LightEditIntent JSON object matching the supplied schema.
+The Editor has already selected and ordered every light. Never choose, reorder, rename, spawn, or
+delete an Actor. The same intent will be applied to the complete selection. If the user asks for
+different edits per named light or lighting role, return outcome=unresolved.
+Intensity values use each light's frozen intensity_unit. A percentage or factor uses multiply and
+can span different non-EV units. Absolute set/add intensity is valid only when every selected light
+has the same unit. Never convert or change units. "20% brighter" means multiply 1.2.
+color_rgb is linear RGB from 0 to 1. A direct color request should set use_temperature=false.
+A Kelvin request should set temperature_kelvin and use_temperature=true.
+attenuation_radius_cm requires every selected light to be point, spot, or rect.
+inner_cone_deg and outer_cone_deg require every selected light to be spot; inner cannot exceed outer.
+rotation uses Unreal world axes x=roll, y=pitch, z=yaw and requires every selected light to be
+directional, spot, or rect. A selection containing a point light cannot rotate as one batch.
+Do not output Unreal commands, code, Markdown, or prose outside the JSON.
+If the request needs exposure/camera changes, geometry reasoning, per-light role coordination,
+unsupported properties, incompatible selected light types/units, or is ambiguous, return
+outcome=unresolved and name the concrete missing capability.
 Always include every top-level field. Use this exact shape and replace only requested values:
 {"schema_version":"0.1","outcome":"proposed",
 "intensity":{"operation":"preserve","value":null},"color_rgb":null,
@@ -101,6 +134,13 @@ class LightProposalResult:
     attempt_count: int
 
 
+@dataclass(frozen=True)
+class LightBatchProposalResult:
+    proposal: AssistantLightBatchProposal
+    response: StructuredResponse
+    attempt_count: int
+
+
 def load_light_context(path: str | Path) -> UnrealLightContext:
     try:
         return UnrealLightContext.model_validate_json(
@@ -108,6 +148,17 @@ def load_light_context(path: str | Path) -> UnrealLightContext:
         )
     except (OSError, ValidationError) as exc:
         raise LightProposalError(f"invalid Unreal light context: {exc}") from exc
+
+
+def load_light_selection_context(path: str | Path) -> UnrealLightSelectionContext:
+    try:
+        return UnrealLightSelectionContext.model_validate_json(
+            Path(path).read_text(encoding="utf-8-sig")
+        )
+    except (OSError, ValidationError) as exc:
+        raise LightProposalError(
+            f"invalid Unreal light selection context: {exc}"
+        ) from exc
 
 
 def _normalize_degrees(value: float) -> float:
@@ -160,6 +211,8 @@ def _changed(before: object, after: object) -> bool:
 def compile_light_intent(
     context: UnrealLightContext,
     intent: LightEditIntent,
+    *,
+    allow_noop: bool = False,
 ) -> tuple[EditorLightSnapshot, list[LightPropertyChange]]:
     if intent.outcome != "proposed":
         raise LightProposalError("cannot compile an unresolved light intent")
@@ -271,9 +324,40 @@ def compile_light_intent(
             ))
 
     after = EditorLightSnapshot.model_validate(values)
-    if not changes:
+    if not changes and not allow_noop:
         raise LightProposalError("light request produces no observable change")
     return after, changes
+
+
+def _validate_batch_compatibility(
+    selection: UnrealLightSelectionContext,
+    intent: LightEditIntent,
+) -> None:
+    if intent.outcome != "proposed":
+        return
+    units = {light.light.intensity_unit for light in selection.lights}
+    if intent.intensity.operation in {"set", "add"} and len(units) != 1:
+        raise LightProposalError(
+            "absolute batch intensity edits require one shared frozen intensity unit"
+        )
+    if intent.intensity.operation == "multiply" and "ev" in units:
+        raise LightProposalError("batch intensity multiply does not support EV lights")
+    if (
+        intent.attenuation_radius_cm.operation != "preserve"
+        and any(light.light_kind == "directional" for light in selection.lights)
+    ):
+        raise LightProposalError(
+            "batch attenuation edits require only point, spot, or rect lights"
+        )
+    if (
+        intent.inner_cone_deg.operation != "preserve"
+        or intent.outer_cone_deg.operation != "preserve"
+    ) and any(light.light_kind != "spot" for light in selection.lights):
+        raise LightProposalError("batch cone edits require an all-Spot-Light selection")
+    if intent.rotation.operation != "preserve" and any(
+        light.light_kind == "point" for light in selection.lights
+    ):
+        raise LightProposalError("batch rotation cannot include a Point Light")
 
 
 def _parse_intent(response: StructuredResponse) -> LightEditIntent:
@@ -355,6 +439,97 @@ def propose_light_change(
         missing_capabilities=intent.missing_capabilities,
     )
     return LightProposalResult(
+        proposal=proposal,
+        response=response,
+        attempt_count=attempt_count,
+    )
+
+
+def propose_light_batch_change(
+    *,
+    prompt: str,
+    selection: UnrealLightSelectionContext,
+    client: StructuredLightClient,
+    model: str,
+    proposal_id: str,
+) -> LightBatchProposalResult:
+    request = prompt.strip()
+    if not request:
+        raise LightProposalError("light request cannot be empty")
+    selection_text = selection.model_dump_json(indent=2)
+    messages = [
+        {"role": "system", "content": BATCH_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                "Editor-captured ordered light selection (read-only):\n"
+                f"{selection_text}\n\nUser request:\n{request}"
+            ),
+        },
+    ]
+    schema = ollama_model_schema(LightEditIntent)
+    response = client.chat_structured(model=model, messages=messages, json_schema=schema)
+    attempt_count = 1
+
+    def compile_actions(intent: LightEditIntent) -> list[LightActorAction]:
+        if intent.outcome != "proposed":
+            return []
+        _validate_batch_compatibility(selection, intent)
+        actions = []
+        for light in selection.lights:
+            after, changes = compile_light_intent(light, intent, allow_noop=True)
+            actions.append(LightActorAction(
+                target=light,
+                before=light.light,
+                after=after,
+                changes=changes,
+            ))
+        if not any(action.changes for action in actions):
+            raise LightProposalError(
+                "batch light request produces no observable change"
+            )
+        return actions
+
+    try:
+        intent = _parse_intent(response)
+        actions = compile_actions(intent)
+    except (ValidationError, LightProposalError) as first_error:
+        response = client.chat_structured(
+            model=model,
+            messages=[
+                *messages,
+                {"role": "assistant", "content": response.content},
+                {
+                    "role": "user",
+                    "content": FORMAT_RETRY_PROMPT.format(
+                        validation_error=str(first_error)[:2000]
+                    ),
+                },
+            ],
+            json_schema=schema,
+        )
+        attempt_count = 2
+        try:
+            intent = _parse_intent(response)
+            actions = compile_actions(intent)
+        except (ValidationError, LightProposalError) as exc:
+            raise LightProposalError(
+                f"model returned an unsafe batch light intent after one retry: {exc}",
+                response=response,
+                attempt_count=attempt_count,
+            ) from exc
+
+    proposal = AssistantLightBatchProposal(
+        proposal_id=proposal_id,
+        status=intent.outcome,
+        request=request,
+        selection=selection,
+        proposed_by=ModelIdentity(provider="ollama", model=response.model),
+        actions=actions,
+        rationale=intent.rationale,
+        missing_capabilities=intent.missing_capabilities,
+    )
+    return LightBatchProposalResult(
         proposal=proposal,
         response=response,
         attempt_count=attempt_count,

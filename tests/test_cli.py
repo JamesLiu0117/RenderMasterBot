@@ -354,6 +354,30 @@ class CliOutputTests(unittest.TestCase):
         self.assertEqual(args.proposal_id, "transform_001")
         self.assertEqual(args.output, "proposal.json")
 
+    def test_assistant_transform_batch_parser_keeps_selection_and_output_explicit(self):
+        args = build_parser().parse_args(
+            [
+                "assistant-transform-batch-propose",
+                "--prompt-file",
+                "request.txt",
+                "--context",
+                "transform_selection.json",
+                "--model",
+                "planner-model",
+                "--proposal-id",
+                "transform_batch_001",
+                "--output",
+                "batch_proposal.json",
+            ]
+        )
+
+        self.assertIsNone(args.prompt)
+        self.assertEqual(args.prompt_file, "request.txt")
+        self.assertEqual(args.context, "transform_selection.json")
+        self.assertEqual(args.model, "planner-model")
+        self.assertEqual(args.proposal_id, "transform_batch_001")
+        self.assertEqual(args.output, "batch_proposal.json")
+
     def test_assistant_light_parser_keeps_context_model_and_output_explicit(self):
         args = build_parser().parse_args(
             [
@@ -375,6 +399,51 @@ class CliOutputTests(unittest.TestCase):
         self.assertEqual(args.model, "planner-model")
         self.assertEqual(args.proposal_id, "light_001")
         self.assertEqual(args.output, "light_proposal.json")
+
+    def test_assistant_light_batch_parser_keeps_selection_and_output_explicit(self):
+        args = build_parser().parse_args(
+            [
+                "assistant-light-batch-propose",
+                "--prompt-file",
+                "request.txt",
+                "--context",
+                "light_selection.json",
+                "--model",
+                "planner",
+                "--proposal-id",
+                "light_batch_001",
+                "--output",
+                "light_batch_proposal.json",
+            ]
+        )
+        self.assertIsNone(args.prompt)
+        self.assertEqual(args.prompt_file, "request.txt")
+        self.assertEqual(args.context, "light_selection.json")
+        self.assertEqual(args.model, "planner")
+        self.assertEqual(args.proposal_id, "light_batch_001")
+        self.assertEqual(args.output, "light_batch_proposal.json")
+
+    def test_assistant_camera_parser_keeps_context_model_and_output_explicit(self):
+        args = build_parser().parse_args(
+            [
+                "assistant-camera-propose",
+                "--prompt",
+                "Use an 85 mm lens and focus at 3.5 meters",
+                "--context",
+                "camera_context.json",
+                "--model",
+                "planner-model",
+                "--proposal-id",
+                "camera_001",
+                "--output",
+                "camera_proposal.json",
+            ]
+        )
+
+        self.assertEqual(args.context, "camera_context.json")
+        self.assertEqual(args.model, "planner-model")
+        self.assertEqual(args.proposal_id, "camera_001")
+        self.assertEqual(args.output, "camera_proposal.json")
 
     def test_external_material_import_parsers_separate_proposal_and_approval(self):
         assistant_external = build_parser().parse_args(

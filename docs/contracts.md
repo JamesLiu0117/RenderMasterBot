@@ -12,8 +12,14 @@ these strict models. Unknown fields are rejected.
 | `AssistantMaterialProposal` | catalog-backed proposal builder | Unreal Editor assistant/operator | approval-gated selected-Actor material change |
 | `UnrealActorTransformContext` | Unreal Editor assistant | Transform proposal builder | frozen Actor identity and world Transform evidence |
 | `AssistantTransformProposal` | bounded Transform proposal builder | Unreal Editor assistant/operator | approval-gated selected-Actor world Transform change |
+| `UnrealTransformSelectionContext` | Unreal Editor assistant | batch Transform proposal builder | ordered evidence for one to 32 selected Actors |
+| `AssistantTransformBatchProposal` | bounded Transform proposal builder | Unreal Editor assistant/operator | approval-gated world/local Transform action for the complete selection |
 | `UnrealLightContext` | Unreal Editor assistant | light proposal builder | frozen Light identity, type, unit, and editable property evidence |
 | `AssistantLightProposal` | bounded light proposal builder | Unreal Editor assistant/operator | approval-gated selected-Light property change |
+| `UnrealLightSelectionContext` | Unreal Editor assistant | batch light proposal builder | ordered evidence for one to 16 selected lights |
+| `AssistantLightBatchProposal` | bounded light proposal builder | Unreal Editor assistant/operator | approval-gated compatible group property action |
+| `UnrealCameraContext` | Unreal Editor assistant | camera proposal builder | frozen Camera/Cine Camera identity, lens bounds, and editable property evidence |
+| `AssistantCameraProposal` | bounded camera proposal builder | Unreal Editor assistant/operator | approval-gated selected-Camera property change |
 | `RenderSpec` | planner or human | validator/engine adapter | complete requested scene |
 | `RenderSpecPatch` | evaluator or human | patch validator | bounded correction proposal |
 | `EvaluationReport` | visual/rule evaluator | repair planner/benchmark | findings and verdict |
@@ -25,7 +31,7 @@ these strict models. Unknown fields are rejected.
 | `RunManifest` | orchestration layer | dataset builder/auditor | reproducible run evidence |
 
 Although the early planning note called these "six contracts," the actual
-boundary now contains seventeen top-level contracts. `CorrectionDecision` is kept
+boundary now contains twenty-three top-level contracts. `CorrectionDecision` is kept
 separate from `EvaluationReport` so visual observation and executable repair
 remain independently testable.
 
@@ -45,20 +51,35 @@ remain independently testable.
   revalidates the captured Actor, component, mesh, slot, and current material
   immediately before applying an approved transaction.
 - The Transform model can express only per-axis `set`/`add` operations for
-  location and rotation, or `set`/`multiply` for scale. It cannot select the
-  Actor or author trusted Before/After evidence.
-- Transform target identity and Before values come from the Editor. The host
-  computes bounded After values, and Unreal rechecks Actor path, class, GUID,
-  editability, lock state, and unchanged Transform immediately before applying
-  one Undo-backed transaction.
-- Light target identity, kind, intensity unit, and Before values come from the
-  Editor. The model can request only bounded property operations; the host
-  computes the After snapshot and rejects properties that do not apply to the
-  captured Directional, Point, Spot, or Rect Light.
-- Unreal rechecks the Light Actor, component, type, unit, editability, lock
-  state, and complete unchanged snapshot immediately before applying one
-  Undo-backed transaction. A proposal cannot spawn, delete, rename, retype, or
-  change the intensity unit of a Light.
+  world location and rotation, local-space `add`, or `set`/`multiply` for scale.
+  It cannot select Actors or author trusted Before/After evidence.
+- Batch Transform selection identity and Before values come from the Editor.
+  The host applies one intent uniformly to the ordered selection, rotates local
+  translation by each Actor basis, composes local rotation as quaternions, and
+  emits final world-space evidence for every Actor.
+- Unreal rechecks every captured path, class, GUID, root component, mobility,
+  editability, lock state, and unchanged Transform. One stale Actor rejects the
+  complete batch; successful approval uses one Undo-backed transaction.
+- Light selection identity, kind, intensity unit, and Before values come from
+  the Editor. The model can request only one uniform bounded intent. The host
+  computes every After snapshot and rejects properties not supported by the
+  complete Directional/Point/Spot/Rect selection.
+- Percentage intensity edits may span mixed non-EV units; absolute intensity
+  edits require one shared unit. Attenuation requires all-local lights, cone
+  edits require all Spot Lights, and rotation rejects any Point Light.
+- Unreal rechecks every Light Actor, component, Mobility, type, unit,
+  editability, lock state, and complete snapshot immediately before one grouped
+  Undo transaction. One stale light rejects the group. A proposal cannot spawn,
+  delete, rename, retype, or change intensity units.
+- Camera target identity, kind, lens bounds, and complete Before values come
+  from the Editor. The model can request only bounded operations; the host
+  computes the final standard-Camera FOV or Cine-Camera focal length, aperture,
+  focus, exposure compensation, and world Transform.
+- Unreal rechecks the Camera Actor, component, kind, projection mode,
+  editability, lock state, lens bounds, and unchanged property snapshot before
+  one Undo-backed transaction. Camera proposals cannot change Filmback, lens
+  presets, aspect ratio, projection mode, scale, tracked focus targets, or Post
+  Process blend weight.
 - External-material operational records freeze provider metadata, four local
   map hashes, the exact five planned Unreal paths, and the canonical proposal
   SHA-256. A mismatched approval hash stops before Unreal is launched.
@@ -102,8 +123,14 @@ render-master validate selection_context.json --contract unreal-selection-contex
 render-master validate material_proposal.json --contract assistant-material-proposal
 render-master validate actor_transform.json --contract unreal-actor-transform-context
 render-master validate transform_proposal.json --contract assistant-transform-proposal
+render-master validate examples/unreal_transform_selection_context.json --contract unreal-transform-selection-context
+render-master schema assistant-transform-batch-proposal -o assistant_transform_batch_proposal.schema.json
 render-master validate examples/unreal_light_context.json --contract unreal-light-context
 render-master schema assistant-light-proposal -o assistant_light_proposal.schema.json
+render-master validate examples/unreal_light_selection_context.json --contract unreal-light-selection-context
+render-master schema assistant-light-batch-proposal -o assistant_light_batch_proposal.schema.json
+render-master validate examples/unreal_camera_context.json --contract unreal-camera-context
+render-master schema assistant-camera-proposal -o assistant_camera_proposal.schema.json
 ```
 
 `render-master schema` and `render-master validate` default to `render-spec`,

@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,12 +9,16 @@ from render_master_bot.assistant_lights import (
     LightProposalError,
     compile_light_intent,
     load_light_context,
+    load_light_selection_context,
+    propose_light_batch_change,
     propose_light_change,
 )
 from render_master_bot.contracts import (
+    AssistantLightBatchProposal,
     AssistantLightProposal,
     LightEditIntent,
     UnrealLightContext,
+    UnrealLightSelectionContext,
 )
 from render_master_bot.ollama import StructuredResponse
 
@@ -67,6 +72,14 @@ def light_context(kind="spot", **updates):
     }
     values.update(updates)
     return UnrealLightContext.model_validate(values)
+
+
+def light_selection(*lights):
+    return UnrealLightSelectionContext(
+        project_name="OptimizationPlugin",
+        level_path="/Game/FirstPerson/Lvl_FirstPerson",
+        lights=list(lights),
+    )
 
 
 class AssistantLightTests(unittest.TestCase):
@@ -193,6 +206,121 @@ class AssistantLightTests(unittest.TestCase):
         self.assertEqual(result.proposal.before.intensity, 5000)
         self.assertFalse(result.proposal.auto_save)
         self.assertEqual(client.requests[0]["json_schema"]["title"], "LightEditIntent")
+
+    def test_batch_percentage_intensity_supports_mixed_non_ev_units(self):
+        directional = light_context(
+            "directional",
+            actor_name="Sun",
+            actor_path="/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.Sun",
+            actor_guid="11111111111111111111111111111111",
+        )
+        spot = light_context(
+            "spot",
+            actor_name="Key",
+            actor_path="/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.Key",
+            actor_guid="22222222222222222222222222222222",
+        )
+        client = FakeClient("""{
+          "outcome":"proposed",
+          "intensity":{"operation":"multiply","value":1.2},
+          "rationale":"Increase every selected non-EV light by the same percentage."
+        }""")
+        result = propose_light_batch_change(
+            prompt="Make all selected lights 20% brighter",
+            selection=light_selection(directional, spot),
+            client=client,
+            model="planner",
+            proposal_id="light_batch_001",
+        )
+        self.assertEqual(result.proposal.actions[0].after.intensity, 120000)
+        self.assertEqual(result.proposal.actions[1].after.intensity, 6000)
+        self.assertEqual(len(result.proposal.actions), 2)
+
+        payload = result.proposal.model_dump(mode="json")
+        payload["actions"].pop()
+        with self.assertRaisesRegex(ValidationError, "every selected light"):
+            AssistantLightBatchProposal.model_validate(payload)
+
+    def test_batch_absolute_intensity_retries_mixed_units_as_unresolved(self):
+        directional = light_context(
+            "directional",
+            actor_name="Sun",
+            actor_path="/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.Sun",
+            actor_guid="11111111111111111111111111111111",
+        )
+        spot = light_context(
+            "spot",
+            actor_name="Key",
+            actor_path="/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.Key",
+            actor_guid="22222222222222222222222222222222",
+        )
+        client = FakeClient([
+            """{
+              "outcome":"proposed",
+              "intensity":{"operation":"set","value":5000},
+              "rationale":"Set one absolute value."
+            }""",
+            """{
+              "outcome":"unresolved",
+              "rationale":"The selection mixes lux and lumens.",
+              "missing_capabilities":["shared intensity unit"]
+            }""",
+        ])
+        result = propose_light_batch_change(
+            prompt="Set all selected lights to 5000",
+            selection=light_selection(directional, spot),
+            client=client,
+            model="planner",
+            proposal_id="light_batch_002",
+        )
+        self.assertEqual(result.proposal.status, "unresolved")
+        self.assertEqual(result.attempt_count, 2)
+        self.assertIn("shared frozen intensity unit", client.requests[1]["messages"][-1]["content"])
+
+    def test_batch_preserves_explicit_noop_light_evidence(self):
+        first = light_context(
+            actor_name="First",
+            actor_path="/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.First",
+            actor_guid="11111111111111111111111111111111",
+        )
+        second = light_context(
+            actor_name="Second",
+            actor_path="/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.Second",
+            actor_guid="22222222222222222222222222222222",
+            light={
+                **light_context().light.model_dump(mode="python"),
+                "intensity": 6000,
+            },
+        )
+        client = FakeClient("""{
+          "outcome":"proposed",
+          "intensity":{"operation":"set","value":6000},
+          "rationale":"Set one shared absolute intensity."
+        }""")
+        result = propose_light_batch_change(
+            prompt="Set both selected lights to 6000 lumens",
+            selection=light_selection(first, second),
+            client=client,
+            model="planner",
+            proposal_id="light_batch_003",
+        )
+        self.assertEqual(len(result.proposal.actions[0].changes), 1)
+        self.assertEqual(result.proposal.actions[1].changes, [])
+
+    def test_light_selection_loader_rejects_duplicate_actor_paths(self):
+        selection = {
+            "project_name": "OptimizationPlugin",
+            "level_path": "/Game/FirstPerson/Lvl_FirstPerson",
+            "lights": [
+                light_context().model_dump(mode="json"),
+                light_context().model_dump(mode="json"),
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "light_selection.json"
+            path.write_text(json.dumps(selection), encoding="utf-8")
+            with self.assertRaisesRegex(LightProposalError, "repeat an Actor path"):
+                load_light_selection_context(path)
 
     def test_unresolved_has_no_executable_after_state(self):
         client = FakeClient("""{

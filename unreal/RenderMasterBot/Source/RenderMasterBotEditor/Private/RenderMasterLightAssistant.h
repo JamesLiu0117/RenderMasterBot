@@ -46,6 +46,7 @@ struct FRenderMasterLightProposal
     FString ActorClass;
     FString ActorGuid;
     FString ComponentName;
+    FString ComponentMobility;
     FString LightKind;
     FString ChangeSummary;
     FRenderMasterLightSnapshot Before;
@@ -61,6 +62,39 @@ struct FRenderMasterLightProposal
         FString& OutError);
 };
 
+struct FRenderMasterLightBatchProposal
+{
+    FString ProposalId;
+    FString Status;
+    FString Rationale;
+    FString MissingCapabilities;
+    int32 SelectedLightCount = 0;
+    TArray<FRenderMasterLightProposal> Actions;
+
+    static bool Parse(
+        const FString& JsonText,
+        FRenderMasterLightBatchProposal& OutProposal,
+        FString& OutError);
+    static bool LoadFromFile(
+        const FString& Filename,
+        FRenderMasterLightBatchProposal& OutProposal,
+        FString& OutError);
+};
+
+struct FRenderMasterCapturedLightTarget
+{
+    TWeakObjectPtr<ALight> Actor;
+    TWeakObjectPtr<ULightComponent> Component;
+    FString ActorName;
+    FString ActorPath;
+    FString ActorClass;
+    FString ActorGuid;
+    FString ComponentName;
+    FString ComponentMobility;
+    FString LightKind;
+    FRenderMasterLightSnapshot Light;
+};
+
 bool RenderMasterApplyLightProperties(
     ALight* LightActor,
     ULightComponent* LightComponent,
@@ -68,6 +102,66 @@ bool RenderMasterApplyLightProperties(
     const FRenderMasterLightSnapshot& After,
     FString& OutError,
     bool bMarkPackageDirty = true);
+
+bool RenderMasterApplyLightPropertiesBatch(
+    const TArray<ALight*>& LightActors,
+    const TArray<ULightComponent*>& LightComponents,
+    const TArray<FRenderMasterLightSnapshot>& Before,
+    const TArray<FRenderMasterLightSnapshot>& After,
+    FString& OutError,
+    bool bMarkPackageDirty = true);
+
+class FRenderMasterLightBatchAssistant : public TSharedFromThis<FRenderMasterLightBatchAssistant>
+{
+public:
+    explicit FRenderMasterLightBatchAssistant(
+        TSharedPtr<FRenderMasterWorkflowController> InWorkflowController);
+    ~FRenderMasterLightBatchAssistant();
+
+    void Initialize();
+    void Shutdown();
+    bool StartProposal(const FString& Prompt, const TArray<ALight*>& LightActors);
+    bool ApplyProposal();
+    void RejectProposal();
+    void Cancel();
+
+    bool CanStart() const;
+    bool CanApply() const;
+    bool IsPlanning() const;
+    ERenderMasterLightAssistantState GetState() const { return State; }
+    FText GetStateText() const;
+    FText GetSummaryText() const;
+    FText GetLogText() const;
+    FLinearColor GetStateColor() const;
+
+private:
+    bool Tick(float DeltaTime);
+    void FinishProcess();
+    void ReadProcessOutput();
+    void CloseProcessResources();
+    void AppendLog(const FString& Text);
+    void Fail(const FString& Error);
+    bool WriteLightSelectionContext(
+        const FString& Filename,
+        const TArray<ALight*>& LightActors,
+        FString& OutError);
+    bool RevalidateTargets(FString& OutError) const;
+
+    TSharedPtr<FRenderMasterWorkflowController> WorkflowController;
+    TArray<FRenderMasterCapturedLightTarget> CapturedTargets;
+    FRenderMasterLightBatchProposal Proposal;
+    ERenderMasterLightAssistantState State = ERenderMasterLightAssistantState::Ready;
+    FString ErrorText;
+    FString ProcessLog;
+    FString ProposalOutputPath;
+
+    FProcHandle ProcessHandle;
+    void* StdOutRead = nullptr;
+    void* StdOutWrite = nullptr;
+    void* StdErrRead = nullptr;
+    void* StdErrWrite = nullptr;
+    FTSTicker::FDelegateHandle TickHandle;
+};
 
 class FRenderMasterLightAssistant : public TSharedFromThis<FRenderMasterLightAssistant>
 {

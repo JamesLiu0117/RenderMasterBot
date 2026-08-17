@@ -5,9 +5,11 @@
 
 class FRenderMasterWorkflowController;
 class FRenderMasterMaterialAssistant;
-class FRenderMasterTransformAssistant;
-class FRenderMasterLightAssistant;
+class FRenderMasterTransformBatchAssistant;
+class FRenderMasterLightBatchAssistant;
+class FRenderMasterCameraAssistant;
 class AActor;
+class ACameraActor;
 class ALight;
 class SComboButton;
 class SMultiLineEditableTextBox;
@@ -36,12 +38,15 @@ private:
     FReply PrepareExternalAction();
     FReply PrepareTransformAction();
     FReply PrepareLightAction();
+    FReply PrepareCameraAction();
     FReply ApproveAction();
     FReply RejectAction();
     FReply ApproveTransformAction();
     FReply RejectTransformAction();
     FReply ApproveLightAction();
     FReply RejectLightAction();
+    FReply ApproveCameraAction();
+    FReply RejectCameraAction();
     void SetPage(int32 PageIndex);
     bool CanPrepareAssistantAction() const;
 
@@ -60,8 +65,14 @@ private:
     EVisibility GetLightProposalVisibility() const;
     EVisibility GetLightApplyVisibility() const;
     EVisibility GetLightRejectVisibility() const;
+    EVisibility GetCameraProposalVisibility() const;
+    EVisibility GetCameraApplyVisibility() const;
+    EVisibility GetCameraRejectVisibility() const;
+    bool GetSelectedActorsForTransform(TArray<AActor*>& OutActors, FString& OutError) const;
+    bool GetSelectedLights(TArray<ALight*>& OutLights, FString& OutError) const;
     AActor* GetSingleSelectedActor(FString& OutError) const;
     ALight* GetSingleSelectedLight(FString& OutError) const;
+    ACameraActor* GetSingleSelectedCamera(FString& OutError) const;
     UStaticMeshComponent* GetSingleSelectedStaticMeshComponent(FString& OutError) const;
     bool ResolveTargetMaterialSlot(
         UStaticMeshComponent* Component,
@@ -71,8 +82,9 @@ private:
 
     TSharedPtr<FRenderMasterWorkflowController> Controller;
     TSharedPtr<FRenderMasterMaterialAssistant> MaterialAssistant;
-    TSharedPtr<FRenderMasterTransformAssistant> TransformAssistant;
-    TSharedPtr<FRenderMasterLightAssistant> LightAssistant;
+    TSharedPtr<FRenderMasterTransformBatchAssistant> TransformAssistant;
+    TSharedPtr<FRenderMasterLightBatchAssistant> LightAssistant;
+    TSharedPtr<FRenderMasterCameraAssistant> CameraAssistant;
     TSharedPtr<SWidgetSwitcher> PageSwitcher;
     TSharedPtr<SMultiLineEditableTextBox> AssistantPromptBox;
     TSharedPtr<SComboButton> MaterialSlotComboButton;
@@ -87,6 +99,7 @@ private:
         Material,
         Transform,
         Light,
+        Camera,
     };
     ELastAssistantAction LastAssistantAction = ELastAssistantAction::None;
 };

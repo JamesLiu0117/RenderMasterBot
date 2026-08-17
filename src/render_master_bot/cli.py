@@ -24,12 +24,21 @@ from render_master_bot.assistant_materials import (
 from render_master_bot.assistant_transforms import (
     TransformProposalError,
     load_transform_context,
+    load_transform_selection_context,
+    propose_transform_batch_change,
     propose_transform_change,
 )
 from render_master_bot.assistant_lights import (
     LightProposalError,
     load_light_context,
+    load_light_selection_context,
+    propose_light_batch_change,
     propose_light_change,
+)
+from render_master_bot.assistant_cameras import (
+    CameraProposalError,
+    load_camera_context,
+    propose_camera_change,
 )
 from render_master_bot.assistant_external_materials import (
     ExternalMaterialAssistantError,
@@ -944,6 +953,32 @@ def cmd_assistant_transform_propose(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_assistant_transform_batch_propose(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.planner_model
+    try:
+        prompt = _read_run_prompt(args.prompt, args.prompt_file)
+        selection = load_transform_selection_context(args.context)
+        result = propose_transform_batch_change(
+            prompt=prompt,
+            selection=selection,
+            client=_client(settings),
+            model=model,
+            proposal_id=args.proposal_id,
+        )
+    except (TransformProposalError, OllamaError, ValueError, OSError) as exc:
+        print(f"ERROR: batch Transform proposal failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(result.proposal.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT TRANSFORM BATCH: "
+        f"status={result.proposal.status} actors={len(result.proposal.selection.actors)} "
+        f"space={result.proposal.coordinate_space} proposal={result.proposal.proposal_id} "
+        f"model={result.response.model} attempts={result.attempt_count}"
+    )
+    return 0
+
+
 def cmd_assistant_light_propose(args: argparse.Namespace) -> int:
     settings = _settings()
     model = args.model or settings.planner_model
@@ -965,6 +1000,60 @@ def cmd_assistant_light_propose(args: argparse.Namespace) -> int:
         "ASSISTANT LIGHT: "
         f"status={result.proposal.status} target={result.proposal.target.actor_name} "
         f"kind={result.proposal.target.light_kind} "
+        f"proposal={result.proposal.proposal_id} model={result.response.model} "
+        f"attempts={result.attempt_count}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    return 0
+
+
+def cmd_assistant_light_batch_propose(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.planner_model
+    try:
+        prompt = _read_run_prompt(args.prompt, args.prompt_file)
+        selection = load_light_selection_context(args.context)
+        result = propose_light_batch_change(
+            prompt=prompt,
+            selection=selection,
+            client=_client(settings),
+            model=model,
+            proposal_id=args.proposal_id,
+        )
+    except (LightProposalError, OllamaError, ValueError, OSError) as exc:
+        print(f"ERROR: batch light proposal failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(result.proposal.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT LIGHT BATCH: "
+        f"status={result.proposal.status} lights={len(result.proposal.selection.lights)} "
+        f"proposal={result.proposal.proposal_id} model={result.response.model} "
+        f"attempts={result.attempt_count}"
+    )
+    return 0
+
+
+def cmd_assistant_camera_propose(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.planner_model
+    try:
+        prompt = _read_run_prompt(args.prompt, args.prompt_file)
+        context = load_camera_context(args.context)
+        result = propose_camera_change(
+            prompt=prompt,
+            context=context,
+            client=_client(settings),
+            model=model,
+            proposal_id=args.proposal_id,
+        )
+    except (CameraProposalError, OllamaError, ValueError, OSError) as exc:
+        print(f"ERROR: camera proposal failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(result.proposal.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT CAMERA: "
+        f"status={result.proposal.status} target={result.proposal.target.actor_name} "
+        f"kind={result.proposal.target.camera_kind} "
         f"proposal={result.proposal.proposal_id} model={result.response.model} "
         f"attempts={result.attempt_count}",
         file=sys.stderr if args.output is None else sys.stdout,
@@ -1599,6 +1688,36 @@ def build_parser() -> argparse.ArgumentParser:
     assistant_transform.add_argument("--output", "-o", required=True)
     assistant_transform.set_defaults(handler=cmd_assistant_transform_propose)
 
+    assistant_transform_batch = subparsers.add_parser(
+        "assistant-transform-batch-propose",
+        help="propose one bounded world/local Transform change for an Actor selection",
+    )
+    transform_batch_prompt_source = assistant_transform_batch.add_mutually_exclusive_group(
+        required=True
+    )
+    transform_batch_prompt_source.add_argument(
+        "--prompt", help="natural-language Transform request for the full selection"
+    )
+    transform_batch_prompt_source.add_argument(
+        "--prompt-file",
+        help="UTF-8 text file containing the Transform request",
+    )
+    assistant_transform_batch.add_argument(
+        "--context",
+        required=True,
+        help="UnrealTransformSelectionContext JSON captured by the Editor plugin",
+    )
+    assistant_transform_batch.add_argument(
+        "--model", help="override the configured planner model"
+    )
+    assistant_transform_batch.add_argument(
+        "--proposal-id", default="transform_batch_proposal"
+    )
+    assistant_transform_batch.add_argument("--output", "-o", required=True)
+    assistant_transform_batch.set_defaults(
+        handler=cmd_assistant_transform_batch_propose
+    )
+
     assistant_light = subparsers.add_parser(
         "assistant-light-propose",
         help="propose one bounded property change for a selected Unreal light",
@@ -1622,6 +1741,58 @@ def build_parser() -> argparse.ArgumentParser:
     assistant_light.add_argument("--proposal-id", default="light_proposal")
     assistant_light.add_argument("--output", "-o", required=True)
     assistant_light.set_defaults(handler=cmd_assistant_light_propose)
+
+    assistant_light_batch = subparsers.add_parser(
+        "assistant-light-batch-propose",
+        help="propose one bounded property change for a selected Unreal light group",
+    )
+    light_batch_prompt_source = assistant_light_batch.add_mutually_exclusive_group(
+        required=True
+    )
+    light_batch_prompt_source.add_argument(
+        "--prompt", help="natural-language light request for the full selection"
+    )
+    light_batch_prompt_source.add_argument(
+        "--prompt-file",
+        help="UTF-8 text file containing the light property request",
+    )
+    assistant_light_batch.add_argument(
+        "--context",
+        required=True,
+        help="UnrealLightSelectionContext JSON captured by the Editor plugin",
+    )
+    assistant_light_batch.add_argument(
+        "--model", help="override the configured planner model"
+    )
+    assistant_light_batch.add_argument(
+        "--proposal-id", default="light_batch_proposal"
+    )
+    assistant_light_batch.add_argument("--output", "-o", required=True)
+    assistant_light_batch.set_defaults(handler=cmd_assistant_light_batch_propose)
+
+    assistant_camera = subparsers.add_parser(
+        "assistant-camera-propose",
+        help="propose one bounded property change for a selected Unreal camera",
+    )
+    camera_prompt_source = assistant_camera.add_mutually_exclusive_group(required=True)
+    camera_prompt_source.add_argument(
+        "--prompt", help="natural-language camera property request"
+    )
+    camera_prompt_source.add_argument(
+        "--prompt-file",
+        help="UTF-8 text file containing the camera property request",
+    )
+    assistant_camera.add_argument(
+        "--context",
+        required=True,
+        help="UnrealCameraContext JSON captured by the Editor plugin",
+    )
+    assistant_camera.add_argument(
+        "--model", help="override the configured planner model"
+    )
+    assistant_camera.add_argument("--proposal-id", default="camera_proposal")
+    assistant_camera.add_argument("--output", "-o", required=True)
+    assistant_camera.set_defaults(handler=cmd_assistant_camera_propose)
 
     plan = subparsers.add_parser("plan", help="ask a local Ollama model for a RenderSpec")
     plan.add_argument("--model", help="override the configured planner model")

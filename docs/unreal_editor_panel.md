@@ -12,9 +12,11 @@ operator can inspect that context, prepare a bounded action, review its scope,
 and explicitly approve or reject it. Context inspection and proposal generation
 do not modify the Editor scene.
 
-The connected direct Editor actions are material selection, one-Actor world
-Transform editing, and one-Light property editing. Material selection supports one
-selected Actor that contains exactly one valid Static Mesh Component. A single
+The connected direct Editor actions are material selection, one-to-32-Actor
+world/local Transform editing, compatible one-to-16-Light group property
+editing, and one-Camera property editing.
+Material selection supports one selected Actor that contains exactly one valid
+Static Mesh Component. A single
 slot is targeted automatically. For a multi-slot mesh, the operator chooses an
 explicit target in the **Target material slot** menu, which shows every slot and
 its current material path. **Prepare Material** searches only project materials
@@ -30,31 +32,43 @@ material have not changed. The level is not saved automatically and Ctrl+Z
 restores the previous override. External Content assets remain saved. **Reject**
 makes no scene or Content change, although verified downloads remain cached.
 
-**Prepare Transform** accepts one selected Actor and a world-space translation,
-rotation, or scale request. It does not depend on the Actor having a Static Mesh.
-The resulting **Transform Action** card shows the frozen target and exact
-Before/After values. **Approve & Apply Transform** rechecks that the same Actor
-still exists and has not moved since proposal generation, then applies one
-`FScopedTransaction`. It never saves the level automatically; Ctrl+Z restores
-the complete previous Transform.
+**Prepare Transform** accepts one to 32 selected Actors and one world- or
+local-space translation, rotation, or scale request. It does not depend on the
+Actors having Static Meshes. The resulting **Transform Action** card shows the
+coordinate space, complete frozen selection, and exact per-Actor world-space
+Before/After values. **Approve & Apply Transform** rechecks every Actor; if any
+identity, root component, mobility, lock state, or Transform is stale, nothing
+is applied. A successful batch uses one `FScopedTransaction`, never saves the
+level automatically, and is restored by one Ctrl+Z.
 
-**Prepare Light** accepts exactly one selected Directional, Point, Spot, or
-Rect Light. Its **Light Action** card shows the frozen light type and intensity
-unit plus the complete Before/After state. The available fields are
-type-specific: intensity, color, temperature, and shadows are common;
-attenuation belongs to local lights; cone angles belong only to Spot Lights;
-rotation belongs to Directional, Spot, and Rect Lights. **Approve & Apply
-Light** rejects stale identity or property state, applies one Editor
-transaction, and never saves the level automatically. Ctrl+Z restores the
-previous properties.
+**Prepare Light** accepts one to 16 selected Directional, Point, Spot, or Rect
+Lights and applies one compatible intent to the complete ordered selection. Its
+**Light Action** card shows every frozen light type and intensity unit plus the
+complete per-light Before/After state. Intensity percentage changes can span
+mixed non-EV units while preserving each light's unit; absolute intensity
+changes require one shared unit. Color, temperature, and shadows are common;
+attenuation requires an all-local selection; cone angles require all Spot
+Lights; rotation rejects any Point Light. **Approve & Apply Light** rejects the
+entire group if one identity or property state is stale, applies one grouped
+Editor transaction, and never saves the level automatically. One Ctrl+Z
+restores all changed lights.
+
+**Prepare Camera** accepts exactly one selected standard Camera Actor or Cine
+Camera Actor. Both support world Transform, aperture, focus, and exposure
+compensation. Standard Cameras expose FOV; Cine Cameras expose focal length
+inside the captured lens bounds. Its **Camera Action** card shows the exact
+type-specific Before/After state. **Approve & Apply Camera** rejects stale
+identity, lens, or property state, applies one Editor transaction, and never
+saves the level automatically. Ctrl+Z restores the previous properties.
 
 The secondary **Render & Evaluate** page starts the existing transient render
 and visual-evaluation loop. That page is another capability inside the
 assistant, not the identity of the whole product. Explicit targeting for
-material slots, external CC0 material acquisition, and single-Actor world
-Transform and single-Light property editing are connected.
-Multi-Actor/local-space Transform editing, coordinated multi-light operations,
-camera properties, and performance diagnosis remain visibly marked as not connected.
+material slots, external CC0 material acquisition, one-to-32-Actor world/local
+Transform, compatible one-to-16-Light group edits, and single-Camera property
+editing are connected. Geometry-aware arrangement, role-specific multi-light
+coordination, coordinated multi-camera operations, and performance diagnosis
+remain visibly marked as not connected.
 
 ## Material action lifecycle
 
@@ -86,42 +100,73 @@ changes after proposal generation.
 
 ## Transform action lifecycle
 
-1. Select exactly one Actor in the current level.
-2. Enter a world-space request such as `Move this Actor up by 50 cm and rotate
-   it right by 30 degrees.`
-3. Press **Prepare Transform**. The Editor freezes path, class, GUID, lock and
-   editability state, plus location, rotation, and scale. No scene mutation
-   occurs.
-4. Review the target, changed channels, and complete Before/After values in the
-   **Transform Action** card.
+1. Select between one and 32 Actors in the current level.
+2. Enter one request such as `Move all selected Actors up by 50 cm` or `Move
+   all selected Actors forward 100 cm in each Actor's local space.`
+3. Press **Prepare Transform**. The Editor sorts by Actor path and freezes every
+   identity, root component, mobility, lock/editability state, location,
+   rotation, and scale. No scene mutation occurs.
+4. Review the coordinate space, every target, changed channels, and complete
+   world-space Before/After values in the **Transform Action** card.
 5. Press **Approve & Apply Transform**, or **Reject** to make no change.
-6. Use Ctrl+Z to restore the previous Transform. Save the level manually only
-   if the result should persist.
+6. Use Ctrl+Z once to restore the complete previous selection. Save the level
+   manually only if the result should persist.
 
-Version 0.1 intentionally accepts world space only. Location uses centimeters;
-rotation maps `x/y/z` to Unreal Roll/Pitch/Yaw in degrees. Requests that require
-local space, geometry-aware placement, multi-Actor coordination, or another
-ambiguous capability resolve as **Unresolved** instead of guessing.
+Location uses centimeters; rotation maps `x/y/z` to Unreal Roll/Pitch/Yaw in
+degrees. World space supports absolute and additive location/rotation. Local
+space supports additive location/rotation only: translation is rotated by each
+Actor's basis, and rotation is quaternion-composed with each Actor's captured
+orientation. The same intent is applied uniformly to the ordered selection.
+Geometry-aware placement and relational arrangements resolve as **Unresolved**
+instead of guessing.
 
 ## Light action lifecycle
 
-1. Select exactly one Directional, Point, Spot, or Rect Light.
-2. Enter a request such as `Make this Spot Light 20% brighter, set it to 3200 K,
-   widen the outer cone to 45 degrees, and rotate it right by 30 degrees.`
-3. Press **Prepare Light**. The Editor freezes Actor/component identity, light
-   kind, intensity unit, editability and lock state, and every supported
-   property. No scene mutation occurs.
-4. Review the changed-property list and complete Before/After state in the
-   **Light Action** card.
-5. Press **Approve & Apply Light**, or **Reject** to make no change.
-6. Use Ctrl+Z to restore the previous properties. Save the level manually only
+1. Select between one and 16 Directional, Point, Spot, or Rect Lights. Every
+   selected Actor must be a supported Light.
+2. Enter one request such as `Make all selected lights 20% brighter` or, for an
+   all-Spot selection, `Set all selected lights to 3200 K and widen their outer
+   cones to 45 degrees.`
+3. Press **Prepare Light**. The Editor sorts the selection by Actor path and
+   freezes every Actor/component identity, Mobility, light kind, intensity unit,
+   editability and lock state, and supported property. No scene mutation occurs.
+4. Review the compatibility result, changed-property list, and complete
+   per-light Before/After state in the **Light Action** card. Unchanged lights
+   remain visible as evidence.
+5. Press **Approve & Apply Light**, or **Reject** to make no change. Approval
+   revalidates the complete group; one stale light rejects all changes.
+6. Use Ctrl+Z once to restore every changed light. Save the level manually only
    if the result should persist.
 
 The intensity unit is never converted or changed by this action. Directional
 Lights require lux; local lights retain their captured lumens, candelas,
-unitless, EV, or nits setting. Point Light rotation is rejected because it has
-no visual meaning. Requests to spawn, delete, rename, retype, or coordinate
-multiple lights resolve as **Unresolved**.
+unitless, EV, or nits setting. Relative intensity edits may span mixed non-EV
+units, but EV multiplication and mixed-unit absolute changes are rejected.
+Point Light rotation is rejected because it has no visual meaning. Requests to
+spawn, delete, rename, retype, or give different selected lights distinct
+Key/Fill/Rim responsibilities resolve as **Unresolved**.
+
+## Camera action lifecycle
+
+1. Select exactly one Camera Actor or Cine Camera Actor.
+2. Enter a numeric request such as `Set this Cine Camera to 85 mm, f/4, focus
+   manually at 350 cm, and brighten exposure compensation by 1 EV.`
+3. Press **Prepare Camera**. The Editor freezes Actor/component identity,
+   camera kind, projection mode, editability/lock state, lens bounds, Transform,
+   lens/focus properties, exposure compensation, and Post Process blend weight.
+   No scene mutation occurs.
+4. Review the changed-property list and complete type-specific Before/After
+   state in the **Camera Action** card.
+5. Press **Approve & Apply Camera**, or **Reject** to make no change.
+6. Use Ctrl+Z to restore the previous properties. Save the level manually only
+   if the result should persist.
+
+Standard Cameras expose FOV and never focal length. Cine Cameras expose focal
+length within the captured lens range and never direct FOV. Filmback, lens
+preset, aspect ratio, projection mode, scale, tracking targets, and Post
+Process blend weight are not changed. Orthographic or multi-camera requests and
+requests that require unsupported composition reasoning resolve as
+**Unresolved**.
 
 ## Render and Evaluate lifecycle
 
@@ -210,10 +255,11 @@ modify Unreal Content; external approval must match the exact proposal SHA-256.
 `SetMaterial` runs inside `FScopedTransaction` in both paths.
 
 Transform requests use a separate strict intent schema. The model describes
-only allowed per-axis operations; Python computes and bounds After values, while
-the Editor owns target and Before evidence. Apply-time identity and Transform
-revalidation prevents a stale proposal from overwriting a user's intervening
-edit. The final `SetActorTransform` also runs inside `FScopedTransaction`.
+only one allowed intent; Python computes and bounds every Actor's final
+world-space After values while the Editor owns ordered target and Before
+evidence. Apply-time revalidation prevents a stale Actor from causing a partial
+batch. All changed Actors are applied inside one `FScopedTransaction`; a
+mid-apply failure restores earlier Actors and cancels the transaction.
 
 Light requests use their own strict intent schema and type matrix. The model
 does not control the target, Before evidence, final changed-property list, or
@@ -222,6 +268,15 @@ the Actor path, class, GUID, component name, kind, unit, lock/editability state,
 and complete Before snapshot. Approved properties are edited through the same
 transactional Editor path used for Static, Stationary, and Movable lights,
 followed by normal post-edit and render-state notifications.
+
+Camera requests use a separate strict intent schema and standard/Cine type
+matrix. The model does not control the selected target, Before evidence, lens
+bounds, or final changed-property list. Python computes bounded After values.
+Unreal revalidates Actor/component identity, camera kind, perspective
+projection, editability/lock state, lens bounds, and every captured property
+immediately before applying the approved transaction. A zero Post Process blend
+weight causes focus or exposure requests to fail safely instead of silently
+changing the blend weight.
 
 The controller belongs to the plugin module, so closing and reopening the tab
 does not kill an active workflow. Pressing **Cancel**, closing the Editor, or
@@ -254,11 +309,15 @@ Run all Editor-side contract parsers inside a real, headless Editor process:
 ```
 
 The Editor automation suite covers running and terminal manifest parsing,
-project and external material proposals, Transform and Light proposal parsing,
-an actual transient-Actor Transform apply followed by Unreal Undo, and a
-Stationary Light property apply followed by Unreal Undo.
+project and external material proposals, single and batch Transform, Light, and
+Camera proposal parsing, an actual two-Actor Transform batch followed by one
+Unreal Undo, the original single-Actor Transform regression, a Stationary Light
+property apply followed by Unreal Undo, and a Camera property apply followed by
+Unreal Undo.
 A visible smoke test should also confirm that the panel appears, both search
 buttons produce the expected proposal type, approval changes only the chosen
-slot, **Prepare Transform** shows correct Before/After values, all three scene
-actions undo correctly, **Prepare Light** exposes only type-valid fields and undoes
-correctly, and no RenderMasterBot-specific error is written during startup.
+slot, **Prepare Transform** shows every selected Actor and correct local/world
+Before/After values, all four scene-action types undo correctly, **Prepare
+Light** exposes only type-valid fields and undoes correctly, **Prepare Camera**
+distinguishes FOV from focal length and undoes correctly, and no
+RenderMasterBot-specific error is written during startup.
