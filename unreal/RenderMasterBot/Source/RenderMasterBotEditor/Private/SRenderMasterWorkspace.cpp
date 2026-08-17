@@ -3,6 +3,7 @@
 #include "Editor.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/Selection.h"
+#include "Engine/Light.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
@@ -10,6 +11,8 @@
 #include "Misc/App.h"
 #include "RenderMasterWorkflowController.h"
 #include "RenderMasterMaterialAssistant.h"
+#include "RenderMasterLightAssistant.h"
+#include "RenderMasterTransformAssistant.h"
 #include "SRenderMasterPanel.h"
 #include "Styling/AppStyle.h"
 #include "Widgets/Input/SButton.h"
@@ -55,6 +58,10 @@ void SRenderMasterWorkspace::Construct(const FArguments& InArgs)
     check(Controller.IsValid());
     MaterialAssistant = MakeShared<FRenderMasterMaterialAssistant>(Controller);
     MaterialAssistant->Initialize();
+    TransformAssistant = MakeShared<FRenderMasterTransformAssistant>(Controller);
+    TransformAssistant->Initialize();
+    LightAssistant = MakeShared<FRenderMasterLightAssistant>(Controller);
+    LightAssistant->Initialize();
     AssistantReply = TEXT("Tell me what you want to understand or change. I will inspect the current Unreal context before proposing an action.");
 
     ChildSlot
@@ -83,6 +90,16 @@ void SRenderMasterWorkspace::Construct(const FArguments& InArgs)
 
 SRenderMasterWorkspace::~SRenderMasterWorkspace()
 {
+    if (LightAssistant.IsValid())
+    {
+        LightAssistant->Shutdown();
+        LightAssistant.Reset();
+    }
+    if (TransformAssistant.IsValid())
+    {
+        TransformAssistant->Shutdown();
+        TransformAssistant.Reset();
+    }
     if (MaterialAssistant.IsValid())
     {
         MaterialAssistant->Shutdown();
@@ -263,34 +280,54 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                 + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
                                 [
                                     SNew(SHorizontalBox)
-                                    + SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
                                     [
                                         SNew(SButton)
+                                        .HAlign(HAlign_Center)
                                         .Text(LOCTEXT("AnalyzeContext", "Analyze Context"))
                                         .OnClicked(this, &SRenderMasterWorkspace::AnalyzeContext)
                                     ]
                                     + SHorizontalBox::Slot().FillWidth(1.0f)
-                                    + SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 6.0f, 0.0f)
                                     [
                                         SNew(SButton)
+                                        .HAlign(HAlign_Center)
                                         .Text(LOCTEXT("SearchPolyHaven", "Search Poly Haven"))
                                         .ToolTipText(LOCTEXT("SearchPolyHavenHelp", "Search CC0 external materials and download a verified local cache. Unreal Content is changed only after a separate approval."))
-                                        .IsEnabled_Lambda([Controller = Controller, Assistant = MaterialAssistant]()
-                                        {
-                                            return Controller->CanStart() && Assistant->CanStart();
-                                        })
+                                        .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
                                         .OnClicked(this, &SRenderMasterWorkspace::PrepareExternalAction)
                                     ]
-                                    + SHorizontalBox::Slot().AutoWidth()
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SHorizontalBox)
+                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
                                     [
                                         SNew(SButton)
+                                        .HAlign(HAlign_Center)
                                         .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
-                                        .Text(LOCTEXT("PrepareAction", "Prepare Action"))
-                                        .IsEnabled_Lambda([Controller = Controller, Assistant = MaterialAssistant]()
-                                        {
-                                            return Controller->CanStart() && Assistant->CanStart();
-                                        })
+                                        .Text(LOCTEXT("PrepareAction", "Prepare Material"))
+                                        .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
                                         .OnClicked(this, &SRenderMasterWorkspace::PrepareAction)
+                                    ]
+                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                    [
+                                        SNew(SButton)
+                                        .HAlign(HAlign_Center)
+                                        .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                        .Text(LOCTEXT("PrepareTransform", "Prepare Transform"))
+                                        .ToolTipText(LOCTEXT("PrepareTransformHelp", "Prepare a world-space move, rotation, or scale proposal for exactly one selected Actor."))
+                                        .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
+                                        .OnClicked(this, &SRenderMasterWorkspace::PrepareTransformAction)
+                                    ]
+                                    + SHorizontalBox::Slot().FillWidth(1.0f)
+                                    [
+                                        SNew(SButton)
+                                        .HAlign(HAlign_Center)
+                                        .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                        .Text(LOCTEXT("PrepareLight", "Prepare Light"))
+                                        .ToolTipText(LOCTEXT("PrepareLightHelp", "Prepare a type-specific property proposal for exactly one selected Directional, Point, Spot, or Rect Light."))
+                                        .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
+                                        .OnClicked(this, &SRenderMasterWorkspace::PrepareLightAction)
                                     ]
                                 ]
                             ]
@@ -322,6 +359,84 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                     SNew(STextBlock)
                                     .Text(this, &SRenderMasterWorkspace::GetSelectionContext)
                                     .AutoWrapText(true)
+                                ]
+                            ]
+                        ]
+
+                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
+                        [
+                            SNew(SBorder)
+                            .Visibility(this, &SRenderMasterWorkspace::GetLightProposalVisibility)
+                            .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+                            .BorderBackgroundColor_Lambda([Assistant = LightAssistant]() { return Assistant->GetStateColor(); })
+                            .Padding(16.0f)
+                            [
+                                SNew(SVerticalBox)
+                                + SVerticalBox::Slot().AutoHeight()
+                                [WorkspaceSectionTitle(LOCTEXT("LightProposalTitle", "Light Action"), TAttribute<FText>::CreateLambda([Assistant = LightAssistant]() { return Assistant->GetStateText(); }))]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(STextBlock)
+                                    .Text_Lambda([Assistant = LightAssistant]() { return Assistant->GetSummaryText(); })
+                                    .AutoWrapText(true)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 14.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SHorizontalBox)
+                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetLightApplyVisibility)
+                                        .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                        .Text(LOCTEXT("ApproveLight", "Approve & Apply Light"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::ApproveLightAction)
+                                    ]
+                                    + SHorizontalBox::Slot().AutoWidth()
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetLightRejectVisibility)
+                                        .Text(LOCTEXT("RejectLight", "Reject"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::RejectLightAction)
+                                    ]
+                                ]
+                            ]
+                        ]
+
+                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
+                        [
+                            SNew(SBorder)
+                            .Visibility(this, &SRenderMasterWorkspace::GetTransformProposalVisibility)
+                            .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+                            .BorderBackgroundColor_Lambda([Assistant = TransformAssistant]() { return Assistant->GetStateColor(); })
+                            .Padding(16.0f)
+                            [
+                                SNew(SVerticalBox)
+                                + SVerticalBox::Slot().AutoHeight()
+                                [WorkspaceSectionTitle(LOCTEXT("TransformProposalTitle", "Transform Action"), TAttribute<FText>::CreateLambda([Assistant = TransformAssistant]() { return Assistant->GetStateText(); }))]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(STextBlock)
+                                    .Text_Lambda([Assistant = TransformAssistant]() { return Assistant->GetSummaryText(); })
+                                    .AutoWrapText(true)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 14.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SHorizontalBox)
+                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetTransformApplyVisibility)
+                                        .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                        .Text(LOCTEXT("ApproveTransform", "Approve & Apply Transform"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::ApproveTransformAction)
+                                    ]
+                                    + SHorizontalBox::Slot().AutoWidth()
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetTransformRejectVisibility)
+                                        .Text(LOCTEXT("RejectTransform", "Reject"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::RejectTransformAction)
+                                    ]
                                 ]
                             ]
                         ]
@@ -377,7 +492,7 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                 + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
                                 [
                                     SNew(STextBlock)
-                                    .Text(LOCTEXT("CapabilityList", "CONNECTED\n✓ Live project and actor-selection context\n✓ Explicit material-slot targeting\n✓ Catalog-backed project material recommendation\n✓ CC0 Poly Haven search and verified local cache\n✓ Hash-bound approval for 5-asset PBR import\n✓ Automatic catalog and Chroma synchronization\n✓ Approval-gated material override with Ctrl+Z Undo\n✓ Schema-gated scene planning\n✓ Transient Unreal preview\n✓ Visual evaluation and bounded correction\n\nNOT CONNECTED YET\n○ General transform, light, and camera editing\n○ Performance diagnosis and optimization"))
+                                    .Text(LOCTEXT("CapabilityList", "CONNECTED\n✓ Live project and actor-selection context\n✓ Explicit material-slot targeting\n✓ Catalog-backed project material recommendation\n✓ CC0 Poly Haven search and verified local cache\n✓ Hash-bound approval for 5-asset PBR import\n✓ Automatic catalog and Chroma synchronization\n✓ Approval-gated material override with Ctrl+Z Undo\n✓ Approval-gated single-Actor world Transform with Ctrl+Z Undo\n✓ Type-specific Directional, Point, Spot, and Rect Light properties with Ctrl+Z Undo\n✓ Schema-gated scene planning\n✓ Transient Unreal preview\n✓ Visual evaluation and bounded correction\n\nNOT CONNECTED YET\n○ Multi-Actor and local-space Transform editing\n○ Multi-light coordination and camera-property editing\n○ Performance diagnosis and optimization"))
                                     .AutoWrapText(true)
                                     .ColorAndOpacity(FSlateColor::UseSubduedForeground())
                                 ]
@@ -515,6 +630,7 @@ FReply SRenderMasterWorkspace::PrepareAction()
     }
 
     LastRequest = Prompt;
+    LastAssistantAction = ELastAssistantAction::Material;
     FString SelectionError;
     UStaticMeshComponent* Component = GetSingleSelectedStaticMeshComponent(SelectionError);
     if (Component == nullptr)
@@ -549,6 +665,7 @@ FReply SRenderMasterWorkspace::PrepareExternalAction()
     }
 
     LastRequest = Prompt;
+    LastAssistantAction = ELastAssistantAction::Material;
     FString SelectionError;
     UStaticMeshComponent* Component = GetSingleSelectedStaticMeshComponent(SelectionError);
     if (Component == nullptr)
@@ -569,6 +686,64 @@ FReply SRenderMasterWorkspace::PrepareExternalAction()
     else
     {
         AssistantReply = MaterialAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::PrepareTransformAction()
+{
+    const FString Prompt = AssistantPromptBox->GetText().ToString().TrimStartAndEnd();
+    if (Prompt.IsEmpty())
+    {
+        AssistantReply = TEXT("Enter a world-space Transform request before preparing an action. Nothing has been executed.");
+        return FReply::Handled();
+    }
+
+    LastRequest = Prompt;
+    LastAssistantAction = ELastAssistantAction::Transform;
+    FString SelectionError;
+    AActor* Actor = GetSingleSelectedActor(SelectionError);
+    if (Actor == nullptr)
+    {
+        AssistantReply = SelectionError;
+        return FReply::Handled();
+    }
+    if (TransformAssistant->StartProposal(Prompt, Actor))
+    {
+        AssistantReply = TEXT("I froze the selected Actor identity and current Transform, then started preparing a bounded world-space proposal. No scene change has been applied.");
+    }
+    else
+    {
+        AssistantReply = TransformAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::PrepareLightAction()
+{
+    const FString Prompt = AssistantPromptBox->GetText().ToString().TrimStartAndEnd();
+    if (Prompt.IsEmpty())
+    {
+        AssistantReply = TEXT("Enter a light property request before preparing an action. Nothing has been executed.");
+        return FReply::Handled();
+    }
+
+    LastRequest = Prompt;
+    LastAssistantAction = ELastAssistantAction::Light;
+    FString SelectionError;
+    ALight* LightActor = GetSingleSelectedLight(SelectionError);
+    if (LightActor == nullptr)
+    {
+        AssistantReply = SelectionError;
+        return FReply::Handled();
+    }
+    if (LightAssistant->StartProposal(Prompt, LightActor))
+    {
+        AssistantReply = TEXT("I froze the selected light type, intensity unit, component identity, and current properties, then started preparing a bounded proposal. No scene change has been applied.");
+    }
+    else
+    {
+        AssistantReply = LightAssistant->GetSummaryText().ToString();
     }
     return FReply::Handled();
 }
@@ -595,10 +770,82 @@ FReply SRenderMasterWorkspace::RejectAction()
     return FReply::Handled();
 }
 
+FReply SRenderMasterWorkspace::ApproveTransformAction()
+{
+    LastAssistantAction = ELastAssistantAction::Transform;
+    if (TransformAssistant->ApplyProposal())
+    {
+        AssistantReply = TEXT("The approved world Transform was applied to the captured Actor. The level was not saved automatically. Use Ctrl+Z to undo it.");
+    }
+    else
+    {
+        AssistantReply = TransformAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::RejectTransformAction()
+{
+    LastAssistantAction = ELastAssistantAction::Transform;
+    TransformAssistant->RejectProposal();
+    AssistantReply = TEXT("The proposed Transform action was rejected. No Editor scene change was applied.");
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::ApproveLightAction()
+{
+    LastAssistantAction = ELastAssistantAction::Light;
+    if (LightAssistant->ApplyProposal())
+    {
+        AssistantReply = TEXT("The approved light properties were applied to the captured light. The level was not saved automatically. Use Ctrl+Z to undo them.");
+    }
+    else
+    {
+        AssistantReply = LightAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::RejectLightAction()
+{
+    LastAssistantAction = ELastAssistantAction::Light;
+    LightAssistant->RejectProposal();
+    AssistantReply = TEXT("The proposed light action was rejected. No Editor scene change was applied.");
+    return FReply::Handled();
+}
+
 void SRenderMasterWorkspace::SetPage(int32 PageIndex)
 {
     ActivePage = FMath::Clamp(PageIndex, 0, 1);
     if (PageSwitcher.IsValid()) PageSwitcher->SetActiveWidgetIndex(ActivePage);
+}
+
+bool SRenderMasterWorkspace::CanPrepareAssistantAction() const
+{
+    if (!Controller.IsValid()
+        || !MaterialAssistant.IsValid()
+        || !TransformAssistant.IsValid()
+        || !LightAssistant.IsValid())
+    {
+        return false;
+    }
+    const ERenderMasterMaterialAssistantState MaterialState = MaterialAssistant->GetState();
+    const ERenderMasterTransformAssistantState TransformState = TransformAssistant->GetState();
+    const ERenderMasterLightAssistantState LightState = LightAssistant->GetState();
+    const bool bMaterialPending = MaterialState == ERenderMasterMaterialAssistantState::Searching
+        || MaterialState == ERenderMasterMaterialAssistantState::Importing
+        || MaterialState == ERenderMasterMaterialAssistantState::Proposed;
+    const bool bTransformPending = TransformState == ERenderMasterTransformAssistantState::Planning
+        || TransformState == ERenderMasterTransformAssistantState::Proposed;
+    const bool bLightPending = LightState == ERenderMasterLightAssistantState::Planning
+        || LightState == ERenderMasterLightAssistantState::Proposed;
+    return Controller->CanStart()
+        && MaterialAssistant->CanStart()
+        && TransformAssistant->CanStart()
+        && LightAssistant->CanStart()
+        && !bMaterialPending
+        && !bTransformPending
+        && !bLightPending;
 }
 
 FText SRenderMasterWorkspace::GetProjectContext() const
@@ -644,7 +891,39 @@ FText SRenderMasterWorkspace::GetSelectionContext() const
 
 FText SRenderMasterWorkspace::GetAssistantReply() const
 {
-    if (MaterialAssistant.IsValid())
+    if (LastAssistantAction == ELastAssistantAction::Light && LightAssistant.IsValid())
+    {
+        if (LightAssistant->IsPlanning())
+        {
+            return LightAssistant->GetSummaryText();
+        }
+        if (LightAssistant->GetState() == ERenderMasterLightAssistantState::Proposed)
+        {
+            return LOCTEXT("LightProposedReply", "I prepared a type-specific light property change. Review the exact light, frozen intensity unit, changed properties, and Before/After values before approving.");
+        }
+        if (LightAssistant->GetState() == ERenderMasterLightAssistantState::Unresolved
+            || LightAssistant->GetState() == ERenderMasterLightAssistantState::Failed)
+        {
+            return LightAssistant->GetSummaryText();
+        }
+    }
+    if (LastAssistantAction == ELastAssistantAction::Transform && TransformAssistant.IsValid())
+    {
+        if (TransformAssistant->IsPlanning())
+        {
+            return TransformAssistant->GetSummaryText();
+        }
+        if (TransformAssistant->GetState() == ERenderMasterTransformAssistantState::Proposed)
+        {
+            return LOCTEXT("TransformProposedReply", "I prepared a bounded world-space Transform change. Review the exact Actor and Before/After values before approving.");
+        }
+        if (TransformAssistant->GetState() == ERenderMasterTransformAssistantState::Unresolved
+            || TransformAssistant->GetState() == ERenderMasterTransformAssistantState::Failed)
+        {
+            return TransformAssistant->GetSummaryText();
+        }
+    }
+    if (LastAssistantAction == ELastAssistantAction::Material && MaterialAssistant.IsValid())
     {
         if (MaterialAssistant->IsSearching())
         {
@@ -740,8 +1019,61 @@ EVisibility SRenderMasterWorkspace::GetRejectVisibility() const
         : EVisibility::Collapsed;
 }
 
-UStaticMeshComponent* SRenderMasterWorkspace::GetSingleSelectedStaticMeshComponent(
-    FString& OutError) const
+EVisibility SRenderMasterWorkspace::GetTransformProposalVisibility() const
+{
+    if (!TransformAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterTransformAssistantState State = TransformAssistant->GetState();
+    return State == ERenderMasterTransformAssistantState::Ready
+        || State == ERenderMasterTransformAssistantState::Rejected
+        ? EVisibility::Collapsed
+        : EVisibility::Visible;
+}
+
+EVisibility SRenderMasterWorkspace::GetTransformApplyVisibility() const
+{
+    return TransformAssistant.IsValid() && TransformAssistant->CanApply()
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetTransformRejectVisibility() const
+{
+    if (!TransformAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterTransformAssistantState State = TransformAssistant->GetState();
+    return State == ERenderMasterTransformAssistantState::Planning
+        || State == ERenderMasterTransformAssistantState::Proposed
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetLightProposalVisibility() const
+{
+    if (!LightAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterLightAssistantState State = LightAssistant->GetState();
+    return State == ERenderMasterLightAssistantState::Ready
+        || State == ERenderMasterLightAssistantState::Rejected
+        ? EVisibility::Collapsed
+        : EVisibility::Visible;
+}
+
+EVisibility SRenderMasterWorkspace::GetLightApplyVisibility() const
+{
+    return LightAssistant.IsValid() && LightAssistant->CanApply()
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetLightRejectVisibility() const
+{
+    if (!LightAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterLightAssistantState State = LightAssistant->GetState();
+    return State == ERenderMasterLightAssistantState::Planning
+        || State == ERenderMasterLightAssistantState::Proposed
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+AActor* SRenderMasterWorkspace::GetSingleSelectedActor(FString& OutError) const
 {
     if (GEditor == nullptr || GEditor->GetSelectedActors() == nullptr)
     {
@@ -761,9 +1093,30 @@ UStaticMeshComponent* SRenderMasterWorkspace::GetSingleSelectedStaticMeshCompone
     }
     if (SelectedActorCount != 1 || SelectedActor == nullptr)
     {
-        OutError = TEXT("Select exactly one Actor before preparing a material action.");
+        OutError = TEXT("Select exactly one Actor before preparing this action.");
         return nullptr;
     }
+    return SelectedActor;
+}
+
+ALight* SRenderMasterWorkspace::GetSingleSelectedLight(FString& OutError) const
+{
+    AActor* Actor = GetSingleSelectedActor(OutError);
+    if (Actor == nullptr) return nullptr;
+    ALight* LightActor = Cast<ALight>(Actor);
+    if (LightActor == nullptr || LightActor->GetLightComponent() == nullptr)
+    {
+        OutError = TEXT("Select exactly one Directional, Point, Spot, or Rect Light Actor before preparing a light action.");
+        return nullptr;
+    }
+    return LightActor;
+}
+
+UStaticMeshComponent* SRenderMasterWorkspace::GetSingleSelectedStaticMeshComponent(
+    FString& OutError) const
+{
+    AActor* SelectedActor = GetSingleSelectedActor(OutError);
+    if (SelectedActor == nullptr) return nullptr;
 
     TArray<UStaticMeshComponent*> Components;
     SelectedActor->GetComponents<UStaticMeshComponent>(Components);

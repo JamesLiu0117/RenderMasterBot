@@ -21,6 +21,16 @@ from render_master_bot.assistant_materials import (
     load_selection_context,
     propose_material_change,
 )
+from render_master_bot.assistant_transforms import (
+    TransformProposalError,
+    load_transform_context,
+    propose_transform_change,
+)
+from render_master_bot.assistant_lights import (
+    LightProposalError,
+    load_light_context,
+    propose_light_change,
+)
 from render_master_bot.assistant_external_materials import (
     ExternalMaterialAssistantError,
     prepare_external_material_assistant_proposal,
@@ -907,6 +917,61 @@ def cmd_assistant_material_propose(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_assistant_transform_propose(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.planner_model
+    try:
+        prompt = _read_run_prompt(args.prompt, args.prompt_file)
+        context = load_transform_context(args.context)
+        result = propose_transform_change(
+            prompt=prompt,
+            context=context,
+            client=_client(settings),
+            model=model,
+            proposal_id=args.proposal_id,
+        )
+    except (TransformProposalError, OllamaError, ValueError, OSError) as exc:
+        print(f"ERROR: transform proposal failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(result.proposal.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT TRANSFORM: "
+        f"status={result.proposal.status} target={result.proposal.target.actor_name} "
+        f"proposal={result.proposal.proposal_id} model={result.response.model} "
+        f"attempts={result.attempt_count}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    return 0
+
+
+def cmd_assistant_light_propose(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.planner_model
+    try:
+        prompt = _read_run_prompt(args.prompt, args.prompt_file)
+        context = load_light_context(args.context)
+        result = propose_light_change(
+            prompt=prompt,
+            context=context,
+            client=_client(settings),
+            model=model,
+            proposal_id=args.proposal_id,
+        )
+    except (LightProposalError, OllamaError, ValueError, OSError) as exc:
+        print(f"ERROR: light proposal failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(result.proposal.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT LIGHT: "
+        f"status={result.proposal.status} target={result.proposal.target.actor_name} "
+        f"kind={result.proposal.target.light_kind} "
+        f"proposal={result.proposal.proposal_id} model={result.response.model} "
+        f"attempts={result.attempt_count}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    return 0
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
     settings = _settings()
     model = args.model or settings.planner_model
@@ -1507,6 +1572,56 @@ def build_parser() -> argparse.ArgumentParser:
     assistant_material.add_argument("--proposal-id", default="material_proposal")
     assistant_material.add_argument("--output", "-o", required=True)
     assistant_material.set_defaults(handler=cmd_assistant_material_propose)
+
+    assistant_transform = subparsers.add_parser(
+        "assistant-transform-propose",
+        help="propose one bounded world-space Transform change for a selected Actor",
+    )
+    transform_prompt_source = assistant_transform.add_mutually_exclusive_group(
+        required=True
+    )
+    transform_prompt_source.add_argument(
+        "--prompt", help="natural-language Transform request"
+    )
+    transform_prompt_source.add_argument(
+        "--prompt-file",
+        help="UTF-8 text file containing the Transform request",
+    )
+    assistant_transform.add_argument(
+        "--context",
+        required=True,
+        help="UnrealActorTransformContext JSON captured by the Editor plugin",
+    )
+    assistant_transform.add_argument(
+        "--model", help="override the configured planner model"
+    )
+    assistant_transform.add_argument("--proposal-id", default="transform_proposal")
+    assistant_transform.add_argument("--output", "-o", required=True)
+    assistant_transform.set_defaults(handler=cmd_assistant_transform_propose)
+
+    assistant_light = subparsers.add_parser(
+        "assistant-light-propose",
+        help="propose one bounded property change for a selected Unreal light",
+    )
+    light_prompt_source = assistant_light.add_mutually_exclusive_group(required=True)
+    light_prompt_source.add_argument(
+        "--prompt", help="natural-language light property request"
+    )
+    light_prompt_source.add_argument(
+        "--prompt-file",
+        help="UTF-8 text file containing the light property request",
+    )
+    assistant_light.add_argument(
+        "--context",
+        required=True,
+        help="UnrealLightContext JSON captured by the Editor plugin",
+    )
+    assistant_light.add_argument(
+        "--model", help="override the configured planner model"
+    )
+    assistant_light.add_argument("--proposal-id", default="light_proposal")
+    assistant_light.add_argument("--output", "-o", required=True)
+    assistant_light.set_defaults(handler=cmd_assistant_light_propose)
 
     plan = subparsers.add_parser("plan", help="ask a local Ollama model for a RenderSpec")
     plan.add_argument("--model", help="override the configured planner model")

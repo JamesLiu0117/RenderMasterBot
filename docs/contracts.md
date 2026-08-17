@@ -10,6 +10,10 @@ these strict models. Unknown fields are rejected.
 | `AssetCard` | Unreal asset scanner | retriever/planner/adapter | resolvable project assets |
 | `UnrealSelectionContext` | Unreal Editor assistant | proposal builder | captured Actor, component, mesh, and slot evidence |
 | `AssistantMaterialProposal` | catalog-backed proposal builder | Unreal Editor assistant/operator | approval-gated selected-Actor material change |
+| `UnrealActorTransformContext` | Unreal Editor assistant | Transform proposal builder | frozen Actor identity and world Transform evidence |
+| `AssistantTransformProposal` | bounded Transform proposal builder | Unreal Editor assistant/operator | approval-gated selected-Actor world Transform change |
+| `UnrealLightContext` | Unreal Editor assistant | light proposal builder | frozen Light identity, type, unit, and editable property evidence |
+| `AssistantLightProposal` | bounded light proposal builder | Unreal Editor assistant/operator | approval-gated selected-Light property change |
 | `RenderSpec` | planner or human | validator/engine adapter | complete requested scene |
 | `RenderSpecPatch` | evaluator or human | patch validator | bounded correction proposal |
 | `EvaluationReport` | visual/rule evaluator | repair planner/benchmark | findings and verdict |
@@ -21,7 +25,7 @@ these strict models. Unknown fields are rejected.
 | `RunManifest` | orchestration layer | dataset builder/auditor | reproducible run evidence |
 
 Although the early planning note called these "six contracts," the actual
-boundary now contains thirteen top-level contracts. `CorrectionDecision` is kept
+boundary now contains seventeen top-level contracts. `CorrectionDecision` is kept
 separate from `EvaluationReport` so visual observation and executable repair
 remain independently testable.
 
@@ -40,6 +44,21 @@ remain independently testable.
 - The host rechecks retrieved material IDs against the supplied catalog. Unreal
   revalidates the captured Actor, component, mesh, slot, and current material
   immediately before applying an approved transaction.
+- The Transform model can express only per-axis `set`/`add` operations for
+  location and rotation, or `set`/`multiply` for scale. It cannot select the
+  Actor or author trusted Before/After evidence.
+- Transform target identity and Before values come from the Editor. The host
+  computes bounded After values, and Unreal rechecks Actor path, class, GUID,
+  editability, lock state, and unchanged Transform immediately before applying
+  one Undo-backed transaction.
+- Light target identity, kind, intensity unit, and Before values come from the
+  Editor. The model can request only bounded property operations; the host
+  computes the After snapshot and rejects properties that do not apply to the
+  captured Directional, Point, Spot, or Rect Light.
+- Unreal rechecks the Light Actor, component, type, unit, editability, lock
+  state, and complete unchanged snapshot immediately before applying one
+  Undo-backed transaction. A proposal cannot spawn, delete, rename, retype, or
+  change the intensity unit of a Light.
 - External-material operational records freeze provider metadata, four local
   map hashes, the exact five planned Unreal paths, and the canonical proposal
   SHA-256. A mismatched approval hash stops before Unreal is launched.
@@ -81,6 +100,10 @@ render-master validate visual_suite.json --contract visual-benchmark-suite
 render-master validate workflow_manifest.json --contract render-workflow-manifest
 render-master validate selection_context.json --contract unreal-selection-context
 render-master validate material_proposal.json --contract assistant-material-proposal
+render-master validate actor_transform.json --contract unreal-actor-transform-context
+render-master validate transform_proposal.json --contract assistant-transform-proposal
+render-master validate examples/unreal_light_context.json --contract unreal-light-context
+render-master schema assistant-light-proposal -o assistant_light_proposal.schema.json
 ```
 
 `render-master schema` and `render-master validate` default to `render-spec`,

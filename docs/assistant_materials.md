@@ -41,7 +41,7 @@ operator review -> approve -> target revalidation -> Unreal transaction
 
 ## Material source tiers
 
-**Prepare Action** searches only material assets already observed in the
+**Prepare Material** searches only material assets already observed in the
 configured Unreal project catalog. This gives the host an allowlist of real,
 immediately loadable engine paths and prevents model-generated paths from
 reaching `LoadObject`.

@@ -330,6 +330,52 @@ class CliOutputTests(unittest.TestCase):
         self.assertEqual(args.proposal_id, "material_001")
         self.assertEqual(args.limit, 5)
 
+    def test_assistant_transform_parser_keeps_target_context_and_output_explicit(self):
+        args = build_parser().parse_args(
+            [
+                "assistant-transform-propose",
+                "--prompt",
+                "Move this object up by 50 cm",
+                "--context",
+                "actor_transform.json",
+                "--model",
+                "planner-model",
+                "--proposal-id",
+                "transform_001",
+                "--output",
+                "proposal.json",
+            ]
+        )
+
+        self.assertEqual(args.prompt, "Move this object up by 50 cm")
+        self.assertIsNone(args.prompt_file)
+        self.assertEqual(args.context, "actor_transform.json")
+        self.assertEqual(args.model, "planner-model")
+        self.assertEqual(args.proposal_id, "transform_001")
+        self.assertEqual(args.output, "proposal.json")
+
+    def test_assistant_light_parser_keeps_context_model_and_output_explicit(self):
+        args = build_parser().parse_args(
+            [
+                "assistant-light-propose",
+                "--prompt",
+                "Make this light 20% brighter and 3200K",
+                "--context",
+                "light_context.json",
+                "--model",
+                "planner-model",
+                "--proposal-id",
+                "light_001",
+                "--output",
+                "light_proposal.json",
+            ]
+        )
+
+        self.assertEqual(args.context, "light_context.json")
+        self.assertEqual(args.model, "planner-model")
+        self.assertEqual(args.proposal_id, "light_001")
+        self.assertEqual(args.output, "light_proposal.json")
+
     def test_external_material_import_parsers_separate_proposal_and_approval(self):
         assistant_external = build_parser().parse_args(
             [

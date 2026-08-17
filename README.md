@@ -103,6 +103,12 @@ correction records, and a reproducible run manifest.
 - Catalog-verified material proposals for one selected Static Mesh Actor, with
   automatic single-slot targeting, explicit multi-slot targeting, approval-time
   revalidation, no automatic save, and Ctrl+Z Undo
+- Bounded world-space Transform proposals for one selected Actor, with
+  Editor-owned target identity and Before values, host-computed After values,
+  approval-time revalidation, no automatic save, and Ctrl+Z Undo
+- Type-specific light-property proposals for one selected Directional, Point,
+  Spot, or Rect Light, with frozen intensity units, exact Before/After evidence,
+  approval-time stale-state rejection, no automatic save, and Ctrl+Z Undo
 - Parameterized `MaterialInstanceConstant` variants with exposed-parameter
   inspection, exact value readback, and no-overwrite behavior
 - Official Poly Haven texture discovery with local semantic ranking, visible
@@ -115,9 +121,9 @@ correction records, and a reproducible run manifest.
 - Command-line doctor, schema, validate, preflight, Unreal, retrieval, planning, evaluation, and correction commands
 - Standard-library unit tests for contracts, planning, preflight, Unreal execution, and preview orchestration
 
-Broader transform, light, camera, and performance actions, richer per-material
-lighting calibration, and model fine-tuning are
-later milestones.
+Multi-Actor and local-space Transform actions, camera properties, coordinated
+multi-light operations, performance actions, richer per-material lighting
+calibration, and model fine-tuning are later milestones.
 
 ## Local setup
 
@@ -329,7 +335,7 @@ RenderMasterBot > RenderMasterBot Assistant**. The workspace can also be opened 
 startup with `-RenderMasterOpenPanel`.
 
 The default **Assistant** page reads the live project, level, and selected-actor
-context without modifying the scene. **Prepare Action** retrieves only
+context without modifying the scene. **Prepare Material** retrieves only
 catalog-verified project materials. **Search Poly Haven** searches official CC0
 external materials, caches and verifies four maps outside the project, and shows
 the source, license, approval hash, and exact five Content paths before any
@@ -342,10 +348,27 @@ which creates and saves four textures plus one material, updates the catalog and
 Chroma, and then applies the override. Target revalidation and the scene override
 remain transactional; the new Content assets are intentionally persistent.
 
+**Prepare Transform** targets exactly one selected Actor and accepts bounded
+world-space move, rotation, and scale requests. It freezes the Actor path, class,
+GUID, and current Transform before asking the local planner for a restricted
+per-axis intent. The host computes the final values and shows a separate
+**Transform Action** card with complete Before/After evidence. **Approve & Apply
+Transform** revalidates both identity and the unchanged Before Transform, then
+uses an Unreal transaction. It never saves the level automatically.
+
+**Prepare Light** targets exactly one selected Directional, Point, Spot, or Rect
+Light. The assistant preserves the existing intensity unit and exposes only
+properties that have meaning for that light type: all four types support
+intensity, color, temperature, and shadows; local lights support attenuation;
+Spot Lights add cone angles; Directional, Spot, and Rect Lights support
+rotation. The **Light Action** card shows every changed property and complete
+Before/After state. **Approve & Apply Light** revalidates the Actor, component,
+type, unit, and unchanged properties before one Undo-backed Editor transaction.
+
 The secondary **Render & Evaluate** page runs the existing schema-gated
-`render-master run` workflow. General transform, light, camera, and performance
-actions remain marked as not connected rather than being represented by
-nonfunctional controls.
+`render-master run` workflow. Multi-Actor/local-space Transform, coordinated
+multi-light, camera, and performance actions remain marked as not connected
+rather than being represented by nonfunctional controls.
 
 The execution page writes the prompt to a bounded UTF-8 file, starts the
 configured virtual environment without exposing prompt text to the shell,
@@ -390,6 +413,8 @@ Bounded end-to-end execution is documented in [docs/orchestration.md](docs/orche
 Bounded correction planning is documented in [docs/correction_planning.md](docs/correction_planning.md).
 Chroma indexing and retrieval constraints are documented in [docs/retrieval.md](docs/retrieval.md).
 The approval-gated selected-Actor material action is documented in [docs/assistant_materials.md](docs/assistant_materials.md).
+The approval-gated selected-Actor Transform action is documented in [docs/assistant_transforms.md](docs/assistant_transforms.md).
+The approval-gated selected-Light action is documented in [docs/assistant_lights.md](docs/assistant_lights.md).
 The native Unreal dashboard is documented in [docs/unreal_editor_panel.md](docs/unreal_editor_panel.md).
 
 Export or validate any contract:

@@ -46,7 +46,7 @@ Ollama's embedding endpoint explicitly instead of allowing Chroma to choose or
 download a default embedding function. The collection records its embedding
 model identity and rejects attempts to query it with a different model.
 
-See `contracts.md` for the thirteen public JSON boundaries used by both tracks.
+See `contracts.md` for the seventeen public JSON boundaries used by both tracks.
 
 ## Next milestones
 
@@ -84,13 +84,16 @@ See `contracts.md` for the thirteen public JSON boundaries used by both tracks.
     Static Mesh Actor, explicitly target its material slot when needed, retrieve
     a catalog material, review exact evidence, and apply an Undo-backed override
     without automatic saving.~~
-17. Extend the same proposal/approval/revalidation pattern to transforms,
-    lights, cameras, and performance fixes.
+17. ~~Extend the proposal/approval/revalidation pattern to bounded single-Actor
+    world Transform edits with Before/After evidence and Ctrl+Z Undo.~~
 18. ~~Connect approved material expansion: parameterized variants first,
     followed by license-checked external PBR acquisition, hash-recorded Unreal
     import, automatic catalog/Chroma synchronization, and an Editor approval UI.~~
-19. Extend the same proposal/approval/revalidation pattern to transforms,
-    lights, cameras, and performance fixes.
+19. ~~Extend the same pattern to bounded type-specific properties for one
+    selected Directional, Point, Spot, or Rect Light, with stale-state
+    revalidation and Unreal Undo.~~
+20. Extend the same pattern to multi-Actor/local-space transforms, coordinated
+    multi-light edits, camera properties, and performance fixes.
 
 ## Default model roles
 

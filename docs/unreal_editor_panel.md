@@ -12,11 +12,12 @@ operator can inspect that context, prepare a bounded action, review its scope,
 and explicitly approve or reject it. Context inspection and proposal generation
 do not modify the Editor scene.
 
-The first connected direct Editor action is a material recommendation for one
+The connected direct Editor actions are material selection, one-Actor world
+Transform editing, and one-Light property editing. Material selection supports one
 selected Actor that contains exactly one valid Static Mesh Component. A single
 slot is targeted automatically. For a multi-slot mesh, the operator chooses an
 explicit target in the **Target material slot** menu, which shows every slot and
-its current material path. **Prepare Action** searches only project materials
+its current material path. **Prepare Material** searches only project materials
 present in the validated catalog. **Search Poly Haven** searches official CC0
 materials, caches and hash-verifies four PBR maps outside the project, and shows
 the source, license, approval hash, and exact five Content paths before mutation.
@@ -29,12 +30,31 @@ material have not changed. The level is not saved automatically and Ctrl+Z
 restores the previous override. External Content assets remain saved. **Reject**
 makes no scene or Content change, although verified downloads remain cached.
 
+**Prepare Transform** accepts one selected Actor and a world-space translation,
+rotation, or scale request. It does not depend on the Actor having a Static Mesh.
+The resulting **Transform Action** card shows the frozen target and exact
+Before/After values. **Approve & Apply Transform** rechecks that the same Actor
+still exists and has not moved since proposal generation, then applies one
+`FScopedTransaction`. It never saves the level automatically; Ctrl+Z restores
+the complete previous Transform.
+
+**Prepare Light** accepts exactly one selected Directional, Point, Spot, or
+Rect Light. Its **Light Action** card shows the frozen light type and intensity
+unit plus the complete Before/After state. The available fields are
+type-specific: intensity, color, temperature, and shadows are common;
+attenuation belongs to local lights; cone angles belong only to Spot Lights;
+rotation belongs to Directional, Spot, and Rect Lights. **Approve & Apply
+Light** rejects stale identity or property state, applies one Editor
+transaction, and never saves the level automatically. Ctrl+Z restores the
+previous properties.
+
 The secondary **Render & Evaluate** page starts the existing transient render
 and visual-evaluation loop. That page is another capability inside the
 assistant, not the identity of the whole product. Explicit targeting for
-material slots and external CC0 material acquisition are connected; general
-transform/light/camera editing and performance diagnosis remain visibly marked
-as not connected.
+material slots, external CC0 material acquisition, and single-Actor world
+Transform and single-Light property editing are connected.
+Multi-Actor/local-space Transform editing, coordinated multi-light operations,
+camera properties, and performance diagnosis remain visibly marked as not connected.
 
 ## Material action lifecycle
 
@@ -43,7 +63,7 @@ as not connected.
    material slot**. Single-slot meshes need no manual choice.
 3. Enter a material appearance request, such as `Make this look like dark,
    weathered wood.`
-4. Press **Prepare Action**. The system writes local request and context
+4. Press **Prepare Material**. The system writes local request and context
    evidence, embeds the request, and searches the validated material catalog.
 5. Review the target Actor, slot, existing material, proposed asset path, and
    similarity score.
@@ -63,6 +83,45 @@ For an external material, use the same target and request, then:
 Changing the target slot while a search or proposal is active discards that
 proposal. A new action must also be prepared if the target or current material
 changes after proposal generation.
+
+## Transform action lifecycle
+
+1. Select exactly one Actor in the current level.
+2. Enter a world-space request such as `Move this Actor up by 50 cm and rotate
+   it right by 30 degrees.`
+3. Press **Prepare Transform**. The Editor freezes path, class, GUID, lock and
+   editability state, plus location, rotation, and scale. No scene mutation
+   occurs.
+4. Review the target, changed channels, and complete Before/After values in the
+   **Transform Action** card.
+5. Press **Approve & Apply Transform**, or **Reject** to make no change.
+6. Use Ctrl+Z to restore the previous Transform. Save the level manually only
+   if the result should persist.
+
+Version 0.1 intentionally accepts world space only. Location uses centimeters;
+rotation maps `x/y/z` to Unreal Roll/Pitch/Yaw in degrees. Requests that require
+local space, geometry-aware placement, multi-Actor coordination, or another
+ambiguous capability resolve as **Unresolved** instead of guessing.
+
+## Light action lifecycle
+
+1. Select exactly one Directional, Point, Spot, or Rect Light.
+2. Enter a request such as `Make this Spot Light 20% brighter, set it to 3200 K,
+   widen the outer cone to 45 degrees, and rotate it right by 30 degrees.`
+3. Press **Prepare Light**. The Editor freezes Actor/component identity, light
+   kind, intensity unit, editability and lock state, and every supported
+   property. No scene mutation occurs.
+4. Review the changed-property list and complete Before/After state in the
+   **Light Action** card.
+5. Press **Approve & Apply Light**, or **Reject** to make no change.
+6. Use Ctrl+Z to restore the previous properties. Save the level manually only
+   if the result should persist.
+
+The intensity unit is never converted or changed by this action. Directional
+Lights require lux; local lights retain their captured lumens, candelas,
+unitless, EV, or nits setting. Point Light rotation is rejected because it has
+no visual meaning. Requests to spawn, delete, rename, retype, or coordinate
+multiple lights resolve as **Unresolved**.
 
 ## Render and Evaluate lifecycle
 
@@ -150,6 +209,20 @@ freezes four map hashes plus five target paths. Preparing or rejecting does not
 modify Unreal Content; external approval must match the exact proposal SHA-256.
 `SetMaterial` runs inside `FScopedTransaction` in both paths.
 
+Transform requests use a separate strict intent schema. The model describes
+only allowed per-axis operations; Python computes and bounds After values, while
+the Editor owns target and Before evidence. Apply-time identity and Transform
+revalidation prevents a stale proposal from overwriting a user's intervening
+edit. The final `SetActorTransform` also runs inside `FScopedTransaction`.
+
+Light requests use their own strict intent schema and type matrix. The model
+does not control the target, Before evidence, final changed-property list, or
+intensity unit. Python computes bounded After values. Unreal then revalidates
+the Actor path, class, GUID, component name, kind, unit, lock/editability state,
+and complete Before snapshot. Approved properties are edited through the same
+transactional Editor path used for Static, Stationary, and Movable lights,
+followed by normal post-edit and render-state notifications.
+
 The controller belongs to the plugin module, so closing and reopening the tab
 does not kill an active workflow. Pressing **Cancel**, closing the Editor, or
 unloading the module terminates Python together with its child Unreal process
@@ -180,9 +253,12 @@ Run all Editor-side contract parsers inside a real, headless Editor process:
   '-TestExit=Automation Test Queue Empty' -log
 ```
 
-The three automation tests cover running and terminal manifest parsing, the
-project-material proposal, and the bounded five-asset external approval proposal.
+The Editor automation suite covers running and terminal manifest parsing,
+project and external material proposals, Transform and Light proposal parsing,
+an actual transient-Actor Transform apply followed by Unreal Undo, and a
+Stationary Light property apply followed by Unreal Undo.
 A visible smoke test should also confirm that the panel appears, both search
 buttons produce the expected proposal type, approval changes only the chosen
-slot, Ctrl+Z restores the override, and no RenderMasterBot-specific error is
-written during startup.
+slot, **Prepare Transform** shows correct Before/After values, all three scene
+actions undo correctly, **Prepare Light** exposes only type-valid fields and undoes
+correctly, and no RenderMasterBot-specific error is written during startup.

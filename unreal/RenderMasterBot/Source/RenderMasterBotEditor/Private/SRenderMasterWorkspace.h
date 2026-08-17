@@ -5,6 +5,10 @@
 
 class FRenderMasterWorkflowController;
 class FRenderMasterMaterialAssistant;
+class FRenderMasterTransformAssistant;
+class FRenderMasterLightAssistant;
+class AActor;
+class ALight;
 class SComboButton;
 class SMultiLineEditableTextBox;
 class SWidgetSwitcher;
@@ -30,9 +34,16 @@ private:
     FReply AnalyzeContext();
     FReply PrepareAction();
     FReply PrepareExternalAction();
+    FReply PrepareTransformAction();
+    FReply PrepareLightAction();
     FReply ApproveAction();
     FReply RejectAction();
+    FReply ApproveTransformAction();
+    FReply RejectTransformAction();
+    FReply ApproveLightAction();
+    FReply RejectLightAction();
     void SetPage(int32 PageIndex);
+    bool CanPrepareAssistantAction() const;
 
     FText GetProjectContext() const;
     FText GetSelectionContext() const;
@@ -43,6 +54,14 @@ private:
     EVisibility GetProposalVisibility() const;
     EVisibility GetApplyVisibility() const;
     EVisibility GetRejectVisibility() const;
+    EVisibility GetTransformProposalVisibility() const;
+    EVisibility GetTransformApplyVisibility() const;
+    EVisibility GetTransformRejectVisibility() const;
+    EVisibility GetLightProposalVisibility() const;
+    EVisibility GetLightApplyVisibility() const;
+    EVisibility GetLightRejectVisibility() const;
+    AActor* GetSingleSelectedActor(FString& OutError) const;
+    ALight* GetSingleSelectedLight(FString& OutError) const;
     UStaticMeshComponent* GetSingleSelectedStaticMeshComponent(FString& OutError) const;
     bool ResolveTargetMaterialSlot(
         UStaticMeshComponent* Component,
@@ -52,6 +71,8 @@ private:
 
     TSharedPtr<FRenderMasterWorkflowController> Controller;
     TSharedPtr<FRenderMasterMaterialAssistant> MaterialAssistant;
+    TSharedPtr<FRenderMasterTransformAssistant> TransformAssistant;
+    TSharedPtr<FRenderMasterLightAssistant> LightAssistant;
     TSharedPtr<SWidgetSwitcher> PageSwitcher;
     TSharedPtr<SMultiLineEditableTextBox> AssistantPromptBox;
     TSharedPtr<SComboButton> MaterialSlotComboButton;
@@ -60,4 +81,12 @@ private:
     FString AssistantReply;
     int32 SelectedMaterialSlotIndex = INDEX_NONE;
     int32 ActivePage = 0;
+    enum class ELastAssistantAction : uint8
+    {
+        None,
+        Material,
+        Transform,
+        Light,
+    };
+    ELastAssistantAction LastAssistantAction = ELastAssistantAction::None;
 };

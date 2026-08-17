@@ -1,0 +1,30 @@
+{
+  "schema_version": "0.1",
+  "project_name": "OptimizationPlugin",
+  "level_path": "/Game/FirstPerson/Lvl_FirstPerson",
+  "actor_name": "ExampleCube",
+  "actor_path": "/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.ExampleCube",
+  "actor_class": "StaticMeshActor",
+  "actor_guid": "0123456789ABCDEF0123456789ABCDEF",
+  "root_component_name": "StaticMeshComponent0",
+  "root_mobility": "movable",
+  "is_editable": true,
+  "is_locked": false,
+  "transform": {
+    "location_cm": {
+      "x": 100.0,
+      "y": 200.0,
+      "z": 300.0
+    },
+    "rotation_deg": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 10.0
+    },
+    "scale": {
+      "x": 1.0,
+      "y": 1.0,
+      "z": 1.0
+    }
+  }
+}

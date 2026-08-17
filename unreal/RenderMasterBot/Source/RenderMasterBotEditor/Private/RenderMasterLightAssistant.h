@@ -1,0 +1,126 @@
+#pragma once
+
+#include "Containers/Ticker.h"
+#include "CoreMinimal.h"
+#include "HAL/PlatformProcess.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/WeakObjectPtr.h"
+
+class ALight;
+class FRenderMasterWorkflowController;
+class ULightComponent;
+
+enum class ERenderMasterLightAssistantState : uint8
+{
+    Ready,
+    Planning,
+    Proposed,
+    Unresolved,
+    Failed,
+    Applied,
+    Rejected,
+};
+
+struct FRenderMasterLightSnapshot
+{
+    FRotator Rotation = FRotator::ZeroRotator;
+    double Intensity = 0.0;
+    FString IntensityUnit;
+    FLinearColor Color = FLinearColor::White;
+    bool bUseTemperature = false;
+    double TemperatureKelvin = 6500.0;
+    bool bCastShadows = true;
+    TOptional<double> AttenuationRadiusCm;
+    TOptional<double> InnerConeDeg;
+    TOptional<double> OuterConeDeg;
+};
+
+struct FRenderMasterLightProposal
+{
+    FString ProposalId;
+    FString Status;
+    FString Rationale;
+    FString MissingCapabilities;
+    FString ActorName;
+    FString ActorPath;
+    FString ActorClass;
+    FString ActorGuid;
+    FString ComponentName;
+    FString LightKind;
+    FString ChangeSummary;
+    FRenderMasterLightSnapshot Before;
+    FRenderMasterLightSnapshot After;
+
+    static bool Parse(
+        const FString& JsonText,
+        FRenderMasterLightProposal& OutProposal,
+        FString& OutError);
+    static bool LoadFromFile(
+        const FString& Filename,
+        FRenderMasterLightProposal& OutProposal,
+        FString& OutError);
+};
+
+bool RenderMasterApplyLightProperties(
+    ALight* LightActor,
+    ULightComponent* LightComponent,
+    const FRenderMasterLightSnapshot& Before,
+    const FRenderMasterLightSnapshot& After,
+    FString& OutError,
+    bool bMarkPackageDirty = true);
+
+class FRenderMasterLightAssistant : public TSharedFromThis<FRenderMasterLightAssistant>
+{
+public:
+    explicit FRenderMasterLightAssistant(
+        TSharedPtr<FRenderMasterWorkflowController> InWorkflowController);
+    ~FRenderMasterLightAssistant();
+
+    void Initialize();
+    void Shutdown();
+    bool StartProposal(const FString& Prompt, ALight* LightActor);
+    bool ApplyProposal();
+    void RejectProposal();
+    void Cancel();
+
+    bool CanStart() const;
+    bool CanApply() const;
+    bool IsPlanning() const;
+    ERenderMasterLightAssistantState GetState() const { return State; }
+    FText GetStateText() const;
+    FText GetSummaryText() const;
+    FText GetLogText() const;
+    FLinearColor GetStateColor() const;
+
+private:
+    bool Tick(float DeltaTime);
+    void FinishProcess();
+    void ReadProcessOutput();
+    void CloseProcessResources();
+    void AppendLog(const FString& Text);
+    void Fail(const FString& Error);
+    bool WriteLightContext(const FString& Filename, ALight* LightActor, FString& OutError);
+    bool RevalidateTarget(FString& OutError) const;
+
+    TSharedPtr<FRenderMasterWorkflowController> WorkflowController;
+    TWeakObjectPtr<ALight> TargetLightActor;
+    TWeakObjectPtr<ULightComponent> TargetLightComponent;
+    FRenderMasterLightProposal Proposal;
+    ERenderMasterLightAssistantState State = ERenderMasterLightAssistantState::Ready;
+    FString ErrorText;
+    FString ProcessLog;
+    FString ProposalOutputPath;
+    FString CapturedActorPath;
+    FString CapturedActorClass;
+    FString CapturedActorGuid;
+    FString CapturedComponentName;
+    FString CapturedLightKind;
+    FRenderMasterLightSnapshot CapturedLight;
+
+    FProcHandle ProcessHandle;
+    void* StdOutRead = nullptr;
+    void* StdOutWrite = nullptr;
+    void* StdErrRead = nullptr;
+    void* StdErrWrite = nullptr;
+    FTSTicker::FDelegateHandle TickHandle;
+};
