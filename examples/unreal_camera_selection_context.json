@@ -1,0 +1,71 @@
+{
+  "schema_version": "0.1",
+  "project_name": "OptimizationPlugin",
+  "level_path": "/Game/FirstPerson/Lvl_FirstPerson",
+  "cameras": [
+    {
+      "schema_version": "0.1",
+      "project_name": "OptimizationPlugin",
+      "level_path": "/Game/FirstPerson/Lvl_FirstPerson",
+      "actor_name": "WideCamera",
+      "actor_path": "/Game/FirstPerson/Lvl_FirstPerson.Lvl_FirstPerson:PersistentLevel.WideCamera",
+      "actor_class": "CameraActor",
+      "actor_guid": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "component_name": "CameraComponent",
+      "camera_kind": "camera",
+      "component_mobility": "movable",
+      "projection_mode": "perspective",
+      "is_editable": true,
+      "is_locked": false,
+      "min_focal_length_mm": null,
+      "max_focal_length_mm": null,
+      "min_aperture_fstop": 1.0,
+      "max_aperture_fstop": 32.0,
+      "minimum_focus_distance_cm": 0.0,
+      "camera": {
+        "location_cm": {"x": -600.0, "y": -250.0, "z": 180.0},
+        "rotation_deg": {"x": 0.0, "y": -8.0, "z": 18.0},
+        "field_of_view_deg": 80.0,
+        "focal_length_mm": null,
+        "aperture_fstop": 4.0,
+        "focus_mode": "manual",
+        "focus_distance_cm": 700.0,
+        "exposure_compensation_enabled": false,
+        "exposure_compensation_ev": 0.0,
+        "post_process_blend_weight": 1.0
+      }
+    },
+    {
+      "schema_version": "0.1",
+      "project_name": "OptimizationPlugin",
+      "level_path": "/Game/FirstPerson/Lvl_FirstPerson",
+      "actor_name": "DetailCamera",
+      "actor_path": "/Game/FirstPerson/Lvl_FirstPerson.Lvl_FirstPerson:PersistentLevel.DetailCamera",
+      "actor_class": "CameraActor",
+      "actor_guid": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "component_name": "CameraComponent",
+      "camera_kind": "camera",
+      "component_mobility": "movable",
+      "projection_mode": "perspective",
+      "is_editable": true,
+      "is_locked": false,
+      "min_focal_length_mm": null,
+      "max_focal_length_mm": null,
+      "min_aperture_fstop": 1.0,
+      "max_aperture_fstop": 32.0,
+      "minimum_focus_distance_cm": 0.0,
+      "camera": {
+        "location_cm": {"x": -350.0, "y": 120.0, "z": 140.0},
+        "rotation_deg": {"x": 0.0, "y": -5.0, "z": -12.0},
+        "field_of_view_deg": 55.0,
+        "focal_length_mm": null,
+        "aperture_fstop": 5.6,
+        "focus_mode": "manual",
+        "focus_distance_cm": 420.0,
+        "exposure_compensation_enabled": false,
+        "exposure_compensation_ev": 0.0,
+        "post_process_blend_weight": 1.0
+      }
+    }
+  ]
+}

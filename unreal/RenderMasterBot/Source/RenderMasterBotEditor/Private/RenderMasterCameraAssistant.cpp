@@ -415,6 +415,52 @@ FString QuoteCameraArgument(const FString& Value)
 }
 }
 
+FString RenderMasterCameraKind(const UCameraComponent* CameraComponent)
+{
+    return CameraKind(CameraComponent);
+}
+
+FRenderMasterCameraBounds RenderMasterSnapshotCameraBounds(
+    const UCameraComponent* CameraComponent)
+{
+    return SnapshotBounds(CameraComponent);
+}
+
+FRenderMasterCameraSnapshot RenderMasterSnapshotCamera(
+    const ACameraActor* CameraActor,
+    const UCameraComponent* CameraComponent)
+{
+    return SnapshotCamera(CameraActor, CameraComponent);
+}
+
+bool RenderMasterIsBoundedCameraSnapshot(
+    const FRenderMasterCameraSnapshot& Snapshot,
+    const FString& CameraKindValue,
+    const FRenderMasterCameraBounds& Bounds)
+{
+    return IsBoundedSnapshot(Snapshot, CameraKindValue, Bounds);
+}
+
+bool RenderMasterCameraSnapshotsMatch(
+    const FRenderMasterCameraSnapshot& A,
+    const FRenderMasterCameraSnapshot& B)
+{
+    return SnapshotsMatch(A, B);
+}
+
+bool RenderMasterCameraBoundsMatch(
+    const FRenderMasterCameraBounds& A,
+    const FRenderMasterCameraBounds& B)
+{
+    return BoundsMatch(A, B);
+}
+
+bool RenderMasterHasSupportedStandardFocusShape(
+    const UCameraComponent* CameraComponent)
+{
+    return HasSupportedStandardFocusShape(CameraComponent);
+}
+
 bool RenderMasterParseCameraProposalFile(
     const FString& Filename,
     FRenderMasterCameraProposal& OutProposal,
@@ -426,6 +472,14 @@ bool RenderMasterParseCameraProposalFile(
         OutError = FString::Printf(TEXT("Could not read camera proposal: %s"), *Filename);
         return false;
     }
+    return RenderMasterParseCameraProposalJson(JsonText, OutProposal, OutError);
+}
+
+bool RenderMasterParseCameraProposalJson(
+    const FString& JsonText,
+    FRenderMasterCameraProposal& OutProposal,
+    FString& OutError)
+{
     TSharedPtr<FJsonObject> Root;
     const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonText);
     if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
@@ -591,7 +645,8 @@ bool RenderMasterApplyCameraProperties(
     const FRenderMasterCameraSnapshot& Before,
     const FRenderMasterCameraSnapshot& After,
     FString& OutError,
-    bool bMarkPackageDirty)
+    bool bMarkPackageDirty,
+    bool bCreateTransaction)
 {
     if (CameraActor == nullptr || CameraComponent == nullptr)
     {
@@ -609,8 +664,15 @@ bool RenderMasterApplyCameraProperties(
         return false;
     }
 
-    FScopedTransaction Transaction(
-        NSLOCTEXT("RenderMasterBot", "ApplyAssistantCamera", "RenderMasterBot: Apply Camera Properties"));
+    TUniquePtr<FScopedTransaction> Transaction;
+    if (bCreateTransaction)
+    {
+        Transaction = MakeUnique<FScopedTransaction>(
+            NSLOCTEXT(
+                "RenderMasterBot",
+                "ApplyAssistantCamera",
+                "RenderMasterBot: Apply Camera Properties"));
+    }
     CameraActor->Modify();
     CameraComponent->Modify();
     const bool bTransformChanged = !VectorsMatch(Before.Location, After.Location)
@@ -623,7 +685,7 @@ bool RenderMasterApplyCameraProperties(
             CameraActor->GetActorScale3D());
         if (!CameraActor->SetActorTransform(NewTransform, false, nullptr, ETeleportType::TeleportPhysics))
         {
-            Transaction.Cancel();
+            if (Transaction.IsValid()) Transaction->Cancel();
             OutError = TEXT("Unreal rejected the proposed camera Transform.");
             return false;
         }

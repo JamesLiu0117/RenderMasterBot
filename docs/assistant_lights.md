@@ -6,8 +6,10 @@ Proposal generation is read-only. The level changes only after the operator
 reviews every light in the **Light Action** card and presses **Approve & Apply
 Light**.
 
-This milestone provides reliable compatible group editing. It does not yet
-assign different instructions to Key, Fill, Rim, or other named lighting roles.
+This action provides reliable compatible group property editing. The separate
+**Prepare Lighting Rig** action coordinates exactly three compatible local
+lights as camera-relative Key, Fill, and Rim; see
+`assistant_lighting_rigs.md`.
 
 ## Supported property matrix
 
@@ -83,8 +85,9 @@ is marked dirty but never saved automatically; one Ctrl+Z restores the group.
 5. Press **Approve & Apply Light**, or **Reject**.
 6. Use Ctrl+Z once if the complete group should be restored.
 
-Spawn/delete/rename/retype requests, per-light role instructions, and
+Spawn/delete/rename/retype requests, arbitrary per-light instructions, and
 unsupported or incompatible property combinations resolve as **Unresolved**.
+Use **Prepare Lighting Rig** for the bounded Key/Fill/Rim workflow.
 
 ## CLI and contracts
 

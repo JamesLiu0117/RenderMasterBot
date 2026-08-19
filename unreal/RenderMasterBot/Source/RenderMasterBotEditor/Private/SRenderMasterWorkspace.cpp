@@ -6,14 +6,21 @@
 #include "Engine/Selection.h"
 #include "Engine/Light.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/App.h"
 #include "RenderMasterCameraAssistant.h"
+#include "RenderMasterCameraBatchAssistant.h"
+#include "RenderMasterPerformanceAssistant.h"
+#include "RenderMasterRuntimePerformanceAssistant.h"
+#include "RenderMasterInsightsGpuAssistant.h"
 #include "RenderMasterWorkflowController.h"
 #include "RenderMasterMaterialAssistant.h"
 #include "RenderMasterLightAssistant.h"
+#include "RenderMasterLightingRigAssistant.h"
+#include "RenderMasterLightingRigReviewAssistant.h"
 #include "RenderMasterTransformAssistant.h"
 #include "SRenderMasterPanel.h"
 #include "Styling/AppStyle.h"
@@ -35,7 +42,9 @@ namespace
 {
 constexpr float WorkspacePadding = 22.0f;
 
-TSharedRef<SWidget> WorkspaceSectionTitle(const FText& Title, TAttribute<FText> Subtitle)
+TSharedRef<SWidget> WorkspaceSectionTitle(
+    TAttribute<FText> Title,
+    TAttribute<FText> Subtitle)
 {
     return SNew(SVerticalBox)
         + SVerticalBox::Slot().AutoHeight()
@@ -64,8 +73,22 @@ void SRenderMasterWorkspace::Construct(const FArguments& InArgs)
     TransformAssistant->Initialize();
     LightAssistant = MakeShared<FRenderMasterLightBatchAssistant>(Controller);
     LightAssistant->Initialize();
+    LightingRigAssistant = MakeShared<FRenderMasterLightingRigAssistant>(Controller);
+    LightingRigAssistant->Initialize();
+    LightingRigReviewAssistant = MakeShared<FRenderMasterLightingRigReviewAssistant>(
+        Controller, LightingRigAssistant);
+    LightingRigReviewAssistant->Initialize();
     CameraAssistant = MakeShared<FRenderMasterCameraAssistant>(Controller);
     CameraAssistant->Initialize();
+    CameraBatchAssistant = MakeShared<FRenderMasterCameraBatchAssistant>(Controller);
+    CameraBatchAssistant->Initialize();
+    PerformanceAssistant = MakeShared<FRenderMasterPerformanceAssistant>(Controller);
+    PerformanceAssistant->Initialize();
+    RuntimePerformanceAssistant =
+        MakeShared<FRenderMasterRuntimePerformanceAssistant>(Controller);
+    RuntimePerformanceAssistant->Initialize();
+    InsightsGpuAssistant = MakeShared<FRenderMasterInsightsGpuAssistant>(Controller);
+    InsightsGpuAssistant->Initialize();
     AssistantReply = TEXT("Tell me what you want to understand or change. I will inspect the current Unreal context before proposing an action.");
 
     ChildSlot
@@ -94,6 +117,36 @@ void SRenderMasterWorkspace::Construct(const FArguments& InArgs)
 
 SRenderMasterWorkspace::~SRenderMasterWorkspace()
 {
+    if (InsightsGpuAssistant.IsValid())
+    {
+        InsightsGpuAssistant->Shutdown();
+        InsightsGpuAssistant.Reset();
+    }
+    if (RuntimePerformanceAssistant.IsValid())
+    {
+        RuntimePerformanceAssistant->Shutdown();
+        RuntimePerformanceAssistant.Reset();
+    }
+    if (PerformanceAssistant.IsValid())
+    {
+        PerformanceAssistant->Shutdown();
+        PerformanceAssistant.Reset();
+    }
+    if (CameraBatchAssistant.IsValid())
+    {
+        CameraBatchAssistant->Shutdown();
+        CameraBatchAssistant.Reset();
+    }
+    if (LightingRigReviewAssistant.IsValid())
+    {
+        LightingRigReviewAssistant->Shutdown();
+        LightingRigReviewAssistant.Reset();
+    }
+    if (LightingRigAssistant.IsValid())
+    {
+        LightingRigAssistant->Shutdown();
+        LightingRigAssistant.Reset();
+    }
     if (CameraAssistant.IsValid())
     {
         CameraAssistant->Shutdown();
@@ -252,6 +305,201 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                         + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
                         [
                             SNew(SBorder)
+                            .Visibility(this, &SRenderMasterWorkspace::GetInsightsGpuVisibility)
+                            .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+                            .BorderBackgroundColor_Lambda([Assistant = InsightsGpuAssistant]() { return Assistant->GetStateColor(); })
+                            .Padding(16.0f)
+                            [
+                                SNew(SVerticalBox)
+                                + SVerticalBox::Slot().AutoHeight()
+                                [WorkspaceSectionTitle(TAttribute<FText>::CreateLambda([Assistant = InsightsGpuAssistant]() { return Assistant->GetTitleText(); }), TAttribute<FText>::CreateLambda([Assistant = InsightsGpuAssistant]() { return Assistant->GetStateText(); }))]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(STextBlock)
+                                    .Text_Lambda([Assistant = InsightsGpuAssistant]() { return Assistant->GetSummaryText(); })
+                                    .AutoWrapText(true)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 14.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SHorizontalBox)
+                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetInsightsGpuBaselineOpenVisibility)
+                                        .Text(LOCTEXT("OpenActorGpuBaselineTrace", "Open Baseline Trace"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::OpenInsightsGpuBaselineTraceAction)
+                                    ]
+                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetInsightsGpuOpenVisibility)
+                                        .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                        .Text_Lambda([Assistant = InsightsGpuAssistant]()
+                                        {
+                                            return Assistant->IsActorImpactExperiment()
+                                                ? LOCTEXT("OpenActorGpuVariantTrace", "Open Actor-Hidden Trace")
+                                                : LOCTEXT("OpenInsightsGpuTrace", "Open Trace in Unreal Insights");
+                                        })
+                                        .OnClicked(this, &SRenderMasterWorkspace::OpenInsightsGpuTraceAction)
+                                    ]
+                                    + SHorizontalBox::Slot().AutoWidth()
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetInsightsGpuDismissVisibility)
+                                        .Text(LOCTEXT("DismissInsightsGpu", "Dismiss Review"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::DismissInsightsGpuAction)
+                                    ]
+                                ]
+                            ]
+                        ]
+
+                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
+                        [
+                            SNew(SBorder)
+                            .Visibility(this, &SRenderMasterWorkspace::GetRuntimePerformanceVisibility)
+                            .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+                            .BorderBackgroundColor_Lambda([Assistant = RuntimePerformanceAssistant]() { return Assistant->GetStateColor(); })
+                            .Padding(16.0f)
+                            [
+                                SNew(SVerticalBox)
+                                + SVerticalBox::Slot().AutoHeight()
+                                [WorkspaceSectionTitle(LOCTEXT("RuntimePerformanceTitle", "Runtime Performance Capture"), TAttribute<FText>::CreateLambda([Assistant = RuntimePerformanceAssistant]() { return Assistant->GetStateText(); }))]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(STextBlock)
+                                    .Text_Lambda([Assistant = RuntimePerformanceAssistant]() { return Assistant->GetSummaryText(); })
+                                    .AutoWrapText(true)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 14.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SButton)
+                                    .Visibility(this, &SRenderMasterWorkspace::GetRuntimePerformanceDismissVisibility)
+                                    .Text(LOCTEXT("DismissRuntimePerformance", "Dismiss Review"))
+                                    .OnClicked(this, &SRenderMasterWorkspace::DismissRuntimePerformanceAction)
+                                ]
+                            ]
+                        ]
+
+                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
+                        [
+                            SNew(SBorder)
+                            .Visibility(this, &SRenderMasterWorkspace::GetPerformanceProposalVisibility)
+                            .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+                            .BorderBackgroundColor_Lambda([Assistant = PerformanceAssistant]() { return Assistant->GetStateColor(); })
+                            .Padding(16.0f)
+                            [
+                                SNew(SVerticalBox)
+                                + SVerticalBox::Slot().AutoHeight()
+                                [WorkspaceSectionTitle(LOCTEXT("PerformanceProposalTitle", "Selected Mesh Performance Review"), TAttribute<FText>::CreateLambda([Assistant = PerformanceAssistant]() { return Assistant->GetStateText(); }))]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(STextBlock)
+                                    .Text_Lambda([Assistant = PerformanceAssistant]() { return Assistant->GetSummaryText(); })
+                                    .AutoWrapText(true)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 14.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SHorizontalBox)
+                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetPerformanceApplyVisibility)
+                                        .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                        .Text(LOCTEXT("ApprovePerformance", "Approve & Apply Settings"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::ApprovePerformanceAction)
+                                    ]
+                                    + SHorizontalBox::Slot().AutoWidth()
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetPerformanceRejectVisibility)
+                                        .Text(LOCTEXT("DismissPerformance", "Dismiss / Reject"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::RejectPerformanceAction)
+                                    ]
+                                ]
+                            ]
+                        ]
+
+                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
+                        [
+                            SNew(SBorder)
+                            .Visibility(this, &SRenderMasterWorkspace::GetCameraBatchProposalVisibility)
+                            .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+                            .BorderBackgroundColor_Lambda([Assistant = CameraBatchAssistant]() { return Assistant->GetStateColor(); })
+                            .Padding(16.0f)
+                            [
+                                SNew(SVerticalBox)
+                                + SVerticalBox::Slot().AutoHeight()
+                                [WorkspaceSectionTitle(LOCTEXT("CameraBatchProposalTitle", "Coordinated Camera Action"), TAttribute<FText>::CreateLambda([Assistant = CameraBatchAssistant]() { return Assistant->GetStateText(); }))]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(STextBlock)
+                                    .Text_Lambda([Assistant = CameraBatchAssistant]() { return Assistant->GetSummaryText(); })
+                                    .AutoWrapText(true)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 14.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SHorizontalBox)
+                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetCameraBatchApplyVisibility)
+                                        .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                        .Text(LOCTEXT("ApproveCameraBatch", "Approve & Apply Cameras"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::ApproveCameraBatchAction)
+                                    ]
+                                    + SHorizontalBox::Slot().AutoWidth()
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetCameraBatchRejectVisibility)
+                                        .Text(LOCTEXT("RejectCameraBatch", "Reject"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::RejectCameraBatchAction)
+                                    ]
+                                ]
+                            ]
+                        ]
+
+                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
+                        [
+                            SNew(SBorder)
+                            .Visibility(this, &SRenderMasterWorkspace::GetLightingRigReviewVisibility)
+                            .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+                            .BorderBackgroundColor_Lambda([Assistant = LightingRigReviewAssistant]() { return Assistant->GetStateColor(); })
+                            .Padding(16.0f)
+                            [
+                                SNew(SVerticalBox)
+                                + SVerticalBox::Slot().AutoHeight()
+                                [WorkspaceSectionTitle(LOCTEXT("LightingRigReviewTitle", "Lighting Rig Visual Review"), TAttribute<FText>::CreateLambda([Assistant = LightingRigReviewAssistant]() { return Assistant->GetStateText(); }))]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(STextBlock)
+                                    .Text_Lambda([Assistant = LightingRigReviewAssistant]() { return Assistant->GetSummaryText(); })
+                                    .AutoWrapText(true)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 14.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SHorizontalBox)
+                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetLightingRigReviewApplyVisibility)
+                                        .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                        .Text(LOCTEXT("ApproveLightingRigReview", "Approve Intensity Correction"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::ApproveLightingRigReviewAction)
+                                    ]
+                                    + SHorizontalBox::Slot().AutoWidth()
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetLightingRigReviewRejectVisibility)
+                                        .Text(LOCTEXT("RejectLightingRigReview", "Reject"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::RejectLightingRigReviewAction)
+                                    ]
+                                ]
+                            ]
+                        ]
+
+                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
+                        [
+                            SNew(SBorder)
                             .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
                             .Padding(16.0f)
                             [
@@ -348,10 +596,69 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                         .HAlign(HAlign_Center)
                                         .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
                                         .Text(LOCTEXT("PrepareCamera", "Prepare Camera"))
-                                        .ToolTipText(LOCTEXT("PrepareCameraHelp", "Prepare bounded Transform, lens, focus, or exposure-compensation properties for exactly one selected Camera Actor or Cine Camera Actor."))
+                                        .ToolTipText(LOCTEXT("PrepareCameraHelp", "Prepare bounded Transform, lens, focus, or exposure-compensation properties for one selected camera, or one coordinated action for 2-16 selected Camera/Cine Camera Actors."))
                                         .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
                                         .OnClicked(this, &SRenderMasterWorkspace::PrepareCameraAction)
                                     ]
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SButton)
+                                    .HAlign(HAlign_Center)
+                                    .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                    .Text(LOCTEXT("PrepareLightingRig", "Prepare Lighting Rig"))
+                                    .ToolTipText(LOCTEXT("PrepareLightingRigHelp", "Select one bounded subject Actor, one perspective Camera/Cine Camera, and exactly three Movable Point/Spot/Rect Lights that share one non-EV intensity unit."))
+                                    .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
+                                    .OnClicked(this, &SRenderMasterWorkspace::PrepareLightingRigAction)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SButton)
+                                    .HAlign(HAlign_Center)
+                                    .Text(LOCTEXT("ReviewAppliedLightingRig", "Evaluate Applied Rig"))
+                                    .ToolTipText(LOCTEXT("ReviewAppliedLightingRigHelp", "After applying a three-point rig, activate a perspective Level Editor viewport. The Assistant temporarily captures a Lit PNG from the frozen camera, restores the viewport, and asks the local vision model for one intensity-only correction."))
+                                    .IsEnabled_Lambda([Assistant = LightingRigReviewAssistant]() { return Assistant->CanStart(); })
+                                    .OnClicked(this, &SRenderMasterWorkspace::ReviewAppliedLightingRigAction)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SButton)
+                                    .HAlign(HAlign_Center)
+                                    .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                    .Text(LOCTEXT("ReviewPerformance", "Review Performance"))
+                                    .ToolTipText(LOCTEXT("ReviewPerformanceHelp", "Capture measured mesh, LOD, material, Nanite, collision, Tick, shadow, culling, and bounds evidence for 1-32 selected StaticMeshActors. Only Cast Shadow and Max Draw Distance can be approval-gated in this milestone."))
+                                    .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
+                                    .OnClicked(this, &SRenderMasterWorkspace::PreparePerformanceAction)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SButton)
+                                    .HAlign(HAlign_Center)
+                                    .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                    .Text(LOCTEXT("CaptureRuntimePerformance", "Capture Runtime Performance"))
+                                    .ToolTipText(LOCTEXT("CaptureRuntimePerformanceHelp", "During Play In Editor or Simulate In Editor, warm up 30 frames and capture 120 consecutive frame, Game Thread, Render Thread, optional RHI Thread, GPU, process-memory, and RHI texture-memory measurements. The AI review is read-only."))
+                                    .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
+                                    .OnClicked(this, &SRenderMasterWorkspace::PrepareRuntimePerformanceAction)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SButton)
+                                    .HAlign(HAlign_Center)
+                                    .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                    .Text(LOCTEXT("CaptureInsightsGpu", "Capture GPU Scope Trace"))
+                                    .ToolTipText(LOCTEXT("CaptureInsightsGpuHelp", "During PIE or SIE, record five seconds of CPU, GPU, frame, and bookmark trace channels, parse GPU queues with Unreal TraceServices, rank inclusive GPU scopes, preserve the .utrace file, and request a read-only local-model review."))
+                                    .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
+                                    .OnClicked(this, &SRenderMasterWorkspace::PrepareInsightsGpuAction)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SButton)
+                                    .HAlign(HAlign_Center)
+                                    .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                    .Text(LOCTEXT("MeasureActorGpuImpact", "Measure Selected Actor GPU Impact"))
+                                    .ToolTipText(LOCTEXT("MeasureActorGpuImpactHelp", "During PIE or SIE, capture an Actor-visible baseline, temporarily hide exactly one selected level Actor only in the runtime world, warm up, capture the hidden variant, restore the Actor, and compare matched GPU scopes. The formal level is never changed or saved."))
+                                    .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
+                                    .OnClicked(this, &SRenderMasterWorkspace::PrepareActorGpuImpactAction)
                                 ]
                             ]
                         ]
@@ -361,6 +668,45 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                     [
                         SNew(SVerticalBox)
                         + SVerticalBox::Slot().AutoHeight()
+                        [
+                            SNew(SBorder)
+                            .Visibility(this, &SRenderMasterWorkspace::GetLightingRigProposalVisibility)
+                            .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+                            .BorderBackgroundColor_Lambda([Assistant = LightingRigAssistant]() { return Assistant->GetStateColor(); })
+                            .Padding(16.0f)
+                            [
+                                SNew(SVerticalBox)
+                                + SVerticalBox::Slot().AutoHeight()
+                                [WorkspaceSectionTitle(LOCTEXT("LightingRigProposalTitle", "Lighting Rig Action"), TAttribute<FText>::CreateLambda([Assistant = LightingRigAssistant]() { return Assistant->GetStateText(); }))]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(STextBlock)
+                                    .Text_Lambda([Assistant = LightingRigAssistant]() { return Assistant->GetSummaryText(); })
+                                    .AutoWrapText(true)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 14.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SHorizontalBox)
+                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetLightingRigApplyVisibility)
+                                        .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                        .Text(LOCTEXT("ApproveLightingRig", "Approve & Apply Rig"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::ApproveLightingRigAction)
+                                    ]
+                                    + SHorizontalBox::Slot().AutoWidth()
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetLightingRigRejectVisibility)
+                                        .Text(LOCTEXT("RejectLightingRig", "Reject"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::RejectLightingRigAction)
+                                    ]
+                                ]
+                            ]
+                        ]
+
+                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
                         [
                             SNew(SBorder)
                             .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
@@ -554,7 +900,7 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                 + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
                                 [
                                     SNew(STextBlock)
-                                    .Text(LOCTEXT("CapabilityList", "CONNECTED\n✓ Live project and actor-selection context\n✓ Explicit material-slot targeting\n✓ Catalog-backed project material recommendation\n✓ CC0 Poly Haven search and verified local cache\n✓ Hash-bound approval for 5-asset PBR import\n✓ Automatic catalog and Chroma synchronization\n✓ Approval-gated material override with Ctrl+Z Undo\n✓ Approval-gated 1–32 Actor world/local Transform with grouped Ctrl+Z Undo\n✓ Approval-gated 1–16 Light compatible group properties with grouped Ctrl+Z Undo\n✓ Camera and Cine Camera Transform, lens, focus, and exposure compensation with Ctrl+Z Undo\n✓ Schema-gated scene planning\n✓ Transient Unreal preview\n✓ Visual evaluation and bounded correction\n\nNOT CONNECTED YET\n○ Per-light role coordination and coordinated multi-camera editing\n○ Geometry-aware arrangement\n○ Performance diagnosis and optimization"))
+                                    .Text(LOCTEXT("CapabilityList", "CONNECTED\n✓ Live project and actor-selection context\n✓ Explicit material-slot targeting\n✓ Catalog-backed project material recommendation\n✓ CC0 Poly Haven search and verified local cache\n✓ Hash-bound approval for 5-asset PBR import\n✓ Automatic catalog and Chroma synchronization\n✓ Approval-gated material override with Ctrl+Z Undo\n✓ Approval-gated 1–32 Actor world/local Transform with grouped Ctrl+Z Undo\n✓ Approval-gated 1–16 Light compatible group properties with grouped Ctrl+Z Undo\n✓ Subject- and camera-aware Key/Fill/Rim rig with grouped Ctrl+Z Undo\n✓ Camera-view visual rig review with approval-gated intensity correction\n✓ Camera and Cine Camera Transform, lens, focus, and exposure compensation with Ctrl+Z Undo\n✓ Coordinated 2–16 Camera editing with grouped Ctrl+Z Undo\n✓ Evidence-backed StaticMeshActor performance review\n✓ Approval-gated shadow and cull-distance changes with grouped Ctrl+Z Undo\n✓ Recomputable PIE/SIE frame, thread, GPU, process-memory, and RHI texture-memory review\n✓ Unreal Insights GPU queue and scope trace review\n✓ Selected-Actor runtime-hidden A/B GPU impact experiment with automatic restoration\n✓ Schema-gated scene planning\n✓ Transient Unreal preview\n✓ Visual evaluation and bounded correction\n\nNOT CONNECTED YET\n○ Geometry-aware arrangement beyond the bounded three-point rig\n○ Direct per-draw/per-material/per-shader GPU attribution\n○ Packaged-build benchmark comparison\n○ Asset-level Nanite, LOD, mesh, material, or collision optimization"))
                                     .AutoWrapText(true)
                                     .ColorAndOpacity(FSlateColor::UseSubduedForeground())
                                 ]
@@ -814,6 +1160,54 @@ FReply SRenderMasterWorkspace::PrepareLightAction()
     return FReply::Handled();
 }
 
+FReply SRenderMasterWorkspace::PrepareLightingRigAction()
+{
+    const FString Prompt = AssistantPromptBox->GetText().ToString().TrimStartAndEnd();
+    if (Prompt.IsEmpty())
+    {
+        AssistantReply = TEXT("Enter a three-point-lighting request before preparing a rig. Nothing has been executed.");
+        return FReply::Handled();
+    }
+
+    LastRequest = Prompt;
+    LastAssistantAction = ELastAssistantAction::LightingRig;
+    LightingRigReviewAssistant->Reset();
+    FString SelectionError;
+    AActor* SubjectActor = nullptr;
+    ACameraActor* CameraActor = nullptr;
+    TArray<ALight*> LightActors;
+    if (!GetSelectedLightingRig(
+            SubjectActor, CameraActor, LightActors, SelectionError))
+    {
+        AssistantReply = SelectionError;
+        return FReply::Handled();
+    }
+    if (LightingRigAssistant->StartProposal(
+            Prompt, SubjectActor, CameraActor, LightActors))
+    {
+        AssistantReply = TEXT("I froze the subject identity and bounds, camera viewpoint, and three local-light identities, locations, units, and properties. I am preparing a bounded Key/Fill/Rim proposal; no scene change has been applied.");
+    }
+    else
+    {
+        AssistantReply = LightingRigAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::ReviewAppliedLightingRigAction()
+{
+    LastAssistantAction = ELastAssistantAction::LightingRigReview;
+    if (LightingRigReviewAssistant->StartReview())
+    {
+        AssistantReply = TEXT("I am capturing one Lit PNG from the frozen rig camera, restoring your active perspective viewport, and asking the local vision model to assess exposure, Fill balance, and Rim separation. No level change has been applied.");
+    }
+    else
+    {
+        AssistantReply = LightingRigReviewAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
 FReply SRenderMasterWorkspace::PrepareCameraAction()
 {
     const FString Prompt = AssistantPromptBox->GetText().ToString().TrimStartAndEnd();
@@ -824,21 +1218,38 @@ FReply SRenderMasterWorkspace::PrepareCameraAction()
     }
 
     LastRequest = Prompt;
-    LastAssistantAction = ELastAssistantAction::Camera;
     FString SelectionError;
-    ACameraActor* CameraActor = GetSingleSelectedCamera(SelectionError);
-    if (CameraActor == nullptr)
+    TArray<ACameraActor*> CameraActors;
+    if (!GetSelectedCameras(CameraActors, SelectionError))
     {
         AssistantReply = SelectionError;
         return FReply::Handled();
     }
-    if (CameraAssistant->StartProposal(Prompt, CameraActor))
+    if (CameraActors.Num() == 1)
     {
-        AssistantReply = TEXT("I froze the selected camera identity, type, lens limits, Transform, focus, and exposure compensation, then started preparing a bounded proposal. No scene change has been applied.");
+        LastAssistantAction = ELastAssistantAction::Camera;
+        if (CameraAssistant->StartProposal(Prompt, CameraActors[0]))
+        {
+            AssistantReply = TEXT("I froze the selected camera identity, type, lens limits, Transform, focus, and exposure compensation, then started preparing a bounded proposal. No scene change has been applied.");
+        }
+        else
+        {
+            AssistantReply = CameraAssistant->GetSummaryText().ToString();
+        }
     }
     else
     {
-        AssistantReply = CameraAssistant->GetSummaryText().ToString();
+        LastAssistantAction = ELastAssistantAction::CameraBatch;
+        if (CameraBatchAssistant->StartProposal(Prompt, CameraActors))
+        {
+            AssistantReply = FString::Printf(
+                TEXT("I froze %d selected camera identities, types, lens bounds, Transforms, focus, and exposure values, then started preparing one coordinated proposal. No scene change has been applied."),
+                CameraActors.Num());
+        }
+        else
+        {
+            AssistantReply = CameraBatchAssistant->GetSummaryText().ToString();
+        }
     }
     return FReply::Handled();
 }
@@ -909,6 +1320,51 @@ FReply SRenderMasterWorkspace::RejectLightAction()
     return FReply::Handled();
 }
 
+FReply SRenderMasterWorkspace::ApproveLightingRigAction()
+{
+    LastAssistantAction = ELastAssistantAction::LightingRig;
+    if (LightingRigAssistant->ApplyProposal())
+    {
+        LightingRigReviewAssistant->Reset();
+        AssistantReply = TEXT("The approved Key/Fill/Rim rig was applied to all three captured lights as one grouped Editor action. The subject and camera were not changed, and the level was not saved automatically. Use Ctrl+Z once to undo the rig.");
+    }
+    else
+    {
+        AssistantReply = LightingRigAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::RejectLightingRigAction()
+{
+    LastAssistantAction = ELastAssistantAction::LightingRig;
+    LightingRigAssistant->RejectProposal();
+    AssistantReply = TEXT("The proposed lighting rig was rejected. No Editor scene change was applied.");
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::ApproveLightingRigReviewAction()
+{
+    LastAssistantAction = ELastAssistantAction::LightingRigReview;
+    if (LightingRigReviewAssistant->ApplyProposal())
+    {
+        AssistantReply = TEXT("The approved intensity-only visual correction was applied to the three rig lights as one grouped Editor action. The level was not saved. One Ctrl+Z restores the pre-correction rig; a second Ctrl+Z restores the original lights.");
+    }
+    else
+    {
+        AssistantReply = LightingRigReviewAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::RejectLightingRigReviewAction()
+{
+    LastAssistantAction = ELastAssistantAction::LightingRigReview;
+    LightingRigReviewAssistant->RejectProposal();
+    AssistantReply = TEXT("The visual intensity correction was rejected. No Editor scene change was applied.");
+    return FReply::Handled();
+}
+
 FReply SRenderMasterWorkspace::ApproveCameraAction()
 {
     LastAssistantAction = ELastAssistantAction::Camera;
@@ -931,6 +1387,197 @@ FReply SRenderMasterWorkspace::RejectCameraAction()
     return FReply::Handled();
 }
 
+FReply SRenderMasterWorkspace::ApproveCameraBatchAction()
+{
+    LastAssistantAction = ELastAssistantAction::CameraBatch;
+    if (CameraBatchAssistant->ApplyProposal())
+    {
+        AssistantReply = TEXT("The approved coordinated camera properties were applied to the complete captured selection as one grouped Editor action. The level was not saved automatically. Use Ctrl+Z once to undo the batch.");
+    }
+    else
+    {
+        AssistantReply = CameraBatchAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::RejectCameraBatchAction()
+{
+    LastAssistantAction = ELastAssistantAction::CameraBatch;
+    CameraBatchAssistant->RejectProposal();
+    AssistantReply = TEXT("The coordinated camera proposal was rejected. No Editor scene change was applied.");
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::PreparePerformanceAction()
+{
+    const FString Prompt = AssistantPromptBox->GetText().ToString().TrimStartAndEnd();
+    if (Prompt.IsEmpty())
+    {
+        AssistantReply = TEXT("Enter a performance review or bounded component-setting request before preparing the review. Nothing has been executed.");
+        return FReply::Handled();
+    }
+
+    LastRequest = Prompt;
+    LastAssistantAction = ELastAssistantAction::Performance;
+    FString SelectionError;
+    TArray<AStaticMeshActor*> Actors;
+    if (!GetSelectedStaticMeshActors(Actors, SelectionError))
+    {
+        AssistantReply = SelectionError;
+        return FReply::Handled();
+    }
+    if (PerformanceAssistant->StartProposal(Prompt, Actors))
+    {
+        AssistantReply = FString::Printf(
+            TEXT("I froze measured mesh, LOD, material, Nanite, collision, Tick, shadow, culling, and bounds evidence for %d selected StaticMeshActors. I am preparing an evidence-backed review; no scene change has been applied."),
+            Actors.Num());
+    }
+    else
+    {
+        AssistantReply = PerformanceAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::ApprovePerformanceAction()
+{
+    LastAssistantAction = ELastAssistantAction::Performance;
+    if (PerformanceAssistant->ApplyProposal())
+    {
+        AssistantReply = TEXT("The approved Cast Shadow and Max Draw Distance settings were applied to the complete captured selection as one grouped Editor action. The level was not saved automatically. Use Ctrl+Z once to undo the batch.");
+    }
+    else
+    {
+        AssistantReply = PerformanceAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::RejectPerformanceAction()
+{
+    LastAssistantAction = ELastAssistantAction::Performance;
+    PerformanceAssistant->RejectProposal();
+    AssistantReply = TEXT("The performance review or proposed settings were dismissed. No Editor scene change was applied.");
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::PrepareRuntimePerformanceAction()
+{
+    const FString Prompt = AssistantPromptBox->GetText().ToString().TrimStartAndEnd();
+    if (Prompt.IsEmpty())
+    {
+        AssistantReply = TEXT("Enter a runtime performance question before starting the PIE/SIE capture. Nothing has been changed.");
+        return FReply::Handled();
+    }
+    LastRequest = Prompt;
+    LastAssistantAction = ELastAssistantAction::RuntimePerformance;
+    if (RuntimePerformanceAssistant->StartReview(Prompt))
+    {
+        AssistantReply = TEXT("I am warming up the active PIE/SIE viewport, then capturing 120 consecutive frame, thread, GPU, process-memory, and RHI texture-memory samples. Keep the camera and workload representative. This review is read-only.");
+    }
+    else
+    {
+        AssistantReply = RuntimePerformanceAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::DismissRuntimePerformanceAction()
+{
+    LastAssistantAction = ELastAssistantAction::RuntimePerformance;
+    RuntimePerformanceAssistant->Dismiss();
+    AssistantReply = TEXT("The runtime performance capture or review was dismissed. No Editor scene change was applied.");
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::PrepareInsightsGpuAction()
+{
+    const FString Prompt = AssistantPromptBox->GetText().ToString().TrimStartAndEnd();
+    if (Prompt.IsEmpty())
+    {
+        AssistantReply = TEXT("Enter a GPU scope performance question before starting the Unreal Insights trace. Nothing has been changed.");
+        return FReply::Handled();
+    }
+    LastRequest = Prompt;
+    LastAssistantAction = ELastAssistantAction::InsightsGpu;
+    if (InsightsGpuAssistant->StartReview(Prompt))
+    {
+        AssistantReply = TEXT("I am recording five seconds of CPU, GPU, frame, and bookmark trace channels from the active PIE/SIE workload. Unreal will parse the resulting GPU timelines before the local model sees any evidence. No scene property is being changed.");
+    }
+    else
+    {
+        AssistantReply = InsightsGpuAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::PrepareActorGpuImpactAction()
+{
+    const FString Prompt = AssistantPromptBox->GetText().ToString().TrimStartAndEnd();
+    if (Prompt.IsEmpty())
+    {
+        AssistantReply = TEXT("Enter a selected-Actor GPU impact question before starting the A/B experiment. Nothing has been changed.");
+        return FReply::Handled();
+    }
+    FString SelectionError;
+    AActor* SelectedActor = GetSingleSelectedActor(SelectionError);
+    if (SelectedActor == nullptr)
+    {
+        AssistantReply = SelectionError;
+        return FReply::Handled();
+    }
+    LastRequest = Prompt;
+    LastAssistantAction = ELastAssistantAction::InsightsGpu;
+    if (InsightsGpuAssistant->StartActorImpactReview(Prompt, SelectedActor))
+    {
+        AssistantReply = TEXT("I am capturing an Actor-visible baseline, then I will temporarily hide only the selected Actor in PIE/SIE, warm the renderer, capture the hidden variant, and restore the Actor before analysis. Keep the camera and workload unchanged. The formal level is never edited or saved.");
+    }
+    else
+    {
+        AssistantReply = InsightsGpuAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::OpenInsightsGpuTraceAction()
+{
+    LastAssistantAction = ELastAssistantAction::InsightsGpu;
+    FString Error;
+    if (InsightsGpuAssistant->OpenTraceInInsights(Error))
+    {
+        AssistantReply = TEXT("The preserved trace is opening in Unreal Insights. Use its GPU tracks to inspect the same raw timeline behind the Assistant review.");
+    }
+    else
+    {
+        AssistantReply = Error;
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::OpenInsightsGpuBaselineTraceAction()
+{
+    LastAssistantAction = ELastAssistantAction::InsightsGpu;
+    FString Error;
+    if (InsightsGpuAssistant->OpenBaselineTraceInInsights(Error))
+    {
+        AssistantReply = TEXT("The Actor-visible baseline is opening in Unreal Insights. Compare it with the preserved Actor-hidden trace; the Assistant report uses only scopes present in both Top-64 sets.");
+    }
+    else
+    {
+        AssistantReply = Error;
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::DismissInsightsGpuAction()
+{
+    LastAssistantAction = ELastAssistantAction::InsightsGpu;
+    InsightsGpuAssistant->Dismiss();
+    AssistantReply = TEXT("The GPU scope review was dismissed. No Editor scene change was applied, and the .utrace artifact remains in the workflow folder.");
+    return FReply::Handled();
+}
+
 void SRenderMasterWorkspace::SetPage(int32 PageIndex)
 {
     ActivePage = FMath::Clamp(PageIndex, 0, 1);
@@ -943,14 +1590,29 @@ bool SRenderMasterWorkspace::CanPrepareAssistantAction() const
         || !MaterialAssistant.IsValid()
         || !TransformAssistant.IsValid()
         || !LightAssistant.IsValid()
-        || !CameraAssistant.IsValid())
+        || !LightingRigAssistant.IsValid()
+        || !LightingRigReviewAssistant.IsValid()
+        || !CameraAssistant.IsValid()
+        || !CameraBatchAssistant.IsValid()
+        || !PerformanceAssistant.IsValid()
+        || !RuntimePerformanceAssistant.IsValid()
+        || !InsightsGpuAssistant.IsValid())
     {
         return false;
     }
     const ERenderMasterMaterialAssistantState MaterialState = MaterialAssistant->GetState();
     const ERenderMasterTransformAssistantState TransformState = TransformAssistant->GetState();
     const ERenderMasterLightAssistantState LightState = LightAssistant->GetState();
+    const ERenderMasterLightingRigAssistantState RigState = LightingRigAssistant->GetState();
+    const ERenderMasterLightingRigReviewState RigReviewState =
+        LightingRigReviewAssistant->GetState();
     const ERenderMasterCameraAssistantState CameraState = CameraAssistant->GetState();
+    const ERenderMasterCameraBatchAssistantState CameraBatchState =
+        CameraBatchAssistant->GetState();
+    const ERenderMasterPerformanceAssistantState PerformanceState =
+        PerformanceAssistant->GetState();
+    const bool bRuntimePerformancePending = RuntimePerformanceAssistant->IsBusy();
+    const bool bInsightsGpuPending = InsightsGpuAssistant->IsBusy();
     const bool bMaterialPending = MaterialState == ERenderMasterMaterialAssistantState::Searching
         || MaterialState == ERenderMasterMaterialAssistantState::Importing
         || MaterialState == ERenderMasterMaterialAssistantState::Proposed;
@@ -958,17 +1620,40 @@ bool SRenderMasterWorkspace::CanPrepareAssistantAction() const
         || TransformState == ERenderMasterTransformAssistantState::Proposed;
     const bool bLightPending = LightState == ERenderMasterLightAssistantState::Planning
         || LightState == ERenderMasterLightAssistantState::Proposed;
+    const bool bRigPending = RigState == ERenderMasterLightingRigAssistantState::Planning
+        || RigState == ERenderMasterLightingRigAssistantState::Proposed;
+    const bool bRigReviewPending =
+        RigReviewState == ERenderMasterLightingRigReviewState::Capturing
+        || RigReviewState == ERenderMasterLightingRigReviewState::Evaluating
+        || RigReviewState == ERenderMasterLightingRigReviewState::Proposed;
     const bool bCameraPending = CameraState == ERenderMasterCameraAssistantState::Planning
         || CameraState == ERenderMasterCameraAssistantState::Proposed;
+    const bool bCameraBatchPending =
+        CameraBatchState == ERenderMasterCameraBatchAssistantState::Planning
+        || CameraBatchState == ERenderMasterCameraBatchAssistantState::Proposed;
+    const bool bPerformancePending =
+        PerformanceState == ERenderMasterPerformanceAssistantState::Planning
+        || PerformanceState == ERenderMasterPerformanceAssistantState::Proposed;
     return Controller->CanStart()
         && MaterialAssistant->CanStart()
         && TransformAssistant->CanStart()
         && LightAssistant->CanStart()
+        && LightingRigAssistant->CanStart()
         && CameraAssistant->CanStart()
+        && CameraBatchAssistant->CanStart()
+        && PerformanceAssistant->CanStart()
+        && RuntimePerformanceAssistant->CanStart()
+        && InsightsGpuAssistant->CanStart()
         && !bMaterialPending
         && !bTransformPending
         && !bLightPending
-        && !bCameraPending;
+        && !bRigPending
+        && !bRigReviewPending
+        && !bCameraPending
+        && !bCameraBatchPending
+        && !bPerformancePending
+        && !bRuntimePerformancePending
+        && !bInsightsGpuPending;
 }
 
 FText SRenderMasterWorkspace::GetProjectContext() const
@@ -1014,6 +1699,79 @@ FText SRenderMasterWorkspace::GetSelectionContext() const
 
 FText SRenderMasterWorkspace::GetAssistantReply() const
 {
+    if (LastAssistantAction == ELastAssistantAction::InsightsGpu
+        && InsightsGpuAssistant.IsValid())
+    {
+        const ERenderMasterInsightsGpuState State = InsightsGpuAssistant->GetState();
+        if (InsightsGpuAssistant->IsBusy()
+            || State == ERenderMasterInsightsGpuState::Complete
+            || State == ERenderMasterInsightsGpuState::Unresolved
+            || State == ERenderMasterInsightsGpuState::Failed)
+        {
+            return InsightsGpuAssistant->GetSummaryText();
+        }
+    }
+    if (LastAssistantAction == ELastAssistantAction::RuntimePerformance
+        && RuntimePerformanceAssistant.IsValid())
+    {
+        const ERenderMasterRuntimePerformanceState State =
+            RuntimePerformanceAssistant->GetState();
+        if (RuntimePerformanceAssistant->IsBusy()
+            || State == ERenderMasterRuntimePerformanceState::Complete
+            || State == ERenderMasterRuntimePerformanceState::Unresolved
+            || State == ERenderMasterRuntimePerformanceState::Failed)
+        {
+            return RuntimePerformanceAssistant->GetSummaryText();
+        }
+    }
+    if (LastAssistantAction == ELastAssistantAction::Performance
+        && PerformanceAssistant.IsValid())
+    {
+        const ERenderMasterPerformanceAssistantState State =
+            PerformanceAssistant->GetState();
+        if (PerformanceAssistant->IsPlanning()
+            || State == ERenderMasterPerformanceAssistantState::Proposed
+            || State == ERenderMasterPerformanceAssistantState::ReviewOnly
+            || State == ERenderMasterPerformanceAssistantState::Unresolved
+            || State == ERenderMasterPerformanceAssistantState::Failed)
+        {
+            return PerformanceAssistant->GetSummaryText();
+        }
+    }
+    if (LastAssistantAction == ELastAssistantAction::LightingRigReview
+        && LightingRigReviewAssistant.IsValid())
+    {
+        const ERenderMasterLightingRigReviewState State =
+            LightingRigReviewAssistant->GetState();
+        if (LightingRigReviewAssistant->IsBusy()
+            || State == ERenderMasterLightingRigReviewState::Proposed
+            || State == ERenderMasterLightingRigReviewState::Passed
+            || State == ERenderMasterLightingRigReviewState::Unresolved
+            || State == ERenderMasterLightingRigReviewState::Failed)
+        {
+            return LightingRigReviewAssistant->GetSummaryText();
+        }
+    }
+    if (LastAssistantAction == ELastAssistantAction::LightingRig
+        && LightingRigAssistant.IsValid())
+    {
+        if (LightingRigAssistant->IsPlanning())
+        {
+            return LightingRigAssistant->GetSummaryText();
+        }
+        if (LightingRigAssistant->GetState()
+            == ERenderMasterLightingRigAssistantState::Proposed)
+        {
+            return LOCTEXT("LightingRigProposedReply", "I prepared one subject- and camera-aware Key/Fill/Rim action. Review every role, selected light, location, intensity, unit, and complete Before/After evidence before approving.");
+        }
+        if (LightingRigAssistant->GetState()
+                == ERenderMasterLightingRigAssistantState::Unresolved
+            || LightingRigAssistant->GetState()
+                == ERenderMasterLightingRigAssistantState::Failed)
+        {
+            return LightingRigAssistant->GetSummaryText();
+        }
+    }
     if (LastAssistantAction == ELastAssistantAction::Camera && CameraAssistant.IsValid())
     {
         if (CameraAssistant->IsPlanning())
@@ -1028,6 +1786,28 @@ FText SRenderMasterWorkspace::GetAssistantReply() const
             || CameraAssistant->GetState() == ERenderMasterCameraAssistantState::Failed)
         {
             return CameraAssistant->GetSummaryText();
+        }
+    }
+    if (LastAssistantAction == ELastAssistantAction::CameraBatch
+        && CameraBatchAssistant.IsValid())
+    {
+        if (CameraBatchAssistant->IsPlanning())
+        {
+            return CameraBatchAssistant->GetSummaryText();
+        }
+        if (CameraBatchAssistant->GetState()
+            == ERenderMasterCameraBatchAssistantState::Proposed)
+        {
+            return LOCTEXT(
+                "CameraBatchProposedReply",
+                "I prepared one coordinated camera action for the complete frozen selection. Review every camera, lens bound, changed property, and Before/After value before approving.");
+        }
+        if (CameraBatchAssistant->GetState()
+                == ERenderMasterCameraBatchAssistantState::Unresolved
+            || CameraBatchAssistant->GetState()
+                == ERenderMasterCameraBatchAssistantState::Failed)
+        {
+            return CameraBatchAssistant->GetSummaryText();
         }
     }
     if (LastAssistantAction == ELastAssistantAction::Light && LightAssistant.IsValid())
@@ -1212,6 +1992,64 @@ EVisibility SRenderMasterWorkspace::GetLightRejectVisibility() const
         : EVisibility::Collapsed;
 }
 
+EVisibility SRenderMasterWorkspace::GetLightingRigProposalVisibility() const
+{
+    if (!LightingRigAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterLightingRigAssistantState State = LightingRigAssistant->GetState();
+    return State == ERenderMasterLightingRigAssistantState::Ready
+        || State == ERenderMasterLightingRigAssistantState::Rejected
+        ? EVisibility::Collapsed
+        : EVisibility::Visible;
+}
+
+EVisibility SRenderMasterWorkspace::GetLightingRigApplyVisibility() const
+{
+    return LightingRigAssistant.IsValid() && LightingRigAssistant->CanApply()
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetLightingRigRejectVisibility() const
+{
+    if (!LightingRigAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterLightingRigAssistantState State = LightingRigAssistant->GetState();
+    return State == ERenderMasterLightingRigAssistantState::Planning
+        || State == ERenderMasterLightingRigAssistantState::Proposed
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetLightingRigReviewVisibility() const
+{
+    if (!LightingRigReviewAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterLightingRigReviewState State =
+        LightingRigReviewAssistant->GetState();
+    return State == ERenderMasterLightingRigReviewState::Ready
+        || State == ERenderMasterLightingRigReviewState::Rejected
+        ? EVisibility::Collapsed
+        : EVisibility::Visible;
+}
+
+EVisibility SRenderMasterWorkspace::GetLightingRigReviewApplyVisibility() const
+{
+    return LightingRigReviewAssistant.IsValid()
+        && LightingRigReviewAssistant->CanApply()
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetLightingRigReviewRejectVisibility() const
+{
+    if (!LightingRigReviewAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterLightingRigReviewState State =
+        LightingRigReviewAssistant->GetState();
+    return State == ERenderMasterLightingRigReviewState::Capturing
+        || State == ERenderMasterLightingRigReviewState::Evaluating
+        || State == ERenderMasterLightingRigReviewState::Proposed
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
 EVisibility SRenderMasterWorkspace::GetCameraProposalVisibility() const
 {
     if (!CameraAssistant.IsValid()) return EVisibility::Collapsed;
@@ -1235,6 +2073,128 @@ EVisibility SRenderMasterWorkspace::GetCameraRejectVisibility() const
     const ERenderMasterCameraAssistantState State = CameraAssistant->GetState();
     return State == ERenderMasterCameraAssistantState::Planning
         || State == ERenderMasterCameraAssistantState::Proposed
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetCameraBatchProposalVisibility() const
+{
+    if (!CameraBatchAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterCameraBatchAssistantState State =
+        CameraBatchAssistant->GetState();
+    return State == ERenderMasterCameraBatchAssistantState::Ready
+        || State == ERenderMasterCameraBatchAssistantState::Rejected
+        ? EVisibility::Collapsed
+        : EVisibility::Visible;
+}
+
+EVisibility SRenderMasterWorkspace::GetCameraBatchApplyVisibility() const
+{
+    return CameraBatchAssistant.IsValid() && CameraBatchAssistant->CanApply()
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetCameraBatchRejectVisibility() const
+{
+    if (!CameraBatchAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterCameraBatchAssistantState State =
+        CameraBatchAssistant->GetState();
+    return State == ERenderMasterCameraBatchAssistantState::Planning
+        || State == ERenderMasterCameraBatchAssistantState::Proposed
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetPerformanceProposalVisibility() const
+{
+    if (!PerformanceAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterPerformanceAssistantState State =
+        PerformanceAssistant->GetState();
+    return State == ERenderMasterPerformanceAssistantState::Ready
+        || State == ERenderMasterPerformanceAssistantState::Rejected
+        ? EVisibility::Collapsed
+        : EVisibility::Visible;
+}
+
+EVisibility SRenderMasterWorkspace::GetPerformanceApplyVisibility() const
+{
+    return PerformanceAssistant.IsValid() && PerformanceAssistant->CanApply()
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetPerformanceRejectVisibility() const
+{
+    if (!PerformanceAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterPerformanceAssistantState State =
+        PerformanceAssistant->GetState();
+    return State == ERenderMasterPerformanceAssistantState::Planning
+        || State == ERenderMasterPerformanceAssistantState::Proposed
+        || State == ERenderMasterPerformanceAssistantState::ReviewOnly
+        || State == ERenderMasterPerformanceAssistantState::Unresolved
+        || State == ERenderMasterPerformanceAssistantState::Failed
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetRuntimePerformanceVisibility() const
+{
+    if (!RuntimePerformanceAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterRuntimePerformanceState State =
+        RuntimePerformanceAssistant->GetState();
+    return State == ERenderMasterRuntimePerformanceState::Ready
+        || State == ERenderMasterRuntimePerformanceState::Dismissed
+        ? EVisibility::Collapsed
+        : EVisibility::Visible;
+}
+
+EVisibility SRenderMasterWorkspace::GetRuntimePerformanceDismissVisibility() const
+{
+    return RuntimePerformanceAssistant.IsValid()
+        && RuntimePerformanceAssistant->GetState()
+            != ERenderMasterRuntimePerformanceState::Ready
+        && RuntimePerformanceAssistant->GetState()
+            != ERenderMasterRuntimePerformanceState::Dismissed
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetInsightsGpuVisibility() const
+{
+    if (!InsightsGpuAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterInsightsGpuState State = InsightsGpuAssistant->GetState();
+    return State == ERenderMasterInsightsGpuState::Ready
+        || State == ERenderMasterInsightsGpuState::Dismissed
+        ? EVisibility::Collapsed
+        : EVisibility::Visible;
+}
+
+EVisibility SRenderMasterWorkspace::GetInsightsGpuOpenVisibility() const
+{
+    return InsightsGpuAssistant.IsValid()
+        && InsightsGpuAssistant->CanOpenTrace()
+        && !InsightsGpuAssistant->IsBusy()
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetInsightsGpuBaselineOpenVisibility() const
+{
+    return InsightsGpuAssistant.IsValid()
+        && InsightsGpuAssistant->CanOpenBaselineTrace()
+        && !InsightsGpuAssistant->IsBusy()
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetInsightsGpuDismissVisibility() const
+{
+    return InsightsGpuAssistant.IsValid()
+        && InsightsGpuAssistant->GetState()
+            != ERenderMasterInsightsGpuState::Ready
+        && InsightsGpuAssistant->GetState()
+            != ERenderMasterInsightsGpuState::Dismissed
         ? EVisibility::Visible
         : EVisibility::Collapsed;
 }
@@ -1302,6 +2262,65 @@ bool SRenderMasterWorkspace::GetSelectedLights(
     return true;
 }
 
+bool SRenderMasterWorkspace::GetSelectedLightingRig(
+    AActor*& OutSubject,
+    ACameraActor*& OutCamera,
+    TArray<ALight*>& OutLights,
+    FString& OutError) const
+{
+    OutSubject = nullptr;
+    OutCamera = nullptr;
+    OutLights.Reset();
+    if (GEditor == nullptr || GEditor->GetSelectedActors() == nullptr)
+    {
+        OutError = TEXT("The Unreal selection service is unavailable.");
+        return false;
+    }
+    int32 ActorCount = 0;
+    for (FSelectionIterator Iterator(*GEditor->GetSelectedActors()); Iterator; ++Iterator)
+    {
+        AActor* Actor = Cast<AActor>(*Iterator);
+        if (Actor == nullptr) continue;
+        ++ActorCount;
+        if (ALight* Light = Cast<ALight>(Actor))
+        {
+            OutLights.Add(Light);
+        }
+        else if (ACameraActor* CameraActor = Cast<ACameraActor>(Actor))
+        {
+            if (OutCamera != nullptr)
+            {
+                OutError = TEXT("Select exactly one Camera or Cine Camera for a lighting rig.");
+                return false;
+            }
+            OutCamera = CameraActor;
+        }
+        else
+        {
+            if (OutSubject != nullptr)
+            {
+                OutError = TEXT("Select exactly one non-Light, non-Camera subject Actor for a lighting rig.");
+                return false;
+            }
+            OutSubject = Actor;
+        }
+    }
+    if (ActorCount != 5 || OutSubject == nullptr || OutCamera == nullptr
+        || OutLights.Num() != 3)
+    {
+        OutError = TEXT("Select exactly five Actors: one subject, one perspective Camera/Cine Camera, and three Movable Point/Spot/Rect Lights.");
+        OutSubject = nullptr;
+        OutCamera = nullptr;
+        OutLights.Reset();
+        return false;
+    }
+    OutLights.Sort([](const ALight& Left, const ALight& Right)
+    {
+        return Left.GetPathName() < Right.GetPathName();
+    });
+    return true;
+}
+
 AActor* SRenderMasterWorkspace::GetSingleSelectedActor(FString& OutError) const
 {
     if (GEditor == nullptr || GEditor->GetSelectedActors() == nullptr)
@@ -1352,6 +2371,79 @@ ACameraActor* SRenderMasterWorkspace::GetSingleSelectedCamera(FString& OutError)
         return nullptr;
     }
     return CameraActor;
+}
+
+bool SRenderMasterWorkspace::GetSelectedCameras(
+    TArray<ACameraActor*>& OutCameras,
+    FString& OutError) const
+{
+    OutCameras.Reset();
+    if (GEditor == nullptr || GEditor->GetSelectedActors() == nullptr)
+    {
+        OutError = TEXT("The Unreal selection service is unavailable.");
+        return false;
+    }
+    for (FSelectionIterator Iterator(*GEditor->GetSelectedActors()); Iterator; ++Iterator)
+    {
+        AActor* Actor = Cast<AActor>(*Iterator);
+        ACameraActor* Camera = Cast<ACameraActor>(Actor);
+        if (Camera == nullptr || Camera->GetCameraComponent() == nullptr)
+        {
+            OutError = TEXT("Select only Camera Actor or Cine Camera Actor targets for a camera action.");
+            OutCameras.Reset();
+            return false;
+        }
+        OutCameras.Add(Camera);
+    }
+    if (OutCameras.IsEmpty() || OutCameras.Num() > 16)
+    {
+        OutError = TEXT("Select between one and 16 Camera or Cine Camera Actors.");
+        OutCameras.Reset();
+        return false;
+    }
+    OutCameras.Sort([](const ACameraActor& Left, const ACameraActor& Right)
+    {
+        return Left.GetPathName() < Right.GetPathName();
+    });
+    return true;
+}
+
+bool SRenderMasterWorkspace::GetSelectedStaticMeshActors(
+    TArray<AStaticMeshActor*>& OutActors,
+    FString& OutError) const
+{
+    OutActors.Reset();
+    if (GEditor == nullptr || GEditor->GetSelectedActors() == nullptr)
+    {
+        OutError = TEXT("The Unreal selection service is unavailable.");
+        return false;
+    }
+    for (FSelectionIterator Iterator(*GEditor->GetSelectedActors()); Iterator; ++Iterator)
+    {
+        AActor* Actor = Cast<AActor>(*Iterator);
+        AStaticMeshActor* StaticMeshActor = Cast<AStaticMeshActor>(Actor);
+        if (StaticMeshActor == nullptr
+            || StaticMeshActor->GetClass() != AStaticMeshActor::StaticClass()
+            || StaticMeshActor->GetStaticMeshComponent() == nullptr
+            || StaticMeshActor->GetStaticMeshComponent()->GetStaticMesh() == nullptr)
+        {
+            OutError = TEXT("Select only native StaticMeshActors with valid Static Mesh assets for this performance review.");
+            OutActors.Reset();
+            return false;
+        }
+        OutActors.Add(StaticMeshActor);
+    }
+    if (OutActors.IsEmpty() || OutActors.Num() > 32)
+    {
+        OutError = TEXT("Select between one and 32 StaticMeshActors for a performance review.");
+        OutActors.Reset();
+        return false;
+    }
+    OutActors.Sort([](const AStaticMeshActor& Left, const AStaticMeshActor& Right)
+    {
+        return Left.GetPathName() < Right.GetPathName();
+    });
+    return true;
 }
 
 UStaticMeshComponent* SRenderMasterWorkspace::GetSingleSelectedStaticMeshComponent(

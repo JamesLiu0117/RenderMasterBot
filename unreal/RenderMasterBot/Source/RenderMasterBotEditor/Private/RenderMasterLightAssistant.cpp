@@ -439,6 +439,46 @@ bool SetLightSnapshot(
 }
 }
 
+FString RenderMasterGetLightKind(const ULightComponent* LightComponent)
+{
+    return LightKind(LightComponent);
+}
+
+FString RenderMasterGetLightUnit(const ULightComponent* LightComponent)
+{
+    return LightUnit(LightComponent);
+}
+
+FRenderMasterLightSnapshot RenderMasterSnapshotLight(
+    const ALight* LightActor,
+    const ULightComponent* LightComponent)
+{
+    return SnapshotLight(LightActor, LightComponent);
+}
+
+bool RenderMasterLightSnapshotsMatch(
+    const FRenderMasterLightSnapshot& A,
+    const FRenderMasterLightSnapshot& B)
+{
+    return SnapshotsMatch(A, B);
+}
+
+bool RenderMasterIsBoundedLightSnapshot(
+    const FRenderMasterLightSnapshot& Snapshot,
+    const FString& LightKindValue)
+{
+    return IsBoundedSnapshot(Snapshot, LightKindValue);
+}
+
+bool RenderMasterSetLightSnapshot(
+    ALight* LightActor,
+    ULightComponent* LightComponent,
+    const FRenderMasterLightSnapshot& Before,
+    const FRenderMasterLightSnapshot& After)
+{
+    return SetLightSnapshot(LightActor, LightComponent, Before, After);
+}
+
 bool FRenderMasterLightProposal::LoadFromFile(
     const FString& Filename,
     FRenderMasterLightProposal& OutProposal,

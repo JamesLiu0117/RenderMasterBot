@@ -1,0 +1,94 @@
+{
+  "schema_version": "0.1",
+  "capture_id": "insights_example_001",
+  "captured_at_utc": "2026-08-19T18:30:00Z",
+  "project_name": "OptimizationPlugin",
+  "world_path": "/Game/Maps/PerformanceLab",
+  "capture_mode": "pie",
+  "requested_duration_seconds": 5.0,
+  "captured_duration_seconds": 5.03,
+  "analyzed_trace_duration_seconds": 5.11,
+  "viewport_width_px": 1920,
+  "viewport_height_px": 1080,
+  "gpu_name": "Example D3D12 Adapter",
+  "trace_file_name": "gpu_scope_capture.utrace",
+  "trace_file_size_bytes": 1048576,
+  "trace_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "channels": [
+    "cpu",
+    "gpu",
+    "frame",
+    "bookmark"
+  ],
+  "gpu_queue_count": 2,
+  "total_gpu_event_count": 120,
+  "queues": [
+    {
+      "queue_id": "queue_000",
+      "display_name": "GPU0-Graphics0",
+      "gpu_index": 0,
+      "queue_index": 0,
+      "queue_type": 0,
+      "event_count": 100
+    },
+    {
+      "queue_id": "queue_001",
+      "display_name": "GPU0-Compute0",
+      "gpu_index": 0,
+      "queue_index": 0,
+      "queue_type": 1,
+      "event_count": 20
+    }
+  ],
+  "scopes": [
+    {
+      "scope_id": "scope_000",
+      "queue_id": "queue_000",
+      "name": "LumenSceneLighting",
+      "instance_count": 10,
+      "total_inclusive_ms": 50.0,
+      "mean_inclusive_ms": 5.0,
+      "max_inclusive_ms": 8.0,
+      "min_depth": 1,
+      "max_depth": 2
+    },
+    {
+      "scope_id": "scope_001",
+      "queue_id": "queue_000",
+      "name": "ShadowDepths",
+      "instance_count": 20,
+      "total_inclusive_ms": 40.0,
+      "mean_inclusive_ms": 2.0,
+      "max_inclusive_ms": 4.0,
+      "min_depth": 1,
+      "max_depth": 3
+    },
+    {
+      "scope_id": "scope_002",
+      "queue_id": "queue_000",
+      "name": "BasePass",
+      "instance_count": 20,
+      "total_inclusive_ms": 30.0,
+      "mean_inclusive_ms": 1.5,
+      "max_inclusive_ms": 2.5,
+      "min_depth": 1,
+      "max_depth": 2
+    },
+    {
+      "scope_id": "scope_003",
+      "queue_id": "queue_001",
+      "name": "PostProcessing",
+      "instance_count": 40,
+      "total_inclusive_ms": 20.0,
+      "mean_inclusive_ms": 0.5,
+      "max_inclusive_ms": 1.0,
+      "min_depth": 0,
+      "max_depth": 1
+    }
+  ],
+  "measurement_notes": [
+    "GPU scope times are inclusive and nested totals can overlap; do not sum them as frame time.",
+    "This trace was captured in Unreal Editor PIE and does not prove packaged-build performance.",
+    "GPU scopes identify render work, not the Actor, asset, material, or shader that caused it."
+  ]
+}

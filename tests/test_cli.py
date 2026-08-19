@@ -1,8 +1,10 @@
 import json
+import hashlib
 import tempfile
 import unittest
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from render_master_bot.cli import (
@@ -10,6 +12,8 @@ from render_master_bot.cli import (
     _read_run_prompt,
     _write_json,
     build_parser,
+    cmd_assistant_actor_gpu_impact_review,
+    cmd_assistant_insights_gpu_review,
 )
 
 
@@ -423,6 +427,56 @@ class CliOutputTests(unittest.TestCase):
         self.assertEqual(args.proposal_id, "light_batch_001")
         self.assertEqual(args.output, "light_batch_proposal.json")
 
+    def test_assistant_lighting_rig_parser_keeps_context_model_and_output_explicit(self):
+        args = build_parser().parse_args(
+            [
+                "assistant-lighting-rig-propose",
+                "--prompt-file",
+                "request.txt",
+                "--context",
+                "lighting_rig_context.json",
+                "--model",
+                "planner",
+                "--proposal-id",
+                "rig_001",
+                "--output",
+                "lighting_rig_proposal.json",
+            ]
+        )
+        self.assertIsNone(args.prompt)
+        self.assertEqual(args.prompt_file, "request.txt")
+        self.assertEqual(args.context, "lighting_rig_context.json")
+        self.assertEqual(args.model, "planner")
+        self.assertEqual(args.proposal_id, "rig_001")
+        self.assertEqual(args.output, "lighting_rig_proposal.json")
+
+    def test_assistant_lighting_review_parser_keeps_png_and_vision_model_explicit(self):
+        args = build_parser().parse_args(
+            [
+                "assistant-lighting-rig-review",
+                "--prompt",
+                "Review and improve the applied rig",
+                "--context",
+                "lighting_rig_review_context.json",
+                "--preview",
+                "lighting_rig_preview.png",
+                "--model",
+                "vision-model",
+                "--proposal-id",
+                "rig_review_001",
+                "--raw-output",
+                "lighting_rig_review_raw.json",
+                "--output",
+                "lighting_rig_review.json",
+            ]
+        )
+        self.assertEqual(args.context, "lighting_rig_review_context.json")
+        self.assertEqual(args.preview, "lighting_rig_preview.png")
+        self.assertEqual(args.model, "vision-model")
+        self.assertEqual(args.proposal_id, "rig_review_001")
+        self.assertEqual(args.raw_output, "lighting_rig_review_raw.json")
+        self.assertEqual(args.output, "lighting_rig_review.json")
+
     def test_assistant_camera_parser_keeps_context_model_and_output_explicit(self):
         args = build_parser().parse_args(
             [
@@ -444,6 +498,192 @@ class CliOutputTests(unittest.TestCase):
         self.assertEqual(args.model, "planner-model")
         self.assertEqual(args.proposal_id, "camera_001")
         self.assertEqual(args.output, "camera_proposal.json")
+
+    def test_assistant_camera_batch_parser_keeps_selection_and_output_explicit(self):
+        args = build_parser().parse_args(
+            [
+                "assistant-camera-batch-propose",
+                "--prompt-file",
+                "request.txt",
+                "--context",
+                "camera_selection.json",
+                "--model",
+                "planner-model",
+                "--proposal-id",
+                "camera_batch_001",
+                "--output",
+                "camera_batch_proposal.json",
+            ]
+        )
+
+        self.assertIsNone(args.prompt)
+        self.assertEqual(args.prompt_file, "request.txt")
+        self.assertEqual(args.context, "camera_selection.json")
+        self.assertEqual(args.model, "planner-model")
+        self.assertEqual(args.proposal_id, "camera_batch_001")
+        self.assertEqual(args.output, "camera_batch_proposal.json")
+
+    def test_assistant_performance_parser_keeps_selection_and_output_explicit(self):
+        args = build_parser().parse_args(
+            [
+                "assistant-performance-propose",
+                "--prompt-file",
+                "request.txt",
+                "--context",
+                "performance_selection.json",
+                "--model",
+                "planner-model",
+                "--proposal-id",
+                "performance_001",
+                "--output",
+                "performance_proposal.json",
+            ]
+        )
+
+        self.assertIsNone(args.prompt)
+        self.assertEqual(args.prompt_file, "request.txt")
+        self.assertEqual(args.context, "performance_selection.json")
+        self.assertEqual(args.model, "planner-model")
+        self.assertEqual(args.proposal_id, "performance_001")
+        self.assertEqual(args.output, "performance_proposal.json")
+
+    def test_runtime_performance_parser_keeps_capture_and_output_explicit(self):
+        args = build_parser().parse_args(
+            [
+                "assistant-runtime-performance-review",
+                "--prompt",
+                "Diagnose this PIE capture",
+                "--capture",
+                "runtime_capture.json",
+                "--report-id",
+                "runtime_review_001",
+                "--output",
+                "runtime_report.json",
+            ]
+        )
+
+        self.assertEqual(args.capture, "runtime_capture.json")
+        self.assertEqual(args.report_id, "runtime_review_001")
+        self.assertEqual(args.output, "runtime_report.json")
+
+    def test_insights_gpu_handler_passes_exact_capture_file_hash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            capture_path = Path(directory) / "capture.json"
+            output_path = Path(directory) / "report.json"
+            capture_path.write_bytes(b'{"host_written": true}\r\n')
+            args = build_parser().parse_args(
+                [
+                    "assistant-insights-gpu-review",
+                    "--prompt",
+                    "Review this trace",
+                    "--capture",
+                    str(capture_path),
+                    "--output",
+                    str(output_path),
+                ]
+            )
+            report = SimpleNamespace(
+                status="review_complete",
+                capture=SimpleNamespace(gpu_queue_count=1, scopes=[]),
+                findings=[],
+                report_id="insights_test",
+                model_dump=lambda mode: {"status": "review_complete"},
+            )
+            result = SimpleNamespace(
+                report=report,
+                response=SimpleNamespace(model="fake-model"),
+                attempt_count=1,
+                recovery_reason=None,
+            )
+            expected = hashlib.sha256(capture_path.read_bytes()).hexdigest()
+            with patch(
+                "render_master_bot.cli._settings",
+                return_value=SimpleNamespace(planner_model="fake-model"),
+            ), patch(
+                "render_master_bot.cli._client",
+                return_value=object(),
+            ), patch(
+                "render_master_bot.cli.load_insights_gpu_capture",
+                return_value=object(),
+            ), patch(
+                "render_master_bot.cli.review_insights_gpu_capture",
+                return_value=result,
+            ) as review:
+                self.assertEqual(cmd_assistant_insights_gpu_review(args), 0)
+            self.assertEqual(review.call_args.kwargs["source_file_sha256"], expected)
+
+    def test_actor_gpu_impact_parser_keeps_experiment_and_output_explicit(self):
+        args = build_parser().parse_args(
+            [
+                "assistant-actor-gpu-impact-review",
+                "--prompt-file",
+                "request.txt",
+                "--experiment",
+                "actor_gpu_experiment.json",
+                "--model",
+                "planner-model",
+                "--report-id",
+                "actor_gpu_review_001",
+                "--output",
+                "actor_gpu_report.json",
+            ]
+        )
+
+        self.assertIsNone(args.prompt)
+        self.assertEqual(args.prompt_file, "request.txt")
+        self.assertEqual(args.experiment, "actor_gpu_experiment.json")
+        self.assertEqual(args.model, "planner-model")
+        self.assertEqual(args.report_id, "actor_gpu_review_001")
+        self.assertEqual(args.output, "actor_gpu_report.json")
+
+    def test_actor_gpu_impact_handler_passes_exact_experiment_file_hash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            experiment_path = Path(directory) / "experiment.json"
+            output_path = Path(directory) / "report.json"
+            experiment_path.write_bytes(b'{"host_written": true}\r\n')
+            args = build_parser().parse_args(
+                [
+                    "assistant-actor-gpu-impact-review",
+                    "--prompt",
+                    "Measure this selected Actor",
+                    "--experiment",
+                    str(experiment_path),
+                    "--output",
+                    str(output_path),
+                ]
+            )
+            report = SimpleNamespace(
+                status="review_complete",
+                experiment=SimpleNamespace(
+                    target=SimpleNamespace(actor_label="HeroStatue"),
+                    deltas=[object()],
+                ),
+                findings=[],
+                report_id="actor_gpu_test",
+                model_dump=lambda mode: {"status": "review_complete"},
+            )
+            result = SimpleNamespace(
+                report=report,
+                response=SimpleNamespace(model="fake-model"),
+                attempt_count=1,
+                recovery_reason=None,
+            )
+            expected = hashlib.sha256(experiment_path.read_bytes()).hexdigest()
+            with patch(
+                "render_master_bot.cli._settings",
+                return_value=SimpleNamespace(planner_model="fake-model"),
+            ), patch(
+                "render_master_bot.cli._client",
+                return_value=object(),
+            ), patch(
+                "render_master_bot.cli.load_actor_gpu_impact_experiment",
+                return_value=object(),
+            ), patch(
+                "render_master_bot.cli.review_actor_gpu_impact",
+                return_value=result,
+            ) as review:
+                self.assertEqual(cmd_assistant_actor_gpu_impact_review(args), 0)
+            self.assertEqual(review.call_args.kwargs["source_file_sha256"], expected)
 
     def test_external_material_import_parsers_separate_proposal_and_approval(self):
         assistant_external = build_parser().parse_args(

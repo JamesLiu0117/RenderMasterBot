@@ -1,0 +1,57 @@
+{
+  "schema_version": "0.1",
+  "project_name": "OptimizationPlugin",
+  "level_path": "/Game/FirstPerson/Lvl_FirstPerson",
+  "actors": [
+    {
+      "schema_version": "0.1",
+      "project_name": "OptimizationPlugin",
+      "level_path": "/Game/FirstPerson/Lvl_FirstPerson",
+      "actor_name": "BackgroundRock_A",
+      "actor_path": "/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.BackgroundRock_A",
+      "actor_class": "StaticMeshActor",
+      "actor_guid": "11111111111111111111111111111111",
+      "component_name": "StaticMeshComponent0",
+      "component_mobility": "static",
+      "is_editable": true,
+      "is_locked": false,
+      "mesh_path": "/Game/Environment/Rocks/SM_BackgroundRock_A.SM_BackgroundRock_A",
+      "lod_count": 1,
+      "lod0_triangles": 182400,
+      "material_slot_count": 5,
+      "nanite_enabled": false,
+      "collision_mode": "query_and_physics",
+      "component_tick_enabled": false,
+      "bounds_radius_cm": 420.5,
+      "performance": {
+        "cast_shadow": true,
+        "max_draw_distance_cm": 0.0
+      }
+    },
+    {
+      "schema_version": "0.1",
+      "project_name": "OptimizationPlugin",
+      "level_path": "/Game/FirstPerson/Lvl_FirstPerson",
+      "actor_name": "BackgroundRock_B",
+      "actor_path": "/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.BackgroundRock_B",
+      "actor_class": "StaticMeshActor",
+      "actor_guid": "22222222222222222222222222222222",
+      "component_name": "StaticMeshComponent0",
+      "component_mobility": "static",
+      "is_editable": true,
+      "is_locked": false,
+      "mesh_path": "/Game/Environment/Rocks/SM_BackgroundRock_B.SM_BackgroundRock_B",
+      "lod_count": 4,
+      "lod0_triangles": 28600,
+      "material_slot_count": 2,
+      "nanite_enabled": true,
+      "collision_mode": "query_only",
+      "component_tick_enabled": false,
+      "bounds_radius_cm": 315.25,
+      "performance": {
+        "cast_shadow": true,
+        "max_draw_distance_cm": 0.0
+      }
+    }
+  ]
+}

@@ -1,0 +1,264 @@
+{
+  "schema_version": "0.1",
+  "experiment_id": "actor_gpu_impact_example_001",
+  "created_at_utc": "2026-08-19T19:00:00Z",
+  "method": "temporary_runtime_actor_hidden",
+  "target": {
+    "editor_actor_path": "/Game/Maps/PerformanceLab.PerformanceLab:PersistentLevel.HeroStatue",
+    "runtime_actor_path": "/Game/Maps/UEDPIE_0_PerformanceLab.PerformanceLab:PersistentLevel.HeroStatue",
+    "actor_label": "HeroStatue",
+    "actor_class": "/Script/Engine.StaticMeshActor",
+    "primitive_component_count": 1,
+    "baseline_hidden_in_game": false,
+    "restored_hidden_in_game": false
+  },
+  "variant_warmup_seconds": 1.0,
+  "baseline": {
+    "schema_version": "0.1",
+    "capture_id": "actor_gpu_impact_example_001_baseline",
+    "captured_at_utc": "2026-08-19T19:00:01Z",
+    "project_name": "OptimizationPlugin",
+    "world_path": "/Game/Maps/PerformanceLab",
+    "capture_mode": "pie",
+    "requested_duration_seconds": 5.0,
+    "captured_duration_seconds": 5.0,
+    "analyzed_trace_duration_seconds": 5.1,
+    "viewport_width_px": 1920,
+    "viewport_height_px": 1080,
+    "gpu_name": "Example D3D12 Adapter",
+    "trace_file_name": "baseline.utrace",
+    "trace_file_size_bytes": 1048576,
+    "trace_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "channels": ["cpu", "gpu", "frame", "bookmark"],
+    "gpu_queue_count": 2,
+    "total_gpu_event_count": 120,
+    "queues": [
+      {
+        "queue_id": "queue_000",
+        "display_name": "GPU0-Graphics0",
+        "gpu_index": 0,
+        "queue_index": 0,
+        "queue_type": 0,
+        "event_count": 100
+      },
+      {
+        "queue_id": "queue_001",
+        "display_name": "GPU0-Compute0",
+        "gpu_index": 0,
+        "queue_index": 0,
+        "queue_type": 1,
+        "event_count": 20
+      }
+    ],
+    "scopes": [
+      {
+        "scope_id": "scope_000",
+        "queue_id": "queue_000",
+        "name": "LumenSceneLighting",
+        "instance_count": 10,
+        "total_inclusive_ms": 50.0,
+        "mean_inclusive_ms": 5.0,
+        "max_inclusive_ms": 8.0,
+        "min_depth": 1,
+        "max_depth": 2
+      },
+      {
+        "scope_id": "scope_001",
+        "queue_id": "queue_000",
+        "name": "ShadowDepths",
+        "instance_count": 20,
+        "total_inclusive_ms": 40.0,
+        "mean_inclusive_ms": 2.0,
+        "max_inclusive_ms": 4.0,
+        "min_depth": 1,
+        "max_depth": 3
+      },
+      {
+        "scope_id": "scope_002",
+        "queue_id": "queue_000",
+        "name": "BasePass",
+        "instance_count": 20,
+        "total_inclusive_ms": 30.0,
+        "mean_inclusive_ms": 1.5,
+        "max_inclusive_ms": 2.5,
+        "min_depth": 1,
+        "max_depth": 2
+      },
+      {
+        "scope_id": "scope_003",
+        "queue_id": "queue_001",
+        "name": "PostProcessing",
+        "instance_count": 40,
+        "total_inclusive_ms": 20.0,
+        "mean_inclusive_ms": 0.5,
+        "max_inclusive_ms": 1.0,
+        "min_depth": 0,
+        "max_depth": 1
+      }
+    ],
+    "measurement_notes": [
+      "GPU scope times are inclusive and nested totals can overlap; do not sum them as frame time.",
+      "This is the Actor-visible baseline of a sequential single-trial PIE experiment.",
+      "The preserved baseline trace is authoritative."
+    ]
+  },
+  "variant": {
+    "schema_version": "0.1",
+    "capture_id": "actor_gpu_impact_example_001_variant",
+    "captured_at_utc": "2026-08-19T19:00:08Z",
+    "project_name": "OptimizationPlugin",
+    "world_path": "/Game/Maps/PerformanceLab",
+    "capture_mode": "pie",
+    "requested_duration_seconds": 5.0,
+    "captured_duration_seconds": 5.0,
+    "analyzed_trace_duration_seconds": 5.1,
+    "viewport_width_px": 1920,
+    "viewport_height_px": 1080,
+    "gpu_name": "Example D3D12 Adapter",
+    "trace_file_name": "actor_hidden.utrace",
+    "trace_file_size_bytes": 1015808,
+    "trace_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "channels": ["cpu", "gpu", "frame", "bookmark"],
+    "gpu_queue_count": 2,
+    "total_gpu_event_count": 120,
+    "queues": [
+      {
+        "queue_id": "queue_000",
+        "display_name": "GPU0-Graphics0",
+        "gpu_index": 0,
+        "queue_index": 0,
+        "queue_type": 0,
+        "event_count": 100
+      },
+      {
+        "queue_id": "queue_001",
+        "display_name": "GPU0-Compute0",
+        "gpu_index": 0,
+        "queue_index": 0,
+        "queue_type": 1,
+        "event_count": 20
+      }
+    ],
+    "scopes": [
+      {
+        "scope_id": "scope_000",
+        "queue_id": "queue_000",
+        "name": "LumenSceneLighting",
+        "instance_count": 10,
+        "total_inclusive_ms": 45.0,
+        "mean_inclusive_ms": 4.5,
+        "max_inclusive_ms": 7.0,
+        "min_depth": 1,
+        "max_depth": 2
+      },
+      {
+        "scope_id": "scope_002",
+        "queue_id": "queue_000",
+        "name": "BasePass",
+        "instance_count": 20,
+        "total_inclusive_ms": 25.0,
+        "mean_inclusive_ms": 1.25,
+        "max_inclusive_ms": 2.0,
+        "min_depth": 1,
+        "max_depth": 2
+      },
+      {
+        "scope_id": "scope_003",
+        "queue_id": "queue_001",
+        "name": "PostProcessing",
+        "instance_count": 40,
+        "total_inclusive_ms": 21.0,
+        "mean_inclusive_ms": 0.525,
+        "max_inclusive_ms": 1.1,
+        "min_depth": 0,
+        "max_depth": 1
+      },
+      {
+        "scope_id": "scope_001",
+        "queue_id": "queue_000",
+        "name": "ShadowDepths",
+        "instance_count": 20,
+        "total_inclusive_ms": 20.0,
+        "mean_inclusive_ms": 1.0,
+        "max_inclusive_ms": 2.5,
+        "min_depth": 1,
+        "max_depth": 3
+      }
+    ],
+    "measurement_notes": [
+      "GPU scope times are inclusive and nested totals can overlap; do not sum them as frame time.",
+      "The target Actor was hidden only in the runtime world after a one-second warmup.",
+      "The target Actor state was restored immediately after capture."
+    ]
+  },
+  "comparison_count": 4,
+  "deltas": [
+    {
+      "delta_id": "delta_000",
+      "baseline_scope_id": "scope_001",
+      "variant_scope_id": "scope_001",
+      "queue_name": "GPU0-Graphics0",
+      "scope_name": "ShadowDepths",
+      "baseline_total_ms_per_second": 8.0,
+      "variant_total_ms_per_second": 4.0,
+      "baseline_instances_per_second": 4.0,
+      "variant_instances_per_second": 4.0,
+      "baseline_minus_variant_ms_per_second": 4.0,
+      "relative_reduction_percent": 50.0,
+      "direction_when_hidden": "decreased"
+    },
+    {
+      "delta_id": "delta_001",
+      "baseline_scope_id": "scope_002",
+      "variant_scope_id": "scope_002",
+      "queue_name": "GPU0-Graphics0",
+      "scope_name": "BasePass",
+      "baseline_total_ms_per_second": 6.0,
+      "variant_total_ms_per_second": 5.0,
+      "baseline_instances_per_second": 4.0,
+      "variant_instances_per_second": 4.0,
+      "baseline_minus_variant_ms_per_second": 1.0,
+      "relative_reduction_percent": 16.666667,
+      "direction_when_hidden": "decreased"
+    },
+    {
+      "delta_id": "delta_002",
+      "baseline_scope_id": "scope_000",
+      "variant_scope_id": "scope_000",
+      "queue_name": "GPU0-Graphics0",
+      "scope_name": "LumenSceneLighting",
+      "baseline_total_ms_per_second": 10.0,
+      "variant_total_ms_per_second": 9.0,
+      "baseline_instances_per_second": 2.0,
+      "variant_instances_per_second": 2.0,
+      "baseline_minus_variant_ms_per_second": 1.0,
+      "relative_reduction_percent": 10.0,
+      "direction_when_hidden": "decreased"
+    },
+    {
+      "delta_id": "delta_003",
+      "baseline_scope_id": "scope_003",
+      "variant_scope_id": "scope_003",
+      "queue_name": "GPU0-Compute0",
+      "scope_name": "PostProcessing",
+      "baseline_total_ms_per_second": 4.0,
+      "variant_total_ms_per_second": 4.2,
+      "baseline_instances_per_second": 8.0,
+      "variant_instances_per_second": 8.0,
+      "baseline_minus_variant_ms_per_second": -0.2,
+      "relative_reduction_percent": -5.0,
+      "direction_when_hidden": "increased"
+    }
+  ],
+  "unmatched_baseline_scope_ids": [],
+  "unmatched_variant_scope_ids": [],
+  "trial_count": 1,
+  "repeatability": "single_trial",
+  "runtime_state_restored": true,
+  "measurement_notes": [
+    "Rates are normalized by each capture duration before comparison.",
+    "Only queue-local scopes present in both Top-64 capture sets are compared.",
+    "Positive delta means the scope decreased while the selected Actor was hidden.",
+    "This sequential single trial is impact-candidate evidence, not direct draw-call causation."
+  ]
+}

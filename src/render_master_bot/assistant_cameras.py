@@ -181,6 +181,8 @@ def _different(before: object, after: object) -> bool:
 def compile_camera_intent(
     context: UnrealCameraContext,
     intent: CameraEditIntent,
+    *,
+    require_change: bool = True,
 ) -> tuple[EditorCameraSnapshot, list[CameraPropertyChange]]:
     if intent.outcome != "proposed":
         raise CameraProposalError("cannot compile an unresolved camera intent")
@@ -338,7 +340,7 @@ def compile_camera_intent(
                 property=property_name,
                 operation=operation,
             ))
-    if not changes:
+    if require_change and not changes:
         raise CameraProposalError("camera request produces no observable change")
     return after, changes
 

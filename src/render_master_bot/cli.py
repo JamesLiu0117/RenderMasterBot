@@ -35,10 +35,47 @@ from render_master_bot.assistant_lights import (
     propose_light_batch_change,
     propose_light_change,
 )
+from render_master_bot.assistant_light_rigs import (
+    LightingRigProposalError,
+    load_lighting_rig_context,
+    propose_lighting_rig,
+)
+from render_master_bot.assistant_lighting_reviews import (
+    LightingRigReviewError,
+    load_lighting_rig_review_context,
+    propose_lighting_rig_review,
+)
 from render_master_bot.assistant_cameras import (
     CameraProposalError,
     load_camera_context,
     propose_camera_change,
+)
+from render_master_bot.assistant_camera_batches import (
+    CameraBatchProposalError,
+    load_camera_selection_context,
+    propose_camera_batch_change,
+)
+from render_master_bot.assistant_performance import (
+    PerformanceProposalError,
+    load_performance_selection_context,
+    propose_performance_review,
+)
+from render_master_bot.assistant_runtime_performance import (
+    RuntimePerformanceReviewError,
+    load_runtime_performance_capture,
+    review_runtime_performance,
+)
+from render_master_bot.assistant_insights_gpu import (
+    InsightsGpuReviewError,
+    hash_insights_gpu_capture_file,
+    load_insights_gpu_capture,
+    review_insights_gpu_capture,
+)
+from render_master_bot.assistant_actor_gpu_impact import (
+    ActorGpuImpactReviewError,
+    hash_actor_gpu_impact_file,
+    load_actor_gpu_impact_experiment,
+    review_actor_gpu_impact,
 )
 from render_master_bot.assistant_external_materials import (
     ExternalMaterialAssistantError,
@@ -1033,6 +1070,72 @@ def cmd_assistant_light_batch_propose(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_assistant_lighting_rig_propose(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.planner_model
+    try:
+        prompt = _read_run_prompt(args.prompt, args.prompt_file)
+        context = load_lighting_rig_context(args.context)
+        result = propose_lighting_rig(
+            prompt=prompt,
+            context=context,
+            client=_client(settings),
+            model=model,
+            proposal_id=args.proposal_id,
+        )
+    except (LightingRigProposalError, OllamaError, ValueError, OSError) as exc:
+        print(f"ERROR: lighting-rig proposal failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(result.proposal.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT LIGHTING RIG: "
+        f"status={result.proposal.status} lights={len(result.proposal.context.lights)} "
+        f"contrast={result.proposal.contrast} palette={result.proposal.palette} "
+        f"proposal={result.proposal.proposal_id} model={result.response.model} "
+        f"attempts={result.attempt_count}"
+    )
+    return 0
+
+
+def cmd_assistant_lighting_rig_review(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.vision_model
+    try:
+        prompt = _read_run_prompt(args.prompt, args.prompt_file)
+        context = load_lighting_rig_review_context(args.context)
+        result = propose_lighting_rig_review(
+            request=prompt,
+            context=context,
+            preview_path=args.preview,
+            client=_client(settings, num_ctx=settings.vision_num_ctx),
+            model=model,
+            proposal_id=args.proposal_id,
+        )
+    except LightingRigReviewError as exc:
+        if args.raw_output and exc.response is not None:
+            Path(args.raw_output).write_text(
+                exc.response.content + "\n", encoding="utf-8"
+            )
+        print(f"ERROR: lighting-rig visual review failed: {exc}", file=sys.stderr)
+        return 1
+    except (OllamaError, ValueError, OSError) as exc:
+        print(f"ERROR: lighting-rig visual review failed: {exc}", file=sys.stderr)
+        return 1
+    if args.raw_output:
+        Path(args.raw_output).write_text(
+            result.response.content + "\n", encoding="utf-8"
+        )
+    _write_json(result.proposal.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT LIGHTING RIG REVIEW: "
+        f"status={result.proposal.status} exposure={result.proposal.exposure} "
+        f"fill={result.proposal.fill_balance} rim={result.proposal.rim_separation} "
+        f"proposal={result.proposal.proposal_id} model={result.response.model} "
+        f"attempts={result.attempt_count}"
+    )
+    return 0
+
+
 def cmd_assistant_camera_propose(args: argparse.Namespace) -> int:
     settings = _settings()
     model = args.model or settings.planner_model
@@ -1058,6 +1161,173 @@ def cmd_assistant_camera_propose(args: argparse.Namespace) -> int:
         f"attempts={result.attempt_count}",
         file=sys.stderr if args.output is None else sys.stdout,
     )
+    return 0
+
+
+def cmd_assistant_camera_batch_propose(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.planner_model
+    try:
+        prompt = _read_run_prompt(args.prompt, args.prompt_file)
+        selection = load_camera_selection_context(args.context)
+        result = propose_camera_batch_change(
+            prompt=prompt,
+            selection=selection,
+            client=_client(settings),
+            model=model,
+            proposal_id=args.proposal_id,
+        )
+    except (CameraBatchProposalError, OllamaError, ValueError, OSError) as exc:
+        print(f"ERROR: camera batch proposal failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(result.proposal.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT CAMERA BATCH: "
+        f"status={result.proposal.status} "
+        f"cameras={len(result.proposal.selection.cameras)} "
+        f"proposal={result.proposal.proposal_id} model={result.response.model} "
+        f"attempts={result.attempt_count}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    return 0
+
+
+def cmd_assistant_performance_propose(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.planner_model
+    try:
+        prompt = _read_run_prompt(args.prompt, args.prompt_file)
+        selection = load_performance_selection_context(args.context)
+        result = propose_performance_review(
+            prompt=prompt,
+            selection=selection,
+            client=_client(settings),
+            model=model,
+            proposal_id=args.proposal_id,
+        )
+    except (PerformanceProposalError, OllamaError, ValueError, OSError) as exc:
+        print(f"ERROR: performance proposal failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(result.proposal.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT PERFORMANCE: "
+        f"status={result.proposal.status} "
+        f"actors={len(result.proposal.selection.actors)} "
+        f"findings={len(result.proposal.findings)} "
+        f"proposal={result.proposal.proposal_id} model={result.response.model} "
+        f"attempts={result.attempt_count}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    return 0
+
+
+def cmd_assistant_runtime_performance_review(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.planner_model
+    try:
+        prompt = _read_run_prompt(args.prompt, args.prompt_file)
+        capture = load_runtime_performance_capture(args.capture)
+        result = review_runtime_performance(
+            prompt=prompt,
+            capture=capture,
+            client=_client(settings),
+            model=model,
+            report_id=args.report_id,
+        )
+    except (RuntimePerformanceReviewError, OllamaError, ValueError, OSError) as exc:
+        print(f"ERROR: runtime performance review failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(result.report.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT RUNTIME PERFORMANCE: "
+        f"status={result.report.status} "
+        f"samples={result.report.capture.sample_count} "
+        f"findings={len(result.report.findings)} "
+        f"bottleneck={result.report.primary_bottleneck} "
+        f"report={result.report.report_id} model={result.response.model} "
+        f"attempts={result.attempt_count}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    if result.recovery_reason:
+        print(
+            "ASSISTANT RUNTIME PERFORMANCE RECOVERY: "
+            f"{result.recovery_reason[:500]}",
+            file=sys.stderr if args.output is None else sys.stdout,
+        )
+    return 0
+
+
+def cmd_assistant_insights_gpu_review(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.planner_model
+    try:
+        prompt = _read_run_prompt(args.prompt, args.prompt_file)
+        capture = load_insights_gpu_capture(args.capture)
+        result = review_insights_gpu_capture(
+            prompt=prompt,
+            capture=capture,
+            client=_client(settings),
+            model=model,
+            report_id=args.report_id,
+            source_file_sha256=hash_insights_gpu_capture_file(args.capture),
+        )
+    except (InsightsGpuReviewError, OllamaError, ValueError, OSError) as exc:
+        print(f"ERROR: GPU scope review failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(result.report.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT INSIGHTS GPU: "
+        f"status={result.report.status} "
+        f"queues={result.report.capture.gpu_queue_count} "
+        f"scopes={len(result.report.capture.scopes)} "
+        f"findings={len(result.report.findings)} "
+        f"report={result.report.report_id} model={result.response.model} "
+        f"attempts={result.attempt_count}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    if result.recovery_reason:
+        print(
+            "ASSISTANT INSIGHTS GPU RECOVERY: "
+            f"{result.recovery_reason[:500]}",
+            file=sys.stderr if args.output is None else sys.stdout,
+        )
+    return 0
+
+
+def cmd_assistant_actor_gpu_impact_review(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.planner_model
+    try:
+        prompt = _read_run_prompt(args.prompt, args.prompt_file)
+        experiment = load_actor_gpu_impact_experiment(args.experiment)
+        result = review_actor_gpu_impact(
+            prompt=prompt,
+            experiment=experiment,
+            client=_client(settings),
+            model=model,
+            report_id=args.report_id,
+            source_file_sha256=hash_actor_gpu_impact_file(args.experiment),
+        )
+    except (ActorGpuImpactReviewError, OllamaError, ValueError, OSError) as exc:
+        print(f"ERROR: Actor GPU impact review failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(result.report.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT ACTOR GPU IMPACT: "
+        f"status={result.report.status} "
+        f"actor={result.report.experiment.target.actor_label} "
+        f"deltas={len(result.report.experiment.deltas)} "
+        f"findings={len(result.report.findings)} "
+        f"report={result.report.report_id} model={result.response.model} "
+        f"attempts={result.attempt_count}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    if result.recovery_reason:
+        print(
+            "ASSISTANT ACTOR GPU IMPACT RECOVERY: "
+            f"{result.recovery_reason[:500]}",
+            file=sys.stderr if args.output is None else sys.stdout,
+        )
     return 0
 
 
@@ -1770,6 +2040,72 @@ def build_parser() -> argparse.ArgumentParser:
     assistant_light_batch.add_argument("--output", "-o", required=True)
     assistant_light_batch.set_defaults(handler=cmd_assistant_light_batch_propose)
 
+    assistant_lighting_rig = subparsers.add_parser(
+        "assistant-lighting-rig-propose",
+        help="propose one bounded Key/Fill/Rim rig for a frozen subject, camera, and three lights",
+    )
+    lighting_rig_prompt_source = assistant_lighting_rig.add_mutually_exclusive_group(
+        required=True
+    )
+    lighting_rig_prompt_source.add_argument(
+        "--prompt", help="natural-language three-point-lighting request"
+    )
+    lighting_rig_prompt_source.add_argument(
+        "--prompt-file",
+        help="UTF-8 text file containing the three-point-lighting request",
+    )
+    assistant_lighting_rig.add_argument(
+        "--context",
+        required=True,
+        help="UnrealLightingRigContext JSON captured by the Editor plugin",
+    )
+    assistant_lighting_rig.add_argument(
+        "--model", help="override the configured planner model"
+    )
+    assistant_lighting_rig.add_argument(
+        "--proposal-id", default="lighting_rig_proposal"
+    )
+    assistant_lighting_rig.add_argument("--output", "-o", required=True)
+    assistant_lighting_rig.set_defaults(handler=cmd_assistant_lighting_rig_propose)
+
+    assistant_lighting_review = subparsers.add_parser(
+        "assistant-lighting-rig-review",
+        help="visually review an applied Key/Fill/Rim rig and propose one bounded intensity correction",
+    )
+    lighting_review_prompt_source = (
+        assistant_lighting_review.add_mutually_exclusive_group(required=True)
+    )
+    lighting_review_prompt_source.add_argument(
+        "--prompt", help="natural-language visual review request"
+    )
+    lighting_review_prompt_source.add_argument(
+        "--prompt-file",
+        help="UTF-8 text file containing the visual review request",
+    )
+    assistant_lighting_review.add_argument(
+        "--context",
+        required=True,
+        help="UnrealLightingRigReviewContext JSON captured after rig approval",
+    )
+    assistant_lighting_review.add_argument(
+        "--preview",
+        required=True,
+        help="camera-view PNG captured by the Unreal Editor plugin",
+    )
+    assistant_lighting_review.add_argument(
+        "--model", help="override the configured vision model"
+    )
+    assistant_lighting_review.add_argument(
+        "--proposal-id", default="lighting_rig_review"
+    )
+    assistant_lighting_review.add_argument(
+        "--raw-output", help="save the vision model's final unvalidated response"
+    )
+    assistant_lighting_review.add_argument("--output", "-o", required=True)
+    assistant_lighting_review.set_defaults(
+        handler=cmd_assistant_lighting_rig_review
+    )
+
     assistant_camera = subparsers.add_parser(
         "assistant-camera-propose",
         help="propose one bounded property change for a selected Unreal camera",
@@ -1793,6 +2129,152 @@ def build_parser() -> argparse.ArgumentParser:
     assistant_camera.add_argument("--proposal-id", default="camera_proposal")
     assistant_camera.add_argument("--output", "-o", required=True)
     assistant_camera.set_defaults(handler=cmd_assistant_camera_propose)
+
+    assistant_camera_batch = subparsers.add_parser(
+        "assistant-camera-batch-propose",
+        help="propose one coordinated bounded edit for 2-16 selected Unreal cameras",
+    )
+    camera_batch_prompt_source = (
+        assistant_camera_batch.add_mutually_exclusive_group(required=True)
+    )
+    camera_batch_prompt_source.add_argument(
+        "--prompt", help="natural-language coordinated camera request"
+    )
+    camera_batch_prompt_source.add_argument(
+        "--prompt-file",
+        help="UTF-8 text file containing the coordinated camera request",
+    )
+    assistant_camera_batch.add_argument(
+        "--context",
+        required=True,
+        help="UnrealCameraSelectionContext JSON captured by the Editor plugin",
+    )
+    assistant_camera_batch.add_argument(
+        "--model", help="override the configured planner model"
+    )
+    assistant_camera_batch.add_argument(
+        "--proposal-id", default="camera_batch_proposal"
+    )
+    assistant_camera_batch.add_argument("--output", "-o", required=True)
+    assistant_camera_batch.set_defaults(
+        handler=cmd_assistant_camera_batch_propose
+    )
+
+    assistant_performance = subparsers.add_parser(
+        "assistant-performance-propose",
+        help="review measured evidence for 1-32 selected Unreal StaticMeshActors",
+    )
+    performance_prompt_source = assistant_performance.add_mutually_exclusive_group(
+        required=True
+    )
+    performance_prompt_source.add_argument(
+        "--prompt", help="natural-language performance review or safe-action request"
+    )
+    performance_prompt_source.add_argument(
+        "--prompt-file",
+        help="UTF-8 text file containing the performance request",
+    )
+    assistant_performance.add_argument(
+        "--context",
+        required=True,
+        help="UnrealPerformanceSelectionContext JSON captured by the Editor plugin",
+    )
+    assistant_performance.add_argument(
+        "--model", help="override the configured planner model"
+    )
+    assistant_performance.add_argument(
+        "--proposal-id", default="performance_proposal"
+    )
+    assistant_performance.add_argument("--output", "-o", required=True)
+    assistant_performance.set_defaults(handler=cmd_assistant_performance_propose)
+
+    assistant_runtime_performance = subparsers.add_parser(
+        "assistant-runtime-performance-review",
+        help="review a host-measured Unreal PIE/SIE runtime capture",
+    )
+    runtime_performance_prompt_source = (
+        assistant_runtime_performance.add_mutually_exclusive_group(required=True)
+    )
+    runtime_performance_prompt_source.add_argument(
+        "--prompt", help="natural-language runtime performance question"
+    )
+    runtime_performance_prompt_source.add_argument(
+        "--prompt-file",
+        help="UTF-8 text file containing the runtime performance question",
+    )
+    assistant_runtime_performance.add_argument(
+        "--capture",
+        required=True,
+        help="UnrealRuntimePerformanceCapture JSON emitted by the Editor plugin",
+    )
+    assistant_runtime_performance.add_argument(
+        "--model", help="override the configured planner model"
+    )
+    assistant_runtime_performance.add_argument(
+        "--report-id", default="runtime_performance_report"
+    )
+    assistant_runtime_performance.add_argument("--output", "-o", required=True)
+    assistant_runtime_performance.set_defaults(
+        handler=cmd_assistant_runtime_performance_review
+    )
+
+    assistant_insights_gpu = subparsers.add_parser(
+        "assistant-insights-gpu-review",
+        help="review Unreal Insights GPU scope evidence parsed by the Editor plugin",
+    )
+    insights_gpu_prompt_source = assistant_insights_gpu.add_mutually_exclusive_group(
+        required=True
+    )
+    insights_gpu_prompt_source.add_argument(
+        "--prompt", help="natural-language GPU scope performance question"
+    )
+    insights_gpu_prompt_source.add_argument(
+        "--prompt-file",
+        help="UTF-8 text file containing the GPU scope question",
+    )
+    assistant_insights_gpu.add_argument(
+        "--capture",
+        required=True,
+        help="UnrealInsightsGpuCapture JSON emitted by the Editor plugin",
+    )
+    assistant_insights_gpu.add_argument(
+        "--model", help="override the configured planner model"
+    )
+    assistant_insights_gpu.add_argument(
+        "--report-id", default="insights_gpu_report"
+    )
+    assistant_insights_gpu.add_argument("--output", "-o", required=True)
+    assistant_insights_gpu.set_defaults(handler=cmd_assistant_insights_gpu_review)
+
+    assistant_actor_gpu_impact = subparsers.add_parser(
+        "assistant-actor-gpu-impact-review",
+        help="review a selected-Actor baseline versus runtime-hidden GPU experiment",
+    )
+    actor_gpu_prompt_source = (
+        assistant_actor_gpu_impact.add_mutually_exclusive_group(required=True)
+    )
+    actor_gpu_prompt_source.add_argument(
+        "--prompt", help="natural-language selected-Actor GPU impact question"
+    )
+    actor_gpu_prompt_source.add_argument(
+        "--prompt-file",
+        help="UTF-8 text file containing the selected-Actor GPU impact question",
+    )
+    assistant_actor_gpu_impact.add_argument(
+        "--experiment",
+        required=True,
+        help="UnrealActorGpuImpactExperiment JSON emitted by the Editor plugin",
+    )
+    assistant_actor_gpu_impact.add_argument(
+        "--model", help="override the configured planner model"
+    )
+    assistant_actor_gpu_impact.add_argument(
+        "--report-id", default="actor_gpu_impact_report"
+    )
+    assistant_actor_gpu_impact.add_argument("--output", "-o", required=True)
+    assistant_actor_gpu_impact.set_defaults(
+        handler=cmd_assistant_actor_gpu_impact_review
+    )
 
     plan = subparsers.add_parser("plan", help="ask a local Ollama model for a RenderSpec")
     plan.add_argument("--model", help="override the configured planner model")

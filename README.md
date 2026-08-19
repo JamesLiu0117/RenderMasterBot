@@ -111,10 +111,41 @@ correction records, and a reproducible run manifest.
   Point, Spot, or Rect Lights, with frozen type/unit evidence, per-light
   Before/After review, all-or-nothing stale-state rejection, no automatic save,
   and one grouped Ctrl+Z Undo
+- Camera-relative Key/Fill/Rim coordination for one subject, one perspective
+  Camera or Cine Camera, and exactly three compatible Movable local lights,
+  with model-selected roles, host-computed placement and intensity, five-Actor
+  stale-state rejection, no automatic save, and one grouped Ctrl+Z Undo
+- One-shot camera-view review of an applied Key/Fill/Rim rig, with a restored
+  Lit Editor viewport, SHA-256-bound PNG evidence, categorical local-vision
+  diagnosis, deterministic intensity-only correction, explicit approval,
+  five-Actor revalidation, and a separate grouped Ctrl+Z Undo
 - Type-specific Camera and Cine Camera proposals for one selected camera, with
   bounded world Transform, FOV or focal length, aperture, focus, exposure
   compensation, approval-time lens/state revalidation, no automatic save, and
   Ctrl+Z Undo
+- Coordinated shared-property proposals for 2-16 selected Camera/Cine Camera
+  Actors, with complete ordered Before/After evidence, type-aware all-or-nothing
+  planning, selection-wide stale-state rejection, no automatic save, and one
+  grouped Ctrl+Z Undo
+- Evidence-backed performance review for 1-32 selected native StaticMeshActors,
+  with measured mesh/LOD/material/Nanite/collision/Tick/shadow/culling/bounds
+  fields, read-only findings, optional approval-gated Cast Shadow and Max Draw
+  Distance actions, full stale-state rejection, and one grouped Ctrl+Z Undo
+- Read-only PIE/SIE runtime performance capture with 30 warmup frames and 120
+  consecutive raw samples, host-recomputed frame/Game/Render/RHI/GPU P50/P95/
+  maximum evidence, frame-budget misses, process and RHI texture memory,
+  schema-constrained local-model diagnosis, and explicit Editor/packaged-build
+  caveats
+- Trace-backed PIE/SIE GPU scope review with a five-second CPU/GPU/frame/
+  bookmark `.utrace`, UE 5.7 `TraceServices` queue-timeline parsing, ranked
+  inclusive scope count/total/mean/maximum evidence, SHA-256 trace identity,
+  schema-constrained local-model findings, and one-click raw trace inspection
+  in Unreal Insights
+- Controlled selected-Actor GPU impact measurement with Actor-visible and
+  temporarily runtime-hidden five-second traces, verified runtime-state
+  restoration, one-second variant warmup, duration-normalized matched-scope
+  deltas, constrained association-only model review, and both raw traces
+  preserved for Unreal Insights
 - Parameterized `MaterialInstanceConstant` variants with exposed-parameter
   inspection, exact value readback, and no-overwrite behavior
 - Official Poly Haven texture discovery with local semantic ranking, visible
@@ -127,9 +158,11 @@ correction records, and a reproducible run manifest.
 - Command-line doctor, schema, validate, preflight, Unreal, retrieval, planning, evaluation, and correction commands
 - Standard-library unit tests for contracts, planning, preflight, Unreal execution, and preview orchestration
 
-Per-light role coordination, coordinated multi-camera operations, geometry-aware
-Actor arrangement, performance actions, richer per-material lighting
-calibration, and model fine-tuning are later milestones.
+General geometry-aware Actor arrangement, repeated/interleaved Actor GPU trials,
+direct per-asset/per-material/per-shader/per-draw attribution, packaged-build benchmarking,
+asset-level Nanite/LOD/mesh/material/
+collision optimization, richer shot-specific lighting calibration, multi-shot
+visual evaluation, and model fine-tuning are later milestones.
 
 ## Local setup
 
@@ -374,6 +407,27 @@ shows every selected light and complete per-light Before/After state. **Approve
 & Apply Light** revalidates the complete selection before one grouped,
 Undo-backed Editor transaction.
 
+**Prepare Lighting Rig** targets exactly five selected Actors: one subject,
+one perspective Camera or Cine Camera, and three compatible Movable Point,
+Spot, or Rect Lights that share one non-EV intensity unit. The model assigns
+the exact lights to Key, Fill, and Rim roles and chooses bounded creative
+controls such as contrast, palette, key side, spacing, and brightness. Python
+then computes the final camera-relative positions, aim, intensity ratios,
+attenuation, and Spot cone coverage from frozen subject bounds and camera
+orientation. The **Lighting Rig Action** card shows all three assignments and
+complete Before/After values. Approval revalidates all five Actors and changes
+only the lights in one Undo-backed transaction; the subject and camera remain
+unchanged.
+
+After applying the rig, **Evaluate Applied Rig** temporarily places the active
+perspective Level Editor viewport at the frozen camera, captures one Lit PNG,
+and immediately restores the user's viewport. The local vision model classifies
+only overall exposure, Fill balance, and Rim separation. It cannot choose
+numbers or move Actors. The host can create one bounded intensity-only
+correction, shown in a separate **Lighting Rig Visual Review** card. Approval
+revalidates the subject, camera, and all three lights and creates a second Undo
+transaction; the level is never saved automatically.
+
 **Prepare Camera** targets exactly one selected standard Camera or Cine Camera.
 Both types support bounded world Transform, aperture, focus distance/mode, and
 exposure compensation. Standard Cameras expose FOV; Cine Cameras expose focal
@@ -381,10 +435,51 @@ length constrained by the captured lens. The **Camera Action** card shows the
 exact type-specific Before/After state. Approval revalidates identity, lens
 bounds, and unchanged properties before one Undo-backed Editor transaction.
 
+With 2-16 selected Camera/Cine Camera Actors, the same button prepares one
+**Coordinated Camera Action**. One shared restricted intent is compiled against
+every frozen Before state, so relative edits preserve shot offsets and absolute
+edits converge on a reviewed target. Approval revalidates the complete ordered
+selection and applies it as one grouped Undo transaction.
+
+**Review Performance** captures measured evidence for 1-32 selected native
+StaticMeshActors. A diagnostic request produces a read-only **Selected Mesh
+Performance Review** with field-level evidence. An explicit request may propose
+only Cast Shadow and Max Draw Distance changes; the Apply button appears only
+for a complete validated Before/After batch. Unreal revalidates every selected
+Actor and applies the settings in one Undo transaction. See
+[docs/assistant_performance.md](docs/assistant_performance.md).
+
+**Capture Runtime Performance** requires an active PIE/SIE workload. It drops
+30 warmup frames, records 120 raw consecutive frame/thread/GPU samples plus
+process and RHI texture-memory evidence, and shows a read-only local-model
+diagnosis. Python recomputes every timing summary before inference. See
+[docs/assistant_runtime_performance.md](docs/assistant_runtime_performance.md).
+
+**Capture GPU Scope Trace** records five seconds of CPU, GPU, frame, and
+bookmark channels from an active PIE/SIE workload. UE 5.7 `TraceServices`
+parses the saved `.utrace` into ranked queue-local GPU scopes before the local
+model reviews them. The card keeps inclusive nested timings explicit and can
+open the authoritative file in Unreal Insights. It remains read-only and does
+not claim per-Actor or packaged-build attribution. See
+[docs/assistant_insights_gpu.md](docs/assistant_insights_gpu.md).
+
+**Measure Selected Actor GPU Impact** requires active PIE/SIE and exactly one
+visible selected Actor with registered primitive components. It records a
+five-second visible baseline, hides only that Actor's runtime counterpart,
+waits one second, records a five-second variant, and restores the Actor before
+analysis. The host compares only queue-local scopes present in both Top-64 sets
+and normalizes them by actual capture duration. The model may describe impact
+candidates, not direct pass/draw/material/shader causation. Both `.utrace`
+files remain available from the result card. See
+[docs/assistant_actor_gpu_impact.md](docs/assistant_actor_gpu_impact.md).
+
 The secondary **Render & Evaluate** page runs the existing schema-gated
-`render-master run` workflow. Per-light role instructions, coordinated
-multi-camera editing, geometry-aware arrangement, and performance actions remain
-marked as not connected rather than being represented by nonfunctional controls.
+`render-master run` workflow. General geometry-aware arrangement, repeated
+Actor trials, direct per-asset/material/shader/draw attribution,
+packaged-build comparison, asset-level
+performance fixes, multi-shot visual evaluation, and richer shot-specific
+lighting refinement remain marked as not connected rather than being
+represented by nonfunctional controls.
 
 The execution page writes the prompt to a bounded UTF-8 file, starts the
 configured virtual environment without exposing prompt text to the shell,
@@ -430,8 +525,12 @@ Bounded correction planning is documented in [docs/correction_planning.md](docs/
 Chroma indexing and retrieval constraints are documented in [docs/retrieval.md](docs/retrieval.md).
 The approval-gated selected-Actor material action is documented in [docs/assistant_materials.md](docs/assistant_materials.md).
 Approval-gated Camera and Cine Camera actions are documented in [docs/assistant_cameras.md](docs/assistant_cameras.md).
+Coordinated multi-camera actions are documented in [docs/assistant_camera_batches.md](docs/assistant_camera_batches.md).
 The approval-gated selected-Actor Transform action is documented in [docs/assistant_transforms.md](docs/assistant_transforms.md).
 The approval-gated selected-Light action is documented in [docs/assistant_lights.md](docs/assistant_lights.md).
+The approval-gated three-point lighting rig is documented in [docs/assistant_lighting_rigs.md](docs/assistant_lighting_rigs.md).
+The camera-view visual review and intensity-only refinement are documented in [docs/assistant_lighting_reviews.md](docs/assistant_lighting_reviews.md).
+The controlled selected-Actor GPU impact experiment is documented in [docs/assistant_actor_gpu_impact.md](docs/assistant_actor_gpu_impact.md).
 The native Unreal dashboard is documented in [docs/unreal_editor_panel.md](docs/unreal_editor_panel.md).
 
 Export or validate any contract:

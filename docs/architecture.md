@@ -46,7 +46,7 @@ Ollama's embedding endpoint explicitly instead of allowing Chroma to choose or
 download a default embedding function. The collection records its embedding
 model identity and rejects attempts to query it with a different model.
 
-See `contracts.md` for the twenty-three public JSON boundaries used by both
+See `contracts.md` for the thirty-seven public JSON boundaries used by both
 tracks.
 
 ## Next milestones
@@ -102,9 +102,33 @@ tracks.
 22. ~~Extend the pattern to one-to-16-Light compatible group edits, including
     selection-wide type/unit checks, complete per-light evidence, all-or-nothing
     stale-state rejection, and one grouped Unreal Undo transaction.~~
-23. Extend the pattern to per-light role coordination and coordinated
-    multi-camera edits, followed by geometry-aware Actor arrangement and
-    performance fixes.
+23. ~~Add bounded camera-relative Key/Fill/Rim role coordination for one
+    subject, one perspective camera, and exactly three existing compatible
+    Movable local lights, with host-computed placement, five-Actor stale-state
+    revalidation, and one grouped Undo transaction.~~
+24. ~~Close the bounded lighting-rig feedback loop with one camera-view PNG,
+    categorical local-vision diagnosis, host-computed intensity-only
+    correction, explicit approval, five-Actor stale-state revalidation, and a
+    separate grouped Undo transaction.~~
+25. ~~Add coordinated multi-camera edits with complete ordered evidence,
+    selection-wide stale-state rejection, and one grouped Undo transaction.~~
+26. ~~Add selected-StaticMeshActor performance evidence, read-only findings,
+    and approval-gated component Cast Shadow / Max Draw Distance actions with
+    complete stale-state revalidation and grouped Undo.~~
+27. ~~Add recomputable PIE/SIE runtime frame, Game/Render/RHI/GPU timing,
+    frame-budget, process-memory, and RHI texture-memory evidence with a
+    read-only local-model review.~~
+28. ~~Add a bounded PIE/SIE `.utrace` capture, UE 5.7 TraceServices GPU queue
+    parser, ranked inclusive GPU scope evidence, read-only local-model review,
+    and direct raw-trace opening in Unreal Insights.~~
+29. ~~Add a controlled selected-Actor GPU impact experiment with sequential
+    Actor-visible and runtime-hidden traces, verified state restoration,
+    duration-normalized queue-local scope deltas, constrained local-model
+    interpretation, and direct opening of both traces in Unreal Insights.~~
+30. Add repeated/interleaved trials and direct per-asset/per-material/
+    per-shader/per-draw attribution, plus general geometry-aware Actor
+    arrangement, packaged-build benchmarks, asset-level performance fixes,
+    richer shot-specific lighting tools, and multi-shot visual evaluation.
 
 ## Default model roles
 

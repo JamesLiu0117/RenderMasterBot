@@ -95,6 +95,23 @@ struct FRenderMasterCapturedLightTarget
     FRenderMasterLightSnapshot Light;
 };
 
+FString RenderMasterGetLightKind(const ULightComponent* LightComponent);
+FString RenderMasterGetLightUnit(const ULightComponent* LightComponent);
+FRenderMasterLightSnapshot RenderMasterSnapshotLight(
+    const ALight* LightActor,
+    const ULightComponent* LightComponent);
+bool RenderMasterLightSnapshotsMatch(
+    const FRenderMasterLightSnapshot& A,
+    const FRenderMasterLightSnapshot& B);
+bool RenderMasterIsBoundedLightSnapshot(
+    const FRenderMasterLightSnapshot& Snapshot,
+    const FString& LightKind);
+bool RenderMasterSetLightSnapshot(
+    ALight* LightActor,
+    ULightComponent* LightComponent,
+    const FRenderMasterLightSnapshot& Before,
+    const FRenderMasterLightSnapshot& After);
+
 bool RenderMasterApplyLightProperties(
     ALight* LightActor,
     ULightComponent* LightComponent,

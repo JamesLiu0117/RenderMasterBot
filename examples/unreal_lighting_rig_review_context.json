@@ -1,0 +1,146 @@
+{
+  "schema_version": "0.1",
+  "source_request": "Create a warm cinematic three-point rig.",
+  "rig": {
+    "schema_version": "0.1",
+    "project_name": "OptimizationPlugin",
+    "level_path": "/Game/FirstPerson/Lvl_FirstPerson",
+    "subject": {
+      "actor_name": "ProductSubject",
+      "actor_path": "/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.ProductSubject",
+      "actor_class": "StaticMeshActor",
+      "actor_guid": "11111111111111111111111111111111",
+      "root_component_name": "StaticMeshComponent0",
+      "root_mobility": "movable",
+      "is_editable": true,
+      "is_locked": false,
+      "transform": {
+        "location_cm": {"x": 0.0, "y": 0.0, "z": 100.0},
+        "rotation_deg": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": {"x": 1.0, "y": 1.0, "z": 1.0}
+      },
+      "bounds": {
+        "center_cm": {"x": 0.0, "y": 0.0, "z": 100.0},
+        "extent_cm": {"x": 80.0, "y": 60.0, "z": 100.0},
+        "sphere_radius_cm": 141.421356
+      }
+    },
+    "camera": {
+      "actor_name": "HeroCamera",
+      "actor_path": "/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.HeroCamera",
+      "actor_class": "CineCameraActor",
+      "actor_guid": "22222222222222222222222222222222",
+      "component_name": "CameraComponent",
+      "camera_kind": "cine_camera",
+      "component_mobility": "movable",
+      "projection_mode": "perspective",
+      "is_editable": true,
+      "is_locked": false,
+      "location_cm": {"x": -700.0, "y": 0.0, "z": 150.0},
+      "rotation_deg": {"x": 0.0, "y": -4.0856, "z": 0.0}
+    },
+    "lights": [
+      {
+        "target": {
+          "schema_version": "0.1",
+          "project_name": "OptimizationPlugin",
+          "level_path": "/Game/FirstPerson/Lvl_FirstPerson",
+          "actor_name": "StudioLightA",
+          "actor_path": "/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.StudioLightA",
+          "actor_class": "RectLight",
+          "actor_guid": "33333333333333333333333333333333",
+          "component_name": "LightComponent0",
+          "light_kind": "rect",
+          "component_mobility": "movable",
+          "is_editable": true,
+          "is_locked": false,
+          "light": {
+            "rotation_deg": {"x": 0.0, "y": -20.0, "z": 20.0},
+            "intensity": 5000.0,
+            "intensity_unit": "lumens",
+            "color_rgb": {"r": 1.0, "g": 1.0, "b": 1.0},
+            "use_temperature": false,
+            "temperature_kelvin": 6500.0,
+            "cast_shadows": true,
+            "attenuation_radius_cm": 1000.0,
+            "inner_cone_deg": null,
+            "outer_cone_deg": null
+          }
+        },
+        "location_cm": {"x": -250.0, "y": -300.0, "z": 350.0}
+      },
+      {
+        "target": {
+          "schema_version": "0.1",
+          "project_name": "OptimizationPlugin",
+          "level_path": "/Game/FirstPerson/Lvl_FirstPerson",
+          "actor_name": "StudioLightB",
+          "actor_path": "/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.StudioLightB",
+          "actor_class": "SpotLight",
+          "actor_guid": "44444444444444444444444444444444",
+          "component_name": "LightComponent0",
+          "light_kind": "spot",
+          "component_mobility": "movable",
+          "is_editable": true,
+          "is_locked": false,
+          "light": {
+            "rotation_deg": {"x": 0.0, "y": -15.0, "z": -20.0},
+            "intensity": 3000.0,
+            "intensity_unit": "lumens",
+            "color_rgb": {"r": 1.0, "g": 1.0, "b": 1.0},
+            "use_temperature": false,
+            "temperature_kelvin": 6500.0,
+            "cast_shadows": true,
+            "attenuation_radius_cm": 1000.0,
+            "inner_cone_deg": 20.0,
+            "outer_cone_deg": 40.0
+          }
+        },
+        "location_cm": {"x": -200.0, "y": 300.0, "z": 250.0}
+      },
+      {
+        "target": {
+          "schema_version": "0.1",
+          "project_name": "OptimizationPlugin",
+          "level_path": "/Game/FirstPerson/Lvl_FirstPerson",
+          "actor_name": "StudioLightC",
+          "actor_path": "/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.StudioLightC",
+          "actor_class": "PointLight",
+          "actor_guid": "55555555555555555555555555555555",
+          "component_name": "LightComponent0",
+          "light_kind": "point",
+          "component_mobility": "movable",
+          "is_editable": true,
+          "is_locked": false,
+          "light": {
+            "rotation_deg": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "intensity": 2500.0,
+            "intensity_unit": "lumens",
+            "color_rgb": {"r": 1.0, "g": 1.0, "b": 1.0},
+            "use_temperature": false,
+            "temperature_kelvin": 6500.0,
+            "cast_shadows": true,
+            "attenuation_radius_cm": 1000.0,
+            "inner_cone_deg": null,
+            "outer_cone_deg": null
+          }
+        },
+        "location_cm": {"x": 250.0, "y": 0.0, "z": 350.0}
+      }
+    ]
+  },
+  "assignments": [
+    {
+      "actor_path": "/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.StudioLightA",
+      "role": "key"
+    },
+    {
+      "actor_path": "/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.StudioLightB",
+      "role": "fill"
+    },
+    {
+      "actor_path": "/Game/FirstPerson/Lvl_FirstPerson:PersistentLevel.StudioLightC",
+      "role": "rim"
+    }
+  ]
+}

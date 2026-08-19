@@ -18,9 +18,12 @@ public class RenderMasterBotEditor : ModuleRules
             "InputCore",
             "Json",
             "Projects",
+            "RenderCore",
+            "RHI",
             "Slate",
             "SlateCore",
             "ToolMenus",
+            "TraceServices",
             "UnrealEd",
             "WorkspaceMenuStructure",
         });

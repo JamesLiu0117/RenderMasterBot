@@ -14,7 +14,8 @@ do not modify the Editor scene.
 
 The connected direct Editor actions are material selection, one-to-32-Actor
 world/local Transform editing, compatible one-to-16-Light group property
-editing, and one-Camera property editing.
+editing, camera-relative three-point-light coordination, and one-Camera
+property editing.
 Material selection supports one selected Actor that contains exactly one valid
 Static Mesh Component. A single
 slot is targeted automatically. For a multi-slot mesh, the operator chooses an
@@ -53,22 +54,53 @@ entire group if one identity or property state is stale, applies one grouped
 Editor transaction, and never saves the level automatically. One Ctrl+Z
 restores all changed lights.
 
-**Prepare Camera** accepts exactly one selected standard Camera Actor or Cine
-Camera Actor. Both support world Transform, aperture, focus, and exposure
-compensation. Standard Cameras expose FOV; Cine Cameras expose focal length
-inside the captured lens bounds. Its **Camera Action** card shows the exact
-type-specific Before/After state. **Approve & Apply Camera** rejects stale
-identity, lens, or property state, applies one Editor transaction, and never
-saves the level automatically. Ctrl+Z restores the previous properties.
+**Prepare Lighting Rig** accepts exactly five selected Actors: one non-light,
+non-camera subject with observable bounds, one perspective standard Camera or
+Cine Camera facing that subject, and exactly three Movable Point, Spot, or Rect
+Lights that share one non-EV intensity unit. The model assigns the three exact
+lights to Key, Fill, and Rim and chooses bounded contrast, palette, key side,
+spacing, and brightness controls. Python computes all final positions, aim,
+intensity ratios, attenuation, and Spot cone coverage. The dedicated
+**Lighting Rig Action** card exposes every assignment and complete Before/After
+evidence. **Approve & Apply Rig** revalidates all five Actors, changes only the
+three lights in one transaction, never saves the level automatically, and is
+restored by one Ctrl+Z.
+
+After that approval, **Evaluate Applied Rig** temporarily captures one Lit PNG
+from the frozen camera through the active perspective Level Editor viewport and
+restores the user's view immediately. The configured local vision model returns
+only categorical exposure, Fill, and Rim judgments. Python computes any fixed,
+bounded intensity-only proposal. The separate **Lighting Rig Visual Review**
+card requires approval and revalidates all five Actors before a second grouped
+transaction. It never moves a light or changes the subject or camera.
+
+**Prepare Camera** accepts one to 16 selected standard Camera Actors or Cine
+Camera Actors. One selection uses the type-specific **Camera Action**. A 2-16
+selection uses one shared restricted intent and shows complete ordered evidence
+in **Coordinated Camera Action**. Both support world Transform, aperture, focus,
+and exposure compensation. Standard Cameras expose FOV; Cine Cameras expose
+focal length inside captured lens bounds. Approval rejects any stale identity,
+lens, selection order, or property state, applies one Editor transaction, and
+never saves the level automatically. Ctrl+Z restores the previous properties.
 
 The secondary **Render & Evaluate** page starts the existing transient render
 and visual-evaluation loop. That page is another capability inside the
 assistant, not the identity of the whole product. Explicit targeting for
 material slots, external CC0 material acquisition, one-to-32-Actor world/local
-Transform, compatible one-to-16-Light group edits, and single-Camera property
-editing are connected. Geometry-aware arrangement, role-specific multi-light
-coordination, coordinated multi-camera operations, and performance diagnosis
-remain visibly marked as not connected.
+Transform, compatible one-to-16-Light group edits, single-Camera property
+editing, and coordinated 2-16-camera property editing are connected. The
+bounded Key/Fill/Rim rig is also connected. Selected native StaticMeshActor
+evidence review plus approval-gated Cast Shadow and Max Draw Distance actions
+are connected. A separate read-only PIE/SIE capture now records recomputable
+frame, thread, GPU, process-memory, and RHI texture-memory evidence. A second
+trace-backed workflow records a five-second `.utrace`, ranks timed GPU scopes,
+and preserves the raw timeline for Unreal Insights. A controlled selected-Actor
+workflow now records visible and runtime-hidden traces, restores the Actor, and
+compares matched GPU scopes. General geometry-aware arrangement, multi-shot
+visual evaluation, richer shot-specific lighting tools, repeated/interleaved
+Actor trials, direct per-asset/material/shader/draw attribution, packaged-build
+benchmark comparison, and asset-level performance fixes remain visibly marked
+as not connected.
 
 ## Material action lifecycle
 
@@ -143,8 +175,40 @@ Lights require lux; local lights retain their captured lumens, candelas,
 unitless, EV, or nits setting. Relative intensity edits may span mixed non-EV
 units, but EV multiplication and mixed-unit absolute changes are rejected.
 Point Light rotation is rejected because it has no visual meaning. Requests to
-spawn, delete, rename, retype, or give different selected lights distinct
-Key/Fill/Rim responsibilities resolve as **Unresolved**.
+spawn, delete, rename, retype, or give arbitrary distinct per-light property
+instructions resolve as **Unresolved**. Use **Prepare Lighting Rig** for the
+bounded Key/Fill/Rim workflow.
+
+## Lighting rig action lifecycle
+
+1. Select exactly five Actors: one subject, one perspective Camera Actor or
+   Cine Camera Actor, and exactly three compatible Movable Point, Spot, or Rect
+   Lights. The lights must use one shared non-EV intensity unit.
+2. Enter one request such as `Create a warm cinematic three-point lighting rig
+   around this subject, with the key on camera left and dramatic contrast.`
+3. Press **Prepare Lighting Rig**. The Editor identifies each Actor by type,
+   sorts and freezes the three light identities, captures the subject Transform
+   and bounds, and captures the camera view. No scene mutation occurs.
+4. Review the semantic style, Key/Fill/Rim assignments, changed properties, and
+   complete per-light Before/After values in the **Lighting Rig Action** card.
+5. Press **Approve & Apply Rig**, or **Reject** to make no change. Approval
+   revalidates the subject, camera, and all three lights; one stale Actor rejects
+   the complete rig.
+6. Optionally press **Evaluate Applied Rig** while a perspective Level Editor
+   viewport is active. One Lit PNG is captured from the frozen camera; the
+   viewport is restored before the local vision model runs.
+7. A balanced result passes without a new action. Otherwise, review the three
+   intensity-only Before/After values and press **Approve Intensity
+   Correction**, or **Reject**.
+8. One Ctrl+Z removes an approved visual correction; a second Ctrl+Z restores
+   the original three lights. Save the level manually only if the result should
+   persist.
+
+Selection order does not assign roles. The model assigns exact frozen paths,
+while Python computes deterministic camera-relative numeric results from the
+subject bounds and camera basis. The subject and camera remain unchanged.
+Directional, Static, Stationary, EV, mixed-unit, orthographic, light-spawning,
+and multi-camera rig requests are rejected rather than approximated.
 
 ## Camera action lifecycle
 
@@ -167,6 +231,14 @@ preset, aspect ratio, projection mode, scale, tracking targets, and Post
 Process blend weight are not changed. Orthographic or multi-camera requests and
 requests that require unsupported composition reasoning resolve as
 **Unresolved**.
+
+For a coordinated action, select 2-16 Camera/Cine Camera Actors and use the same
+**Prepare Camera** button. Relative edits are computed from each frozen Before
+state; absolute edits converge on one target. Review every target in the
+**Coordinated Camera Action** card, then press **Approve & Apply Cameras** or
+**Reject**. Mixed standard/Cine selections can use shared properties, but direct
+FOV or focal-length edits resolve as **Unresolved**. One stale camera rejects the
+whole batch, and one Ctrl+Z restores the complete approved selection.
 
 ## Render and Evaluate lifecycle
 
@@ -269,6 +341,24 @@ and complete Before snapshot. Approved properties are edited through the same
 transactional Editor path used for Static, Stationary, and Movable lights,
 followed by normal post-edit and render-state notifications.
 
+Lighting-rig requests use a separate strict role/style intent. The model can
+assign only the three captured local-light paths to Key, Fill, and Rim exactly
+once and select one value for contrast, palette, key side, spacing, and
+brightness. It cannot author trusted geometry or final numbers. Python derives
+world positions from frozen subject bounds and the captured camera basis, aims
+Spot and Rect Lights at the subject, preserves Point rotation, and computes
+bounded intensity ratios, attenuation, cone coverage, and changed-property
+evidence. Unreal revalidates all five Actors before applying the three lights in
+one rollback-safe `FScopedTransaction`.
+
+Visual rig review uses another strict intent that contains only categorical
+exposure, Fill-balance, and Rim-separation judgments. The PNG hash, pixel
+statistics, frozen Actor evidence, and final numeric values are host-owned.
+Python maps categories to fixed 1.2, 1.0, or `1 / 1.2` factors and can change
+only intensity. Unreal matches the proposal to the captured PNG, then
+revalidates the subject, camera, and all three lights before applying one
+separate transaction. The review cannot loop after a pass or proposal.
+
 Camera requests use a separate strict intent schema and standard/Cine type
 matrix. The model does not control the selected target, Before evidence, lens
 bounds, or final changed-property list. Python computes bounded After values.
@@ -277,6 +367,56 @@ projection, editability/lock state, lens bounds, and every captured property
 immediately before applying the approved transaction. A zero Post Process blend
 weight causes focus or exposure requests to fail safely instead of silently
 changing the blend weight.
+
+Performance requests use a separate strict intent schema and measured
+StaticMeshActor evidence. Findings must cite captured fields. Python turns an
+explicit supported edit into complete ordered Before/After actions; review-only
+diagnosis has no Apply button. Unreal rechecks Actor/component/mesh identity,
+LOD0 triangles, LOD count, materials, Nanite, collision, Mobility, Tick, bounds,
+Cast Shadow, and Max Draw Distance before one rollback-safe grouped transaction.
+Only Cast Shadow and Max Draw Distance are executable in this milestone.
+
+**Capture Runtime Performance** requires an active PIE or SIE world and an
+explicit question. The host discards 30 warmup frames, then stores 120 raw
+consecutive frame, Game Thread, Render Thread, optional RHI Thread, and optional
+GPU samples. It computes nearest-rank timing summaries, budget misses, and the
+largest available P95 component, then records whole-Editor process memory and
+RHI texture-memory evidence. Python recomputes the summaries from the raw
+samples before the local model can review them. The resulting **Runtime
+Performance Capture** card is permanently read-only: it has no Apply action and
+cannot attribute cost to a pass, Actor, asset, or packaged build without later
+profiler evidence.
+
+**Capture GPU Scope Trace** requires an active PIE or SIE world and an explicit
+question. The Assistant refuses to interrupt any trace already owned by Unreal
+Insights or another tool. It records five seconds of `cpu`, `gpu`, `frame`, and
+`bookmark` channels, preserves the `.utrace`, and asks UE 5.7 TraceServices to
+enumerate timed GPU queues and their scope events. The host ranks the top 64
+queue-local scopes by accumulated inclusive duration and retains count, mean,
+maximum, and depth evidence. Python permits the local model to cite only exact
+captured `scope_id` values. The resulting **Unreal Insights GPU Scope Review**
+is read-only; **Open Trace in Unreal Insights** launches the authoritative raw
+timeline. Inclusive totals may overlap, and the workflow does not infer an
+Actor, asset, material, shader, draw call, or packaged-build cause.
+
+**Measure Selected Actor GPU Impact** requires an active PIE or SIE world, an
+explicit question, and exactly one visible selected Actor with at least one
+registered primitive component. Selection may point to the Editor Actor or its
+runtime counterpart; Unreal resolves and records both identities. The workflow
+captures a five-second visible baseline, temporarily sets only the runtime
+Actor hidden in game, verifies that state, waits one second, captures the
+five-second variant, and restores the original hidden state immediately after
+trace stop and before comparison or model review.
+
+The host compares only same-name queue-local scopes that appear in both Top-64
+sets. Inclusive total milliseconds and instance counts are divided by each
+trace's actual duration, and unmatched scope IDs remain explicit. The
+**Selected Actor GPU Impact Experiment** card exposes **Open Baseline Trace**
+and **Open Actor-Hidden Trace**. The formal level is never edited or saved, and
+restoration also runs on cancel, failure, dismissal, Editor shutdown, and
+plugin unload. Results are single-trial associations, not direct proof of pass,
+draw, material, shader, asset, or packaged-build causation. See
+[assistant_actor_gpu_impact.md](assistant_actor_gpu_impact.md).
 
 The controller belongs to the plugin module, so closing and reopening the tab
 does not kill an active workflow. Pressing **Cancel**, closing the Editor, or
@@ -309,15 +449,22 @@ Run all Editor-side contract parsers inside a real, headless Editor process:
 ```
 
 The Editor automation suite covers running and terminal manifest parsing,
-project and external material proposals, single and batch Transform, Light, and
-Camera proposal parsing, an actual two-Actor Transform batch followed by one
-Unreal Undo, the original single-Actor Transform regression, a Stationary Light
-property apply followed by Unreal Undo, and a Camera property apply followed by
+project and external material proposals, single and batch Transform, Light,
+lighting-rig, lighting-rig-review, Camera, selected-mesh performance,
+runtime-performance, Insights GPU report parsing and aggregation, and Actor GPU
+impact comparison/report validation, an actual two-Actor Transform batch
+followed by one Unreal Undo, the original single-Actor Transform regression, a
+Stationary Light property apply followed by Unreal Undo, a three-light rig
+apply followed by one Unreal Undo, and a Camera property apply followed by
 Unreal Undo.
 A visible smoke test should also confirm that the panel appears, both search
 buttons produce the expected proposal type, approval changes only the chosen
 slot, **Prepare Transform** shows every selected Actor and correct local/world
 Before/After values, all four scene-action types undo correctly, **Prepare
 Light** exposes only type-valid fields and undoes correctly, **Prepare Camera**
-distinguishes FOV from focal length and undoes correctly, and no
+distinguishes FOV from focal length and undoes correctly, **Prepare Lighting
+Rig** shows exact Key/Fill/Rim roles and one grouped Undo, **Evaluate Applied
+Rig** restores the visible viewport and creates at most one intensity-only
+correction, **Measure Selected Actor GPU Impact** restores the runtime Actor
+and preserves two traces, and no
 RenderMasterBot-specific error is written during startup.

@@ -20,9 +20,10 @@ read-only. The level changes only after the operator reviews the dedicated
 
 The first version intentionally does not change Filmback, lens presets, aspect
 ratio, projection mode, scale, tracked focus targets, or Post Process blend
-weight. Orthographic cameras, multi-camera coordination, shot sequencing, and
-requests that require visual composition judgment are reported as
-**Unresolved** instead of being approximated.
+weight. Orthographic cameras, shot sequencing, and requests that require visual
+composition judgment are reported as **Unresolved** instead of being
+approximated. Shared numeric edits for 2-16 selected cameras use the separate
+[coordinated multi-camera workflow](assistant_camera_batches.md).
 
 ## Why the model does not own the final camera state
 

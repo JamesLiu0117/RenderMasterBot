@@ -65,6 +65,30 @@ bool RenderMasterParseCameraProposalFile(
     FRenderMasterCameraProposal& OutProposal,
     FString& OutError);
 
+bool RenderMasterParseCameraProposalJson(
+    const FString& JsonText,
+    FRenderMasterCameraProposal& OutProposal,
+    FString& OutError);
+
+FString RenderMasterCameraKind(const UCameraComponent* CameraComponent);
+FRenderMasterCameraBounds RenderMasterSnapshotCameraBounds(
+    const UCameraComponent* CameraComponent);
+FRenderMasterCameraSnapshot RenderMasterSnapshotCamera(
+    const ACameraActor* CameraActor,
+    const UCameraComponent* CameraComponent);
+bool RenderMasterIsBoundedCameraSnapshot(
+    const FRenderMasterCameraSnapshot& Snapshot,
+    const FString& CameraKind,
+    const FRenderMasterCameraBounds& Bounds);
+bool RenderMasterCameraSnapshotsMatch(
+    const FRenderMasterCameraSnapshot& A,
+    const FRenderMasterCameraSnapshot& B);
+bool RenderMasterCameraBoundsMatch(
+    const FRenderMasterCameraBounds& A,
+    const FRenderMasterCameraBounds& B);
+bool RenderMasterHasSupportedStandardFocusShape(
+    const UCameraComponent* CameraComponent);
+
 bool RenderMasterApplyCameraProperties(
     ACameraActor* CameraActor,
     UCameraComponent* CameraComponent,
@@ -73,7 +97,8 @@ bool RenderMasterApplyCameraProperties(
     const FRenderMasterCameraSnapshot& Before,
     const FRenderMasterCameraSnapshot& After,
     FString& OutError,
-    bool bMarkPackageDirty = true);
+    bool bMarkPackageDirty = true,
+    bool bCreateTransaction = true);
 
 class FRenderMasterCameraAssistant : public TSharedFromThis<FRenderMasterCameraAssistant>
 {

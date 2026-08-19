@@ -18,8 +18,22 @@ these strict models. Unknown fields are rejected.
 | `AssistantLightProposal` | bounded light proposal builder | Unreal Editor assistant/operator | approval-gated selected-Light property change |
 | `UnrealLightSelectionContext` | Unreal Editor assistant | batch light proposal builder | ordered evidence for one to 16 selected lights |
 | `AssistantLightBatchProposal` | bounded light proposal builder | Unreal Editor assistant/operator | approval-gated compatible group property action |
+| `UnrealLightingRigContext` | Unreal Editor assistant | lighting-rig proposal builder | frozen subject, perspective camera, and exactly three compatible local lights |
+| `AssistantLightingRigProposal` | bounded lighting-rig proposal builder | Unreal Editor assistant/operator | approval-gated camera-relative Key/Fill/Rim action |
+| `UnrealLightingRigReviewContext` | Unreal Editor assistant | local visual reviewer | frozen applied rig, ordered Key/Fill/Rim roles, and source request |
+| `AssistantLightingRigReviewProposal` | bounded visual reviewer and host compiler | Unreal Editor assistant/operator | PNG-bound pass, capability gap, or approval-gated intensity-only correction |
 | `UnrealCameraContext` | Unreal Editor assistant | camera proposal builder | frozen Camera/Cine Camera identity, lens bounds, and editable property evidence |
 | `AssistantCameraProposal` | bounded camera proposal builder | Unreal Editor assistant/operator | approval-gated selected-Camera property change |
+| `UnrealCameraSelectionContext` | Unreal Editor assistant | camera batch proposal builder | ordered evidence for 2-16 selected Camera/Cine Camera Actors |
+| `AssistantCameraBatchProposal` | bounded camera batch proposal builder | Unreal Editor assistant/operator | approval-gated coordinated property action for the complete camera selection |
+| `UnrealPerformanceSelectionContext` | Unreal Editor assistant | performance review builder | ordered measured evidence for 1-32 selected native StaticMeshActors |
+| `AssistantPerformanceProposal` | bounded performance review builder | Unreal Editor assistant/operator | evidence-backed read-only findings or approval-gated shadow/culling action |
+| `UnrealRuntimePerformanceCapture` | Unreal Editor PIE/SIE sampler | runtime review builder/auditor | raw consecutive frame/thread/GPU samples plus recomputable summaries and memory evidence |
+| `AssistantRuntimePerformanceReport` | bounded runtime review builder | Unreal Editor assistant/operator | read-only evidence-cited diagnosis or explicit profiler capability gap |
+| `UnrealInsightsGpuCapture` | Unreal Editor trace recorder and UE TraceServices parser | GPU scope review builder/auditor | hash-bound trace identity, GPU queues, and ranked inclusive scope evidence |
+| `AssistantInsightsGpuReport` | bounded GPU scope review builder | Unreal Editor assistant/operator | read-only scope-cited diagnosis or explicit attribution capability gap |
+| `UnrealActorGpuImpactExperiment` | Unreal Editor controlled A/B recorder and deterministic comparator | Actor GPU review builder/auditor | one restored runtime Actor target, two trace-backed captures, and normalized matched-scope deltas |
+| `AssistantActorGpuImpactReport` | bounded Actor GPU impact review builder | Unreal Editor assistant/operator | read-only delta-cited impact candidates or explicit direct-attribution capability gap |
 | `RenderSpec` | planner or human | validator/engine adapter | complete requested scene |
 | `RenderSpecPatch` | evaluator or human | patch validator | bounded correction proposal |
 | `EvaluationReport` | visual/rule evaluator | repair planner/benchmark | findings and verdict |
@@ -31,7 +45,7 @@ these strict models. Unknown fields are rejected.
 | `RunManifest` | orchestration layer | dataset builder/auditor | reproducible run evidence |
 
 Although the early planning note called these "six contracts," the actual
-boundary now contains twenty-three top-level contracts. `CorrectionDecision` is kept
+boundary now contains thirty-seven top-level contracts. `CorrectionDecision` is kept
 separate from `EvaluationReport` so visual observation and executable repair
 remain independently testable.
 
@@ -71,6 +85,27 @@ remain independently testable.
   editability, lock state, and complete snapshot immediately before one grouped
   Undo transaction. One stale light rejects the group. A proposal cannot spawn,
   delete, rename, retype, or change intensity units.
+- A lighting-rig context freezes one bounded subject, one perspective Camera or
+  Cine Camera, and exactly three editable, unlocked, Movable Point, Spot, or
+  Rect Lights sharing one non-EV intensity unit. The model assigns the three
+  exact Actor paths to Key, Fill, and Rim once each and selects only bounded
+  semantic style controls.
+- The host computes the final camera-relative locations, aim rotations,
+  intensity ratios, attenuation, Spot cone coverage, and exact changed-property
+  evidence. Unreal rechecks all five Actors immediately before applying only
+  the three lights in one Undo transaction. The subject and camera never change;
+  spawn, delete, rename, retype, unit conversion, tint, and shadow changes are
+  forbidden.
+- Lighting-rig review freezes the already applied subject, camera, three lights,
+  and exact ordered Key/Fill/Rim roles. The Editor captures one Lit PNG from the
+  frozen camera, restores the user's viewport, and binds the proposal to the
+  PNG SHA-256 plus deterministic luminance statistics.
+- The vision model returns only categorical exposure, Fill, and Rim diagnoses.
+  The host computes fixed-factor intensity changes: at most 1.2 globally and
+  1.2 for the affected Fill or Rim role, for a maximum combined factor of 1.44.
+  It cannot move lights or change rotation, color, temperature, attenuation,
+  cones, shadows, camera, or subject. Unreal revalidates all five Actors before
+  a separate approval-gated Undo transaction and never saves automatically.
 - Camera target identity, kind, lens bounds, and complete Before values come
   from the Editor. The model can request only bounded operations; the host
   computes the final standard-Camera FOV or Cine-Camera focal length, aperture,
@@ -80,6 +115,46 @@ remain independently testable.
   one Undo-backed transaction. Camera proposals cannot change Filmback, lens
   presets, aspect ratio, projection mode, scale, tracked focus targets, or Post
   Process blend weight.
+- Coordinated camera proposals contain one action for every frozen camera in
+  selection order, including explicit no-op evidence for cameras already at an
+  absolute target. One stale camera rejects the entire batch; successful
+  approval is one grouped Undo transaction and never saves the level.
+- Performance selection evidence is measured by Unreal and freezes Actor,
+  component, mesh, LOD0 triangle, LOD, material-slot, Nanite, collision,
+  Mobility, Tick, bounds, shadow, and cull-distance state. Findings may cite
+  only those fields and only selected Actor paths.
+- Executable performance proposals can change only component Cast Shadow and
+  Max Draw Distance. Python emits ordered Before/After evidence for every
+  selected Actor, including no-ops. Unreal revalidates the complete evidence;
+  one stale Actor rejects the batch, one grouped transaction applies it, and
+  the level is never saved automatically.
+- Runtime performance captures preserve every raw consecutive PIE/SIE sample.
+  Python recomputes nearest-rank summaries, frame-budget misses, and the largest
+  available P95 component; tampered host summaries fail before inference.
+- Runtime findings can cite only enumerated, available measurements. The final
+  report embeds the exact validated capture and its canonical SHA-256, is
+  permanently read-only, and cannot claim per-pass/per-Actor attribution or
+  packaged-build parity from the short Editor sample.
+- Insights GPU captures bind a preserved `.utrace` by filename, byte size, and
+  SHA-256, then retain every non-empty GPU queue plus the 64 highest accumulated
+  queue-local inclusive scopes. Scope totals are sorted but explicitly nested
+  and potentially overlapping.
+- Insights GPU findings may cite only captured `scope_id` values. The final
+  report embeds the exact validated capture, preserves both its canonical hash
+  and exact source-file hash, is permanently read-only, and
+  cannot infer Actor, asset, material, shader, draw-call, or packaged-build
+  attribution from scope timing alone.
+- Actor GPU experiments require distinct Actor-visible and runtime-hidden
+  captures with matching project, world, PIE/SIE mode, viewport, GPU, and trace
+  channels. Only queue-local scopes present in both Top-64 sets are compared;
+  totals and instance counts are normalized by each capture's actual duration.
+- Every Actor GPU delta is recomputable from embedded capture evidence, sorted
+  by absolute change, and accompanied by complete unmatched-scope sets. The
+  runtime Actor must be restored before the experiment can claim completion.
+- Actor GPU findings may cite only measured `delta_id` values. The final report
+  embeds the exact experiment, preserves canonical and source-file hashes, is
+  permanently read-only, and may describe association or an impact candidate
+  but never direct pass/draw/material/shader/asset causation.
 - External-material operational records freeze provider metadata, four local
   map hashes, the exact five planned Unreal paths, and the canonical proposal
   SHA-256. A mismatched approval hash stops before Unreal is launched.
@@ -129,8 +204,23 @@ render-master validate examples/unreal_light_context.json --contract unreal-ligh
 render-master schema assistant-light-proposal -o assistant_light_proposal.schema.json
 render-master validate examples/unreal_light_selection_context.json --contract unreal-light-selection-context
 render-master schema assistant-light-batch-proposal -o assistant_light_batch_proposal.schema.json
+render-master validate examples/unreal_lighting_rig_context.json --contract unreal-lighting-rig-context
+render-master schema assistant-lighting-rig-proposal -o assistant_lighting_rig_proposal.schema.json
+render-master schema unreal-lighting-rig-review-context -o unreal_lighting_rig_review_context.schema.json
+render-master schema assistant-lighting-rig-review-proposal -o assistant_lighting_rig_review_proposal.schema.json
+render-master validate examples/unreal_lighting_rig_review_context.json --contract unreal-lighting-rig-review-context
 render-master validate examples/unreal_camera_context.json --contract unreal-camera-context
 render-master schema assistant-camera-proposal -o assistant_camera_proposal.schema.json
+render-master validate examples/unreal_camera_selection_context.json --contract unreal-camera-selection-context
+render-master schema assistant-camera-batch-proposal -o assistant_camera_batch_proposal.schema.json
+render-master validate examples/unreal_performance_selection_context.json --contract unreal-performance-selection-context
+render-master schema assistant-performance-proposal -o assistant_performance_proposal.schema.json
+render-master validate examples/unreal_runtime_performance_capture.json --contract unreal-runtime-performance-capture
+render-master schema assistant-runtime-performance-report -o assistant_runtime_performance_report.schema.json
+render-master validate examples/unreal_insights_gpu_capture.json --contract unreal-insights-gpu-capture
+render-master schema assistant-insights-gpu-report -o assistant_insights_gpu_report.schema.json
+render-master validate examples/unreal_actor_gpu_impact_experiment.json --contract unreal-actor-gpu-impact-experiment
+render-master schema assistant-actor-gpu-impact-report -o assistant_actor_gpu_impact_report.schema.json
 ```
 
 `render-master schema` and `render-master validate` default to `render-spec`,
