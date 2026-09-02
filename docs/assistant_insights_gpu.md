@@ -70,11 +70,11 @@ material, shader, draw call, setting, or causal explanation.
 
 Requests such as `Which Actor caused this Lumen cost?` still resolve as
 `unresolved` in this scope-only workflow because one trace cannot answer them.
-For one selected Actor, the separate controlled A/B workflow can measure which
-matched scopes changed when that Actor was temporarily hidden, but it reports
-association rather than direct pass/draw causation. See
-[assistant_actor_gpu_impact.md](assistant_actor_gpu_impact.md). PIE/SIE evidence
-also does not prove packaged-build performance.
+For one selected Actor, the repeatable study can measure which scopes common to
+eight traces change across A/A controls and counterbalanced visible/hidden
+pairs, but it still reports association rather than direct pass/draw causation.
+See [assistant_actor_gpu_impact_studies.md](assistant_actor_gpu_impact_studies.md).
+PIE/SIE evidence also does not prove packaged-build performance.
 
 ## Artifacts and CLI
 

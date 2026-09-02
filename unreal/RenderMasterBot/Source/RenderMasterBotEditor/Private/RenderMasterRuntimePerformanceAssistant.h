@@ -113,6 +113,8 @@ public:
     FText GetSummaryText() const;
     FLinearColor GetStateColor() const;
     const FRenderMasterRuntimeCapture& GetCapture() const { return Capture; }
+    const FRenderMasterRuntimePerformanceReport& GetReport() const { return Report; }
+    const FString& GetReportOutputPath() const { return ReportOutputPath; }
 
 private:
     bool Tick(float DeltaTime);

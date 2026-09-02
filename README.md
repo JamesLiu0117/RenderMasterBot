@@ -17,9 +17,13 @@ product combines two independently testable systems:
    resolves asset IDs, builds or modifies a scene, renders previews and finals,
    and returns structured execution evidence.
 
-The intended user-facing entry point is an Unreal Editor panel backed by a
-local RenderMaster service. The command line remains available for development,
-debugging, automation, and reproducible experiments.
+The intended user-facing entry point is a multi-turn conversational Unreal
+Editor panel backed by a local RenderMaster service. The user asks questions or
+describes a goal; the Assistant answers, requests missing context, or routes one
+registered bounded capability. Capability-specific buttons remain available as
+collapsed advanced controls, not as the normal way to choose what the AI can
+do. The command line remains available for development, debugging, automation,
+and reproducible experiments.
 
 The target workflow is a closed loop:
 
@@ -100,6 +104,10 @@ correction records, and a reproducible run manifest.
   latest PNG preview, visual verdict, pixel evidence, bounded cancellation, and local runtime settings
 - Assistant-centered Unreal workspace with live project, level, and actor-selection context,
   an explicit proposed-action review, and approval required before execution
+- Multi-turn local conversation routing with a persistent in-panel message timeline,
+  answer/clarify/route outcomes, host-enforced context prerequisites, one primary
+  **Send to Assistant** entry point, and capability-specific controls demoted to
+  a collapsed **Advanced Direct Tools** area
 - Catalog-verified material proposals for one selected Static Mesh Actor, with
   automatic single-slot targeting, explicit multi-slot targeting, approval-time
   revalidation, no automatic save, and Ctrl+Z Undo
@@ -131,6 +139,12 @@ correction records, and a reproducible run manifest.
   with measured mesh/LOD/material/Nanite/collision/Tick/shadow/culling/bounds
   fields, read-only findings, optional approval-gated Cast Shadow and Max Draw
   Distance actions, full stale-state rejection, and one grouped Ctrl+Z Undo
+- Full Level Audit Stage 1 for every eligible native StaticMeshActor in the
+  current Editor level, with explicit excluded counts, host-computed aggregate
+  statistics, transparent per-Actor 0-100 static priorities, Top-64 bounded
+  model evidence, recommended Top-N runtime follow-ups, and optional
+  approval-gated Cast Shadow/Max Draw Distance actions with complete stale-state
+  rejection and one grouped Ctrl+Z Undo
 - Read-only PIE/SIE runtime performance capture with 30 warmup frames and 120
   consecutive raw samples, host-recomputed frame/Game/Render/RHI/GPU P50/P95/
   maximum evidence, frame-budget misses, process and RHI texture memory,
@@ -146,6 +160,24 @@ correction records, and a reproducible run manifest.
   restoration, one-second variant warmup, duration-normalized matched-scope
   deltas, constrained association-only model review, and both raw traces
   preserved for Unreal Insights
+- Repeatable selected-Actor GPU study with two visible A/A controls, fixed
+  per-capture warmups, counterbalanced AB/BA/AB trials, all-eight Top-64 scope
+  intersection, host-recomputed median/MAD/noise/direction votes, automatic
+  runtime restoration, aggregate-constrained model review, and eight preserved
+  Unreal Insights traces
+- Profiling-first whole-level orchestration that binds one read-only static
+  audit, an exact 30-warmup/120-sample PIE/SIE baseline, one five-second GPU
+  scope trace, and deterministic Top-2 repeatable Actor studies into one
+  cross-validated report. Performance conclusions come from profiler evidence;
+  images are explicitly limited to auxiliary visual-regression checks
+- Profiling-gated Cast Shadow optimization for the best stable Actor candidate,
+  with two A/A controls, three counterbalanced on/off pairs, fixed deterministic
+  thresholds, guaranteed runtime restoration, explicit operator approval,
+  approval-time stale-state rejection, no automatic save, and one-step Undo
+- Post-apply whole-level verification that freezes the original profiling and
+  shadow-experiment evidence, repeats the complete profiling workload, applies
+  fixed frame/GPU/budget/scope regression guards, and offers explicit retain or
+  stale-checked rollback without automatic saving
 - Parameterized `MaterialInstanceConstant` variants with exposed-parameter
   inspection, exact value readback, and no-overwrite behavior
 - Official Poly Haven texture discovery with local semantic ranking, visible
@@ -155,14 +187,33 @@ correction records, and a reproducible run manifest.
   incrementally synchronizes the AssetCard catalog and Chroma
 - Unreal Assistant buttons for separate project-only search and external CC0
   search, with the five saved Content paths shown before **Approve Import & Apply**
+- Training Stage 0 with workflow-only positive-example extraction, source and
+  example SHA-256 provenance, deterministic workflow-grouped JSONL splits,
+  duplicate/leakage auditing, and explicit QLoRA readiness gates
+- Training Stage 1 with a frozen 24-case real-project suite, resumable isolated
+  attempts, project/catalog drift rejection, PNG pixel sanity checks, host-owned
+  asset/material/count expectations, frozen base-model baselines, and a
+  campaign-gated final-RenderSpec dataset allow-list
+- First complete unchanged-base-model corpus baseline: 24/24 cases executed,
+  2/24 eligible (8.33%), seven machine-readable failure categories, an audited
+  2/0/0 gated dataset, and an explicit refusal to start QLoRA below 20/2/2
+- Training Stage 2 Golden Reference infrastructure with non-model provenance,
+  frozen campaign identity, deterministic asset/expectation/preflight checks,
+  planner-free Unreal execution, and existing campaign/dataset gate reuse
 - Command-line doctor, schema, validate, preflight, Unreal, retrieval, planning, evaluation, and correction commands
 - Standard-library unit tests for contracts, planning, preflight, Unreal execution, and preview orchestration
 
-General geometry-aware Actor arrangement, repeated/interleaved Actor GPU trials,
-direct per-asset/per-material/per-shader/per-draw attribution, packaged-build benchmarking,
+General geometry-aware Actor arrangement, direct per-asset/per-material/
+per-shader/per-draw attribution, packaged-build benchmarking,
 asset-level Nanite/LOD/mesh/material/
 collision optimization, richer shot-specific lighting calibration, multi-shot
-visual evaluation, and model fine-tuning are later milestones.
+visual evaluation, larger curated training sets, and actual model-weight
+fine-tuning are later milestones. The auditable training-data foundation and
+first real gated corpus pilot are implemented; see
+[docs/training_stage_0.md](docs/training_stage_0.md) and
+[docs/training_stage_1.md](docs/training_stage_1.md). The Golden Reference
+authoring and execution boundary is documented in
+[docs/training_stage_2.md](docs/training_stage_2.md).
 
 ## Local setup
 
@@ -373,8 +424,16 @@ for the Editor target, compile the Editor target, and open **Tools >
 RenderMasterBot > RenderMasterBot Assistant**. The workspace can also be opened at
 startup with `-RenderMasterOpenPanel`.
 
-The default **Assistant** page reads the live project, level, and selected-actor
-context without modifying the scene. **Prepare Material** retrieves only
+The default **Assistant** page is a multi-turn local conversation. **Send to
+Assistant** captures bounded live project, level, PIE/SIE, selection, and
+workflow-readiness context, then asks the planner to answer, clarify, or select
+one registered capability. The host rechecks capability prerequisites and
+dispatches only a fixed intent whitelist. **New Conversation** clears only the
+in-memory timeline; it does not modify project content or delete preserved
+workflow evidence. Capability-specific buttons remain in the collapsed
+**Advanced Direct Tools** area for debugging and expert operation.
+
+The page reads context without modifying the scene. **Prepare Material** retrieves only
 catalog-verified project materials. **Search Poly Haven** searches official CC0
 external materials, caches and verifies four maps outside the project, and shows
 the source, license, approval hash, and exact five Content paths before any
@@ -463,19 +522,38 @@ open the authoritative file in Unreal Insights. It remains read-only and does
 not claim per-Actor or packaged-build attribution. See
 [docs/assistant_insights_gpu.md](docs/assistant_insights_gpu.md).
 
-**Measure Selected Actor GPU Impact** requires active PIE/SIE and exactly one
-visible selected Actor with registered primitive components. It records a
-five-second visible baseline, hides only that Actor's runtime counterpart,
-waits one second, records a five-second variant, and restores the Actor before
-analysis. The host compares only queue-local scopes present in both Top-64 sets
-and normalizes them by actual capture duration. The model may describe impact
-candidates, not direct pass/draw/material/shader causation. Both `.utrace`
-files remain available from the result card. See
-[docs/assistant_actor_gpu_impact.md](docs/assistant_actor_gpu_impact.md).
+**Run Repeatable Selected Actor GPU Study** requires active PIE/SIE and exactly
+one visible selected Actor with registered primitive components. It records two
+visible A/A controls followed by AB, BA, AB visible/hidden trial pairs. Every
+one of the eight five-second traces has a fixed one-second warmup. The Actor is
+restored before review and on every failure/cancel path. The host intersects
+scope identity across all eight Top-64 sets and recomputes A/A noise, three
+paired deltas, median, MAD, direction votes, and classification before the
+model sees evidence. See
+[docs/assistant_actor_gpu_impact_studies.md](docs/assistant_actor_gpu_impact_studies.md).
+
+**Run Profiling-First Level Audit** requires one active, representative PIE/SIE
+workload with a fixed camera, viewport, resolution, and content state. It runs
+the read-only Full Level Audit, the exact 120-sample runtime baseline, a
+five-second GPU scope trace, and up to two deterministic high-priority Actor
+studies without saving or formally editing the level. Project, world, play
+mode, viewport, GPU, capture parameters, report IDs, and runtime restoration are
+cross-validated before the final report is accepted. Missing Actor mappings are
+recorded as bounded skips rather than silently replaced. See
+[docs/assistant_level_profiling.md](docs/assistant_level_profiling.md).
+
+This composite audit treats profiling as the performance authority. A rendered
+image cannot demonstrate frame-time or GPU-cost improvement. The connected
+**Test Best Shadow Optimization** workflow uses another controlled eight-trace
+Cast Shadow on/off experiment and fixed host thresholds to decide whether a
+candidate can be proposed. Runtime state is restored before review; only a
+stale-checked operator approval can edit the formal level, without saving, as
+one Undo transaction. Images remain auxiliary visual-regression evidence only.
+See [docs/assistant_shadow_optimization.md](docs/assistant_shadow_optimization.md).
 
 The secondary **Render & Evaluate** page runs the existing schema-gated
-`render-master run` workflow. General geometry-aware arrangement, repeated
-Actor trials, direct per-asset/material/shader/draw attribution,
+`render-master run` workflow. General geometry-aware arrangement, direct
+per-asset/material/shader/draw attribution,
 packaged-build comparison, asset-level
 performance fixes, multi-shot visual evaluation, and richer shot-specific
 lighting refinement remain marked as not connected rather than being
@@ -531,6 +609,16 @@ The approval-gated selected-Light action is documented in [docs/assistant_lights
 The approval-gated three-point lighting rig is documented in [docs/assistant_lighting_rigs.md](docs/assistant_lighting_rigs.md).
 The camera-view visual review and intensity-only refinement are documented in [docs/assistant_lighting_reviews.md](docs/assistant_lighting_reviews.md).
 The controlled selected-Actor GPU impact experiment is documented in [docs/assistant_actor_gpu_impact.md](docs/assistant_actor_gpu_impact.md).
+The repeatable selected-Actor GPU study is documented in [docs/assistant_actor_gpu_impact_studies.md](docs/assistant_actor_gpu_impact_studies.md).
+The deterministic whole-level static audit is documented in [docs/assistant_level_audits.md](docs/assistant_level_audits.md).
+The profiling-first whole-level audit is documented in [docs/assistant_level_profiling.md](docs/assistant_level_profiling.md).
+The profiling-gated Cast Shadow optimization loop is documented in [docs/assistant_shadow_optimization.md](docs/assistant_shadow_optimization.md).
+The private workflow-derived training dataset and QLoRA gates are documented in
+[docs/training_stage_0.md](docs/training_stage_0.md). Resumable corpus campaigns,
+frozen baselines, and campaign-gated final targets are documented in
+[docs/training_stage_1.md](docs/training_stage_1.md). Non-model-authored Golden
+References and planner-free Unreal evidence collection are documented in
+[docs/training_stage_2.md](docs/training_stage_2.md).
 The native Unreal dashboard is documented in [docs/unreal_editor_panel.md](docs/unreal_editor_panel.md).
 
 Export or validate any contract:

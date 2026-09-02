@@ -1,8 +1,12 @@
 # Selected Actor GPU impact experiment
 
-RenderMasterBot can run one controlled, read-only GPU experiment for exactly
-one selected level Actor while Play In Editor (PIE) or Simulate In Editor
-(SIE) is active. It records an Actor-visible baseline, temporarily hides only
+This document describes the original single-pair Actor-visible/hidden contract
+and CLI. It remains supported for backward compatibility and small offline
+experiments. The Unreal Assistant dashboard now runs the repeatable eight-trace
+study with A/A noise control and counterbalanced AB/BA/AB trials; see
+[assistant_actor_gpu_impact_studies.md](assistant_actor_gpu_impact_studies.md).
+
+The single-pair path records an Actor-visible baseline, temporarily hides only
 the runtime-world counterpart of that Actor, warms the renderer for one second,
 records a second trace, and restores the Actor before analysis begins.
 
@@ -10,22 +14,18 @@ The result is evidence that GPU scope timing changed *with* the Actor hidden.
 It is an impact candidate, not proof that the Actor directly owns a render
 pass, draw call, material, shader, or asset cost.
 
-## Editor workflow
+## Original single-pair evidence flow
 
 1. Start PIE or SIE and establish a representative, stable workload.
 2. Select exactly one visible Actor that has at least one registered primitive
    component. The selection may be its Editor or runtime counterpart.
-3. Enter a bounded question such as `Which measured GPU scopes changed when
-   this selected Actor was hidden?`
-4. Press **Measure Selected Actor GPU Impact**.
-5. Keep the camera and workload stable while the Assistant records two
+3. Record the pair through the legacy integration or review an existing capture
+   through the CLI below. New Editor studies use the repeatable workflow.
+4. Keep the camera and workload stable while the integration records two
    five-second traces. Between them it hides only the selected runtime Actor
    and waits one second for renderer state to settle.
-6. Review the **Selected Actor GPU Impact Experiment** card. Use **Open Baseline
-   Trace** and **Open Actor-Hidden Trace** to inspect both authoritative files
-   in Unreal Insights.
-7. Press **Dismiss Review** when finished. Both traces and the JSON evidence
-   remain in the local workflow folder.
+5. Review both authoritative traces in Unreal Insights and preserve the JSON
+   evidence beside them.
 
 The formal Editor-world Actor is never edited, transacted, or saved. The
 runtime Actor's original hidden state is restored immediately after the second

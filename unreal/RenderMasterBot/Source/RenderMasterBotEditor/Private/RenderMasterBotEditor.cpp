@@ -3,6 +3,7 @@
 #include "Containers/Ticker.h"
 #include "Framework/Docking/TabManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Misc/App.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "RenderMasterWorkflowController.h"
@@ -21,6 +22,15 @@ const FName FRenderMasterBotEditorModule::PanelTabName(TEXT("RenderMasterBotPane
 
 void FRenderMasterBotEditorModule::StartupModule()
 {
+    if (IsRunningCommandlet() || FApp::IsUnattended())
+    {
+        UE_LOG(
+            LogRenderMasterBotEditor,
+            Display,
+            TEXT("RenderMasterBot editor UI skipped for commandlet or unattended execution."));
+        return;
+    }
+
     Controller = MakeShared<FRenderMasterWorkflowController>();
     Controller->Initialize();
 
@@ -34,6 +44,7 @@ void FRenderMasterBotEditorModule::StartupModule()
 
     MenuStartupHandle = UToolMenus::RegisterStartupCallback(
         FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FRenderMasterBotEditorModule::RegisterMenus));
+    bPanelRegistered = true;
 
     if (FParse::Param(FCommandLine::Get(), TEXT("RenderMasterOpenPanel")))
     {
@@ -58,12 +69,16 @@ void FRenderMasterBotEditorModule::ShutdownModule()
         AutoOpenTickerHandle.Reset();
     }
 
-    if (UToolMenus::IsToolMenuUIEnabled())
+    if (bPanelRegistered && UToolMenus::IsToolMenuUIEnabled())
     {
         UToolMenus::UnRegisterStartupCallback(this);
         UToolMenus::UnregisterOwner(this);
     }
-    FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(PanelTabName);
+    if (bPanelRegistered)
+    {
+        FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(PanelTabName);
+        bPanelRegistered = false;
+    }
 
     if (Controller.IsValid())
     {

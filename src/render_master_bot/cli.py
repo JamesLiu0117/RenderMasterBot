@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -55,10 +56,20 @@ from render_master_bot.assistant_camera_batches import (
     load_camera_selection_context,
     propose_camera_batch_change,
 )
+from render_master_bot.assistant_conversation import (
+    ConversationRoutingError,
+    load_conversation_request,
+    route_conversation_turn,
+)
 from render_master_bot.assistant_performance import (
     PerformanceProposalError,
     load_performance_selection_context,
     propose_performance_review,
+)
+from render_master_bot.assistant_level_audits import (
+    LevelAuditError,
+    load_level_audit_context,
+    review_level_audit,
 )
 from render_master_bot.assistant_runtime_performance import (
     RuntimePerformanceReviewError,
@@ -76,6 +87,30 @@ from render_master_bot.assistant_actor_gpu_impact import (
     hash_actor_gpu_impact_file,
     load_actor_gpu_impact_experiment,
     review_actor_gpu_impact,
+)
+from render_master_bot.assistant_actor_gpu_impact_studies import (
+    ActorGpuImpactStudyReviewError,
+    hash_actor_gpu_impact_study_file,
+    load_actor_gpu_impact_study_capture_set,
+    review_actor_gpu_impact_study,
+)
+from render_master_bot.assistant_level_profiling import (
+    LevelProfilingSynthesisError,
+    analyze_level_profiling_run,
+    build_level_profiling_run,
+    load_actor_study_report,
+    load_gpu_scope_report,
+    load_level_audit_report,
+    load_level_profiling_skips,
+    load_runtime_performance_report,
+)
+from render_master_bot.assistant_shadow_optimization import (
+    ShadowOptimizationAnalysisError,
+    analyze_shadow_optimization_file,
+)
+from render_master_bot.assistant_shadow_optimization_verification import (
+    ShadowOptimizationVerificationError,
+    analyze_shadow_optimization_verification_files,
 )
 from render_master_bot.assistant_external_materials import (
     ExternalMaterialAssistantError,
@@ -121,6 +156,32 @@ from render_master_bot.preflight import run_preflight
 from render_master_bot.schemas import contract_model, contract_schema
 from render_master_bot.serialization import canonical_sha256
 from render_master_bot.settings import Settings
+from render_master_bot.training_data import (
+    DEFAULT_DATASET_ID,
+    DEFAULT_SPLIT_SEED,
+    TrainingDataError,
+    audit_training_dataset,
+    build_training_dataset,
+)
+from render_master_bot.training_campaign import (
+    CAMPAIGN_MANIFEST_FILENAME,
+    TrainingCampaignError,
+    build_training_baseline_report,
+    campaign_status_summary,
+    create_training_campaign_plan,
+    load_training_campaign_run,
+    run_training_campaign,
+    validate_training_campaign_runtime,
+)
+from render_master_bot.training_reference import (
+    TrainingReferenceError,
+    compile_single_asset_reference_suite,
+    create_training_reference_campaign_plan,
+    reference_campaign_manifest,
+    run_training_reference_workflow,
+    validate_training_reference_campaign_runtime,
+    validate_training_reference_suite,
+)
 from render_master_bot.unreal_assets import UnrealAssetScanError, run_unreal_asset_scan
 from render_master_bot.unreal_executor import UnrealSceneBuildError, run_unreal_scene_build
 from render_master_bot.unreal_materials import (
@@ -241,6 +302,290 @@ def cmd_config(_: argparse.Namespace) -> int:
         None,
     )
     return 0
+
+
+def cmd_training_data_build(args: argparse.Namespace) -> int:
+    try:
+        result = build_training_dataset(
+            source_root=args.source_root,
+            output_directory=args.output_dir,
+            dataset_id=args.dataset_id,
+            split_seed=args.split_seed,
+            validation_group_fraction=args.validation_fraction,
+            test_group_fraction=args.test_fraction,
+            campaign_run_path=args.campaign_run,
+        )
+    except TrainingDataError as exc:
+        print(f"ERROR: training dataset build failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(
+        {
+            "dataset_id": result.manifest.dataset_id,
+            "manifest_path": str(result.manifest_path),
+            "audit_path": str(result.audit_path),
+            "discovered_source_manifest_count": (
+                result.manifest.discovered_source_manifest_count
+            ),
+            "accepted_source_manifest_count": len(
+                result.manifest.accepted_source_manifests
+            ),
+            "skipped_source_count": len(result.manifest.skipped_sources),
+            "total_example_count": result.manifest.total_example_count,
+            "split_counts": result.audit.split_counts,
+            "integrity_status": result.audit.integrity_status,
+            "qlora_smoke_ready": result.audit.qlora_smoke_ready,
+            "product_finetune_ready": result.audit.product_finetune_ready,
+            "readiness_reasons": result.audit.readiness_reasons,
+        },
+        args.output,
+    )
+    return 0 if result.audit.integrity_status == "passed" else 1
+
+
+def cmd_training_data_audit(args: argparse.Namespace) -> int:
+    try:
+        report = audit_training_dataset(args.manifest)
+    except TrainingDataError as exc:
+        print(f"ERROR: training dataset audit failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(report.model_dump(mode="json"), args.output)
+    return 0 if report.integrity_status == "passed" else 1
+
+
+def cmd_training_campaign_plan(args: argparse.Namespace) -> int:
+    settings = _settings()
+    try:
+        manifest_path, run = create_training_campaign_plan(
+            suite_path=args.suite,
+            campaign_directory=args.campaign_dir,
+            campaign_id=args.campaign_id,
+            project_path=args.path,
+            asset_catalog_path=args.assets,
+            planner_model=args.planner_model or settings.planner_model,
+            evaluator_model=args.vision_model or settings.vision_model,
+            max_cases=args.max_cases,
+            case_ids=args.case_id,
+            max_attempts_per_case=args.max_attempts,
+        )
+    except TrainingCampaignError as exc:
+        print(f"ERROR: training campaign plan failed: {exc}", file=sys.stderr)
+        return 1
+    summary = campaign_status_summary(run)
+    summary["manifest_path"] = str(manifest_path)
+    _write_json(summary, args.output)
+    return 0
+
+
+def cmd_training_campaign_run(args: argparse.Namespace) -> int:
+    campaign_manifest = (
+        Path(args.campaign_dir).expanduser().resolve() / CAMPAIGN_MANIFEST_FILENAME
+    )
+    settings = _settings()
+    try:
+        run, _ = validate_training_campaign_runtime(
+            campaign_manifest_path=campaign_manifest,
+            project_path=args.path,
+            asset_catalog_path=args.assets,
+        )
+        cards = load_asset_card_catalog(args.assets)
+        planner_client = _client(settings)
+        vision_client = _client(settings, num_ctx=settings.vision_num_ctx)
+        with _asset_index(settings) as index:
+            index_report = index.sync(cards)
+
+            def case_runner(case, workflow_directory, workflow_id):
+                run_render_workflow(
+                    planner_client=planner_client,
+                    vision_client=vision_client,
+                    correction_client=planner_client,
+                    asset_searcher=index,
+                    planner_model=run.planner.model,
+                    vision_model=run.evaluator.model,
+                    prompt=case.prompt,
+                    uproject_path=args.path,
+                    engine_root=args.engine_root,
+                    asset_catalog_path=args.assets,
+                    workflow_directory=workflow_directory,
+                    workflow_id=workflow_id,
+                    retrieve_assets=case.retrieve_assets,
+                    retrieve_materials=case.retrieve_materials,
+                    max_iterations=case.max_iterations,
+                    view_axis=case.view_axis,
+                    margin_fraction=case.margin_fraction,
+                    timeout_seconds=case.timeout_seconds,
+                    fail_on_warning=False,
+                    studio_calibration=True,
+                )
+                return workflow_directory / "workflow_manifest.json"
+
+            print(
+                "CAMPAIGN INDEX: "
+                f"total={index_report.total} inserted={index_report.inserted} "
+                f"updated={index_report.updated} deleted={index_report.deleted}",
+                flush=True,
+            )
+            result = run_training_campaign(
+                campaign_manifest_path=campaign_manifest,
+                case_runner=case_runner,
+                retry_failed=args.retry_failed,
+                progress=lambda message: print(f"CAMPAIGN {message}", flush=True),
+            )
+    except KeyboardInterrupt:
+        print("TRAINING CAMPAIGN: cancelled by operator", file=sys.stderr)
+        return 130
+    except (TrainingCampaignError, AssetIndexError, OllamaError) as exc:
+        print(f"ERROR: training campaign run failed: {exc}", file=sys.stderr)
+        return 1
+    summary = campaign_status_summary(result)
+    summary["manifest_path"] = str(campaign_manifest)
+    _write_json(summary, args.output)
+    return 0 if result.status == "completed" else 2
+
+
+def cmd_training_campaign_status(args: argparse.Namespace) -> int:
+    try:
+        run = load_training_campaign_run(args.manifest)
+    except TrainingCampaignError as exc:
+        print(f"ERROR: training campaign status failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(campaign_status_summary(run), args.output)
+    return 0
+
+
+def cmd_training_campaign_baseline(args: argparse.Namespace) -> int:
+    try:
+        run = load_training_campaign_run(args.manifest)
+        report = build_training_baseline_report(run, report_id=args.report_id)
+    except (TrainingCampaignError, ValidationError) as exc:
+        print(f"ERROR: training baseline failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(report.model_dump(mode="json"), args.output)
+    return 0
+
+
+def cmd_training_reference_validate(args: argparse.Namespace) -> int:
+    try:
+        report = validate_training_reference_suite(
+            reference_suite_path=args.references,
+            campaign_suite_path=args.suite,
+            project_path=args.path,
+            asset_catalog_path=args.assets,
+        )
+    except (TrainingReferenceError, TrainingCampaignError) as exc:
+        print(f"ERROR: training reference validation failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(report.model_dump(mode="json"), args.output)
+    return 0 if report.ready_to_run else 1
+
+
+def cmd_training_reference_compile(args: argparse.Namespace) -> int:
+    try:
+        suite = compile_single_asset_reference_suite(
+            campaign_suite_path=args.suite,
+            project_path=args.path,
+            asset_catalog_path=args.assets,
+            output_path=args.output,
+            reference_suite_id=args.reference_suite_id,
+            retrieval_campaign_directory=args.retrieval_campaign,
+            case_ids=args.case_id,
+        )
+    except (TrainingReferenceError, TrainingCampaignError) as exc:
+        print(f"ERROR: training reference compile failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(
+        {
+            "reference_suite_id": suite.reference_suite_id,
+            "reference_suite_sha256": canonical_sha256(suite),
+            "compiled_case_count": len(suite.cases),
+            "compiled_case_ids": [case.case_id for case in suite.cases],
+            "output_path": str(Path(args.output).expanduser().resolve()),
+        },
+        None,
+    )
+    return 0
+
+
+def cmd_training_reference_plan(args: argparse.Namespace) -> int:
+    settings = _settings()
+    try:
+        manifest_path, run, report = create_training_reference_campaign_plan(
+            reference_suite_path=args.references,
+            campaign_suite_path=args.suite,
+            campaign_directory=args.campaign_dir,
+            campaign_id=args.campaign_id,
+            project_path=args.path,
+            asset_catalog_path=args.assets,
+            evaluator_model=args.vision_model or settings.vision_model,
+            max_attempts_per_case=args.max_attempts,
+        )
+    except (TrainingReferenceError, TrainingCampaignError) as exc:
+        print(f"ERROR: training reference plan failed: {exc}", file=sys.stderr)
+        return 1
+    summary = campaign_status_summary(run)
+    summary.update(
+        {
+            "manifest_path": str(manifest_path),
+            "reference_suite_sha256": report.reference_suite_sha256,
+            "ready_case_count": report.ready_case_count,
+            "full_coverage": report.full_coverage,
+        }
+    )
+    _write_json(summary, args.output)
+    return 0
+
+
+def cmd_training_reference_run(args: argparse.Namespace) -> int:
+    campaign_manifest = reference_campaign_manifest(args.campaign_dir)
+    settings = _settings()
+    try:
+        run, campaign_suite, reference_suite, _ = (
+            validate_training_reference_campaign_runtime(
+                campaign_manifest_path=campaign_manifest,
+                reference_suite_path=args.references,
+                campaign_suite_path=args.suite,
+                project_path=args.path,
+                asset_catalog_path=args.assets,
+            )
+        )
+        campaign_cases = {case.case_id: case for case in campaign_suite.cases}
+        references = {case.case_id: case for case in reference_suite.cases}
+        vision_client = _client(settings, num_ctx=settings.vision_num_ctx)
+
+        def case_runner(case, workflow_directory, workflow_id):
+            run_training_reference_workflow(
+                reference=references[case.case_id],
+                campaign_case=campaign_cases[case.case_id],
+                vision_client=vision_client,
+                vision_model=run.evaluator.model,
+                uproject_path=args.path,
+                engine_root=args.engine_root,
+                asset_catalog_path=args.assets,
+                workflow_directory=workflow_directory,
+                workflow_id=workflow_id,
+            )
+            return workflow_directory / "workflow_manifest.json"
+
+        result = run_training_campaign(
+            campaign_manifest_path=campaign_manifest,
+            case_runner=case_runner,
+            retry_failed=args.retry_failed,
+            progress=lambda message: print(f"REFERENCE {message}", flush=True),
+        )
+    except KeyboardInterrupt:
+        print("TRAINING REFERENCE: cancelled by operator", file=sys.stderr)
+        return 130
+    except (
+        TrainingReferenceError,
+        TrainingCampaignError,
+        AssetIndexError,
+        OllamaError,
+    ) as exc:
+        print(f"ERROR: training reference run failed: {exc}", file=sys.stderr)
+        return 1
+    summary = campaign_status_summary(result)
+    summary["manifest_path"] = str(campaign_manifest)
+    _write_json(summary, args.output)
+    return 0 if result.status == "completed" else 2
 
 
 def cmd_schema(args: argparse.Namespace) -> int:
@@ -963,6 +1308,30 @@ def cmd_assistant_material_propose(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_assistant_conversation_turn(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.planner_model
+    try:
+        request = load_conversation_request(args.request)
+        result = route_conversation_turn(
+            request=request,
+            client=_client(settings),
+            model=model,
+        )
+    except (ConversationRoutingError, OllamaError, ValueError, OSError) as exc:
+        print(f"ERROR: assistant conversation turn failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(result.turn.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT CONVERSATION: "
+        f"outcome={result.turn.outcome} intent={result.turn.intent} "
+        f"conversation={result.turn.conversation_id} turn={result.turn.turn_id} "
+        f"model={result.response.model} attempts={result.attempt_count}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    return 0
+
+
 def cmd_assistant_transform_propose(args: argparse.Namespace) -> int:
     settings = _settings()
     model = args.model or settings.planner_model
@@ -1221,6 +1590,41 @@ def cmd_assistant_performance_propose(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_assistant_level_audit(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.planner_model
+    try:
+        prompt = _read_run_prompt(args.prompt, args.prompt_file)
+        context = load_level_audit_context(args.context)
+        result = review_level_audit(
+            prompt=prompt,
+            context=context,
+            client=_client(settings),
+            model=model,
+        )
+    except (LevelAuditError, OllamaError, ValueError, OSError) as exc:
+        print(f"ERROR: level audit failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(result.report.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT LEVEL AUDIT: "
+        f"status={result.report.status} "
+        f"actors={result.report.statistics.captured_actor_count} "
+        f"high_priority={result.report.statistics.high_priority_actor_count} "
+        f"findings={len(result.report.findings)} "
+        f"actions={len(result.report.actions)} "
+        f"audit={result.report.audit_id} model={result.response.model} "
+        f"attempts={result.attempt_count}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    if result.recovery_reason:
+        print(
+            f"ASSISTANT LEVEL AUDIT RECOVERY: {result.recovery_reason[:500]}",
+            file=sys.stderr if args.output is None else sys.stdout,
+        )
+    return 0
+
+
 def cmd_assistant_runtime_performance_review(args: argparse.Namespace) -> int:
     settings = _settings()
     model = args.model or settings.planner_model
@@ -1328,6 +1732,140 @@ def cmd_assistant_actor_gpu_impact_review(args: argparse.Namespace) -> int:
             f"{result.recovery_reason[:500]}",
             file=sys.stderr if args.output is None else sys.stdout,
         )
+    return 0
+
+
+def cmd_assistant_actor_gpu_impact_study_review(args: argparse.Namespace) -> int:
+    settings = _settings()
+    model = args.model or settings.planner_model
+    try:
+        prompt = _read_run_prompt(args.prompt, args.prompt_file)
+        capture_set = load_actor_gpu_impact_study_capture_set(args.capture_set)
+        result = review_actor_gpu_impact_study(
+            prompt=prompt,
+            capture_set=capture_set,
+            client=_client(settings),
+            model=model,
+            report_id=args.report_id,
+            source_file_sha256=hash_actor_gpu_impact_study_file(args.capture_set),
+        )
+    except (ActorGpuImpactStudyReviewError, OllamaError, ValueError, OSError) as exc:
+        print(f"ERROR: Actor GPU impact study review failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(result.report.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT ACTOR GPU IMPACT STUDY: "
+        f"status={result.report.status} "
+        f"actor={result.report.capture_set.target.actor_label} "
+        f"captures={len(result.report.capture_set.sequence_capture_ids)} "
+        f"aggregates={len(result.report.aggregates)} "
+        f"findings={len(result.report.findings)} "
+        f"report={result.report.report_id} model={result.response.model} "
+        f"attempts={result.attempt_count}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    if result.recovery_reason:
+        print(
+            "ASSISTANT ACTOR GPU IMPACT STUDY RECOVERY: "
+            f"{result.recovery_reason[:500]}",
+            file=sys.stderr if args.output is None else sys.stdout,
+        )
+    return 0
+
+
+def cmd_assistant_level_profiling(args: argparse.Namespace) -> int:
+    try:
+        prompt = _read_run_prompt(args.prompt, args.prompt_file)
+        created_at_utc = datetime.fromisoformat(
+            args.created_at_utc.replace("Z", "+00:00")
+        )
+        run = build_level_profiling_run(
+            profiling_run_id=args.run_id,
+            created_at_utc=created_at_utc,
+            request=prompt,
+            level_audit_report=load_level_audit_report(args.level_audit_report),
+            runtime_performance_report=load_runtime_performance_report(
+                args.runtime_report
+            ),
+            gpu_scope_report=load_gpu_scope_report(args.gpu_report),
+            actor_study_reports=[
+                load_actor_study_report(path) for path in args.actor_study_report
+            ],
+            skipped_actor_studies=load_level_profiling_skips(args.skip_manifest),
+        )
+        report = analyze_level_profiling_run(
+            run,
+            report_id=args.report_id or f"{args.run_id}_report",
+        )
+    except (LevelProfilingSynthesisError, ValidationError, ValueError, OSError) as exc:
+        print(f"ERROR: level profiling synthesis failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(report.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT LEVEL PROFILING: "
+        f"status={report.status} frames={report.run.runtime_performance_report.capture.sample_count} "
+        f"gpu_scopes={len(report.run.gpu_scope_report.capture.scopes)} "
+        f"actor_studies={report.measured_actor_count} "
+        f"actor_skips={report.skipped_actor_count} "
+        f"stable_candidates={report.stable_actor_candidate_count} "
+        f"run={report.run.profiling_run_id}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    return 0
+
+
+def cmd_assistant_shadow_optimization(args: argparse.Namespace) -> int:
+    try:
+        report = analyze_shadow_optimization_file(
+            args.capture_set,
+            report_id=args.report_id,
+        )
+    except (ShadowOptimizationAnalysisError, ValidationError, ValueError, OSError) as exc:
+        print(f"ERROR: shadow optimization analysis failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(report.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT SHADOW OPTIMIZATION: "
+        f"status={report.status} decision={report.decision} "
+        f"actor={report.capture_set.target.actor_name} "
+        f"aggregates={len(report.aggregates)} "
+        f"primary={report.primary_aggregate_id or 'none'} "
+        f"experiment={report.capture_set.experiment_id}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
+    return 0
+
+
+def cmd_assistant_shadow_optimization_verification(
+    args: argparse.Namespace,
+) -> int:
+    try:
+        report = analyze_shadow_optimization_verification_files(
+            shadow_report_path=args.shadow_report,
+            baseline_report_path=args.baseline_level_report,
+            candidate_report_path=args.candidate_level_report,
+            report_id=args.report_id,
+        )
+    except (
+        ShadowOptimizationVerificationError,
+        ValidationError,
+        ValueError,
+        OSError,
+    ) as exc:
+        print(
+            f"ERROR: shadow optimization verification failed: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    _write_json(report.model_dump(mode="json"), args.output)
+    print(
+        "ASSISTANT SHADOW OPTIMIZATION VERIFICATION: "
+        f"status={report.status} decision={report.decision} "
+        f"frame_delta_ms={report.metrics.frame_p95_delta_ms:.3f} "
+        f"budget_miss_delta={report.metrics.frame_budget_miss_delta_fraction:.4f} "
+        f"report={report.report_id}",
+        file=sys.stderr if args.output is None else sys.stdout,
+    )
     return 0
 
 
@@ -1907,6 +2445,22 @@ def build_parser() -> argparse.ArgumentParser:
     asset_search.add_argument("--output", "-o", help="write ranked retrieval results")
     asset_search.set_defaults(handler=cmd_asset_search)
 
+    assistant_conversation = subparsers.add_parser(
+        "assistant-conversation-turn",
+        help="route one multi-turn Unreal Editor conversation request",
+    )
+    assistant_conversation.add_argument(
+        "--request",
+        required=True,
+        help="AssistantConversationRequest JSON captured by the Editor plugin",
+    )
+    assistant_conversation.add_argument(
+        "--model",
+        help="override the configured planner model",
+    )
+    assistant_conversation.add_argument("--output", "-o", required=True)
+    assistant_conversation.set_defaults(handler=cmd_assistant_conversation_turn)
+
     assistant_material = subparsers.add_parser(
         "assistant-material-propose",
         help="propose one catalog-backed material change for selected Unreal evidence",
@@ -2188,6 +2742,30 @@ def build_parser() -> argparse.ArgumentParser:
     assistant_performance.add_argument("--output", "-o", required=True)
     assistant_performance.set_defaults(handler=cmd_assistant_performance_propose)
 
+    assistant_level_audit = subparsers.add_parser(
+        "assistant-level-audit",
+        help="review a deterministic static audit of one complete Unreal level",
+    )
+    level_audit_prompt_source = assistant_level_audit.add_mutually_exclusive_group(
+        required=True
+    )
+    level_audit_prompt_source.add_argument(
+        "--prompt", help="whole-level audit or bounded safe-action request"
+    )
+    level_audit_prompt_source.add_argument(
+        "--prompt-file", help="UTF-8 text file containing the audit request"
+    )
+    assistant_level_audit.add_argument(
+        "--context",
+        required=True,
+        help="UnrealLevelAuditContext JSON captured by the Editor plugin",
+    )
+    assistant_level_audit.add_argument(
+        "--model", help="override the configured planner model"
+    )
+    assistant_level_audit.add_argument("--output", "-o", required=True)
+    assistant_level_audit.set_defaults(handler=cmd_assistant_level_audit)
+
     assistant_runtime_performance = subparsers.add_parser(
         "assistant-runtime-performance-review",
         help="review a host-measured Unreal PIE/SIE runtime capture",
@@ -2276,6 +2854,94 @@ def build_parser() -> argparse.ArgumentParser:
         handler=cmd_assistant_actor_gpu_impact_review
     )
 
+    assistant_actor_gpu_study = subparsers.add_parser(
+        "assistant-actor-gpu-impact-study-review",
+        help="review an AA plus counterbalanced AB/BA/AB selected-Actor GPU study",
+    )
+    actor_gpu_study_prompt_source = (
+        assistant_actor_gpu_study.add_mutually_exclusive_group(required=True)
+    )
+    actor_gpu_study_prompt_source.add_argument(
+        "--prompt", help="natural-language repeatable Actor GPU impact question"
+    )
+    actor_gpu_study_prompt_source.add_argument(
+        "--prompt-file",
+        help="UTF-8 file containing the repeatable Actor GPU impact question",
+    )
+    assistant_actor_gpu_study.add_argument(
+        "--capture-set",
+        required=True,
+        help="UnrealActorGpuImpactStudyCaptureSet JSON emitted by the Editor plugin",
+    )
+    assistant_actor_gpu_study.add_argument(
+        "--model", help="override the configured planner model"
+    )
+    assistant_actor_gpu_study.add_argument(
+        "--report-id", default="actor_gpu_impact_study_report"
+    )
+    assistant_actor_gpu_study.add_argument("--output", "-o", required=True)
+    assistant_actor_gpu_study.set_defaults(
+        handler=cmd_assistant_actor_gpu_impact_study_review
+    )
+
+    assistant_level_profiling = subparsers.add_parser(
+        "assistant-level-profiling",
+        help="synthesize one profiling-first whole-level Unreal audit",
+    )
+    level_profiling_prompt_source = (
+        assistant_level_profiling.add_mutually_exclusive_group(required=True)
+    )
+    level_profiling_prompt_source.add_argument(
+        "--prompt", help="profiling-first whole-level analysis request"
+    )
+    level_profiling_prompt_source.add_argument(
+        "--prompt-file", help="UTF-8 file containing the profiling request"
+    )
+    assistant_level_profiling.add_argument("--run-id", required=True)
+    assistant_level_profiling.add_argument("--created-at-utc", required=True)
+    assistant_level_profiling.add_argument("--level-audit-report", required=True)
+    assistant_level_profiling.add_argument("--runtime-report", required=True)
+    assistant_level_profiling.add_argument("--gpu-report", required=True)
+    assistant_level_profiling.add_argument(
+        "--actor-study-report", action="append", default=[]
+    )
+    assistant_level_profiling.add_argument("--skip-manifest")
+    assistant_level_profiling.add_argument("--report-id")
+    assistant_level_profiling.add_argument("--output", "-o", required=True)
+    assistant_level_profiling.set_defaults(handler=cmd_assistant_level_profiling)
+
+    assistant_shadow_optimization = subparsers.add_parser(
+        "assistant-shadow-optimization",
+        help="analyze an eight-trace Cast Shadow optimization experiment",
+    )
+    assistant_shadow_optimization.add_argument(
+        "--capture-set",
+        required=True,
+        help="UnrealShadowOptimizationCaptureSet JSON emitted by the Editor plugin",
+    )
+    assistant_shadow_optimization.add_argument("--report-id")
+    assistant_shadow_optimization.add_argument("--output", "-o", required=True)
+    assistant_shadow_optimization.set_defaults(
+        handler=cmd_assistant_shadow_optimization
+    )
+
+    assistant_shadow_verification = subparsers.add_parser(
+        "assistant-shadow-optimization-verification",
+        help="compare a fresh whole-level run after an approved shadow optimization",
+    )
+    assistant_shadow_verification.add_argument("--shadow-report", required=True)
+    assistant_shadow_verification.add_argument(
+        "--baseline-level-report", required=True
+    )
+    assistant_shadow_verification.add_argument(
+        "--candidate-level-report", required=True
+    )
+    assistant_shadow_verification.add_argument("--report-id")
+    assistant_shadow_verification.add_argument("--output", "-o", required=True)
+    assistant_shadow_verification.set_defaults(
+        handler=cmd_assistant_shadow_optimization_verification
+    )
+
     plan = subparsers.add_parser("plan", help="ask a local Ollama model for a RenderSpec")
     plan.add_argument("--model", help="override the configured planner model")
     plan.add_argument("--prompt", required=True)
@@ -2298,6 +2964,187 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--raw-output", help="save the model's unvalidated response")
     plan.add_argument("--metrics-output", help="write timing and token metrics as JSON")
     plan.set_defaults(handler=cmd_plan)
+
+    training_data = subparsers.add_parser(
+        "training-data",
+        help="build or audit private, workflow-derived model training data",
+    )
+    training_commands = training_data.add_subparsers(
+        dest="training_data_command",
+        required=True,
+    )
+    training_build = training_commands.add_parser(
+        "build",
+        help="create deterministic grouped JSONL splits from workflow evidence",
+    )
+    training_build.add_argument(
+        "--source-root",
+        required=True,
+        help="local data root containing workflow_manifest.json evidence",
+    )
+    training_build.add_argument(
+        "--output-dir",
+        required=True,
+        help="new or empty private directory for the generated dataset",
+    )
+    training_build.add_argument("--dataset-id", default=DEFAULT_DATASET_ID)
+    training_build.add_argument("--split-seed", default=DEFAULT_SPLIT_SEED)
+    training_build.add_argument("--validation-fraction", type=float, default=0.1)
+    training_build.add_argument("--test-fraction", type=float, default=0.1)
+    training_build.add_argument(
+        "--campaign-run",
+        help="optional completed campaign_manifest.json eligibility allow-list",
+    )
+    training_build.add_argument(
+        "--output",
+        help="optional JSON path for the compact build summary",
+    )
+    training_build.set_defaults(handler=cmd_training_data_build)
+    training_audit = training_commands.add_parser(
+        "audit",
+        help="verify hashes, contracts, split membership, leakage, and readiness",
+    )
+    training_audit.add_argument("manifest", help="generated dataset_manifest.json")
+    training_audit.add_argument("--output", "-o", help="optional audit report JSON path")
+    training_audit.set_defaults(handler=cmd_training_data_audit)
+
+    training_reference = subparsers.add_parser(
+        "training-reference",
+        help="validate and render non-model-authored Golden Reference targets",
+    )
+    reference_commands = training_reference.add_subparsers(
+        dest="training_reference_command",
+        required=True,
+    )
+    reference_compile = reference_commands.add_parser(
+        "compile-single-assets",
+        help="compile deterministic Golden References for frozen single-asset cases",
+    )
+    reference_compile.add_argument("--suite", required=True)
+    reference_compile.add_argument("--path", required=True, help="compiled .uproject file")
+    reference_compile.add_argument("--assets", required=True)
+    reference_compile.add_argument("--reference-suite-id", required=True)
+    reference_compile.add_argument(
+        "--retrieval-campaign",
+        help="optional frozen Stage 1 campaign whose retrieval candidates are reused",
+    )
+    reference_compile.add_argument(
+        "--case-id",
+        action="append",
+        help="compile one exact single_asset case; repeat for an ordered subset",
+    )
+    reference_compile.add_argument("--output", "-o", required=True)
+    reference_compile.set_defaults(handler=cmd_training_reference_compile)
+
+    reference_validate = reference_commands.add_parser(
+        "validate",
+        help="statically validate Golden References without invoking Unreal or models",
+    )
+    reference_validate.add_argument("--references", required=True)
+    reference_validate.add_argument("--suite", required=True)
+    reference_validate.add_argument("--path", required=True, help="compiled .uproject file")
+    reference_validate.add_argument(
+        "--assets",
+        required=True,
+        help="same frozen complete AssetCard catalog",
+    )
+    reference_validate.add_argument("--output", "-o")
+    reference_validate.set_defaults(handler=cmd_training_reference_validate)
+
+    reference_plan = reference_commands.add_parser(
+        "plan",
+        help="freeze validated references into a non-executing campaign",
+    )
+    reference_plan.add_argument("--references", required=True)
+    reference_plan.add_argument("--suite", required=True)
+    reference_plan.add_argument("--campaign-dir", required=True)
+    reference_plan.add_argument("--campaign-id", required=True)
+    reference_plan.add_argument("--path", required=True, help="compiled .uproject file")
+    reference_plan.add_argument("--assets", required=True)
+    reference_plan.add_argument("--vision-model")
+    reference_plan.add_argument("--max-attempts", type=int, choices=range(1, 4), default=2)
+    reference_plan.add_argument("--output", "-o")
+    reference_plan.set_defaults(handler=cmd_training_reference_plan)
+
+    reference_run = reference_commands.add_parser(
+        "run",
+        help="render or resume a Golden Reference campaign without a planner model",
+    )
+    reference_run.add_argument("--references", required=True)
+    reference_run.add_argument("--suite", required=True)
+    reference_run.add_argument("--campaign-dir", required=True)
+    reference_run.add_argument("--path", required=True, help="compiled .uproject file")
+    reference_run.add_argument("--engine-root", required=True)
+    reference_run.add_argument("--assets", required=True)
+    reference_run.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="retry non-eligible references up to the planned attempt limit",
+    )
+    reference_run.add_argument("--output", "-o")
+    reference_run.set_defaults(handler=cmd_training_reference_run)
+
+    training_campaign = subparsers.add_parser(
+        "training-campaign",
+        help="plan, run, resume, inspect, or baseline a workflow corpus campaign",
+    )
+    campaign_commands = training_campaign.add_subparsers(
+        dest="training_campaign_command",
+        required=True,
+    )
+    campaign_plan = campaign_commands.add_parser(
+        "plan",
+        help="freeze a campaign suite and create a non-executing run manifest",
+    )
+    campaign_plan.add_argument("--suite", required=True)
+    campaign_plan.add_argument("--campaign-dir", required=True)
+    campaign_plan.add_argument("--campaign-id", required=True)
+    campaign_plan.add_argument("--path", required=True, help="compiled .uproject file")
+    campaign_plan.add_argument("--assets", required=True, help="complete AssetCard catalog")
+    campaign_plan.add_argument("--planner-model")
+    campaign_plan.add_argument("--vision-model")
+    campaign_plan.add_argument("--max-cases", type=int)
+    campaign_plan.add_argument(
+        "--case-id",
+        action="append",
+        help="select one exact suite case; repeat for an ordered subset",
+    )
+    campaign_plan.add_argument("--max-attempts", type=int, choices=range(1, 4), default=2)
+    campaign_plan.add_argument("--output", help="optional plan summary JSON")
+    campaign_plan.set_defaults(handler=cmd_training_campaign_plan)
+
+    campaign_run = campaign_commands.add_parser(
+        "run",
+        help="execute or resume isolated end-to-end campaign cases",
+    )
+    campaign_run.add_argument("--campaign-dir", required=True)
+    campaign_run.add_argument("--path", required=True, help="compiled .uproject file")
+    campaign_run.add_argument("--engine-root", required=True)
+    campaign_run.add_argument("--assets", required=True, help="same frozen AssetCard catalog")
+    campaign_run.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="retry non-eligible cases up to the planned per-case attempt limit",
+    )
+    campaign_run.add_argument("--output", help="optional run summary JSON")
+    campaign_run.set_defaults(handler=cmd_training_campaign_run)
+
+    campaign_status = campaign_commands.add_parser(
+        "status",
+        help="summarize a campaign without invoking models or Unreal",
+    )
+    campaign_status.add_argument("manifest")
+    campaign_status.add_argument("--output", "-o")
+    campaign_status.set_defaults(handler=cmd_training_campaign_status)
+
+    campaign_baseline = campaign_commands.add_parser(
+        "baseline",
+        help="freeze aggregate base-model metrics from a completed campaign",
+    )
+    campaign_baseline.add_argument("manifest")
+    campaign_baseline.add_argument("--report-id", required=True)
+    campaign_baseline.add_argument("--output", "-o", required=True)
+    campaign_baseline.set_defaults(handler=cmd_training_campaign_baseline)
 
     run = subparsers.add_parser(
         "run",

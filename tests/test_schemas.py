@@ -1,5 +1,6 @@
 import unittest
 
+from render_master_bot.contracts import CONTRACT_MODELS
 from render_master_bot.models import RenderSpec
 from render_master_bot.schemas import (
     contract_schema,
@@ -18,19 +19,7 @@ def schema_contains(value, key):
 
 class GenerationSchemaTests(unittest.TestCase):
     def test_all_public_contract_schemas_can_be_exported(self):
-        for name in (
-            "render-spec",
-            "technique-card",
-            "asset-card",
-            "render-spec-patch",
-            "correction-decision",
-            "evaluation-report",
-            "visual-benchmark-suite",
-            "visual-benchmark-report",
-            "render-workflow-manifest",
-            "capability-manifest",
-            "run-manifest",
-        ):
+        for name in CONTRACT_MODELS:
             with self.subTest(contract=name):
                 schema = contract_schema(name)
                 self.assertEqual(schema["type"], "object")

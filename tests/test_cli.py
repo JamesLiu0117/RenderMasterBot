@@ -13,7 +13,11 @@ from render_master_bot.cli import (
     _write_json,
     build_parser,
     cmd_assistant_actor_gpu_impact_review,
+    cmd_assistant_actor_gpu_impact_study_review,
     cmd_assistant_insights_gpu_review,
+    cmd_assistant_level_profiling,
+    cmd_assistant_shadow_optimization,
+    cmd_assistant_shadow_optimization_verification,
 )
 
 
@@ -547,6 +551,27 @@ class CliOutputTests(unittest.TestCase):
         self.assertEqual(args.proposal_id, "performance_001")
         self.assertEqual(args.output, "performance_proposal.json")
 
+    def test_assistant_level_audit_parser_keeps_context_and_output_explicit(self):
+        args = build_parser().parse_args(
+            [
+                "assistant-level-audit",
+                "--prompt-file",
+                "audit_request.txt",
+                "--context",
+                "level_audit_context.json",
+                "--model",
+                "planner-model",
+                "--output",
+                "level_audit_report.json",
+            ]
+        )
+
+        self.assertIsNone(args.prompt)
+        self.assertEqual(args.prompt_file, "audit_request.txt")
+        self.assertEqual(args.context, "level_audit_context.json")
+        self.assertEqual(args.model, "planner-model")
+        self.assertEqual(args.output, "level_audit_report.json")
+
     def test_runtime_performance_parser_keeps_capture_and_output_explicit(self):
         args = build_parser().parse_args(
             [
@@ -683,6 +708,157 @@ class CliOutputTests(unittest.TestCase):
                 return_value=result,
             ) as review:
                 self.assertEqual(cmd_assistant_actor_gpu_impact_review(args), 0)
+            self.assertEqual(review.call_args.kwargs["source_file_sha256"], expected)
+
+    def test_actor_gpu_study_parser_keeps_capture_set_and_output_explicit(self):
+        args = build_parser().parse_args(
+            [
+                "assistant-actor-gpu-impact-study-review",
+                "--prompt-file",
+                "request.txt",
+                "--capture-set",
+                "actor_gpu_study_capture_set.json",
+                "--model",
+                "planner-model",
+                "--report-id",
+                "actor_gpu_study_001",
+                "--output",
+                "actor_gpu_study_report.json",
+            ]
+        )
+
+        self.assertIsNone(args.prompt)
+        self.assertEqual(args.prompt_file, "request.txt")
+        self.assertEqual(args.capture_set, "actor_gpu_study_capture_set.json")
+        self.assertEqual(args.model, "planner-model")
+        self.assertEqual(args.report_id, "actor_gpu_study_001")
+        self.assertEqual(args.output, "actor_gpu_study_report.json")
+
+    def test_level_profiling_parser_keeps_every_evidence_file_explicit(self):
+        args = build_parser().parse_args(
+            [
+                "assistant-level-profiling",
+                "--prompt-file",
+                "request.txt",
+                "--run-id",
+                "level_profile_001",
+                "--created-at-utc",
+                "2026-08-19T21:00:00Z",
+                "--level-audit-report",
+                "level_audit.json",
+                "--runtime-report",
+                "runtime.json",
+                "--gpu-report",
+                "gpu.json",
+                "--actor-study-report",
+                "actor_1.json",
+                "--actor-study-report",
+                "actor_2.json",
+                "--skip-manifest",
+                "skips.json",
+                "--output",
+                "level_profile.json",
+            ]
+        )
+
+        self.assertIs(args.handler, cmd_assistant_level_profiling)
+        self.assertEqual(args.run_id, "level_profile_001")
+        self.assertEqual(args.actor_study_report, ["actor_1.json", "actor_2.json"])
+        self.assertEqual(args.skip_manifest, "skips.json")
+        self.assertEqual(args.output, "level_profile.json")
+
+    def test_shadow_optimization_parser_keeps_capture_set_explicit(self):
+        args = build_parser().parse_args(
+            [
+                "assistant-shadow-optimization",
+                "--capture-set",
+                "shadow_capture_set.json",
+                "--report-id",
+                "shadow_report_001",
+                "--output",
+                "shadow_report.json",
+            ]
+        )
+
+        self.assertIs(args.handler, cmd_assistant_shadow_optimization)
+        self.assertEqual(args.capture_set, "shadow_capture_set.json")
+        self.assertEqual(args.report_id, "shadow_report_001")
+        self.assertEqual(args.output, "shadow_report.json")
+
+    def test_shadow_verification_parser_keeps_all_source_reports_explicit(self):
+        args = build_parser().parse_args(
+            [
+                "assistant-shadow-optimization-verification",
+                "--shadow-report",
+                "shadow_report.json",
+                "--baseline-level-report",
+                "level_before.json",
+                "--candidate-level-report",
+                "level_after.json",
+                "--report-id",
+                "shadow_verification_001",
+                "--output",
+                "verification.json",
+            ]
+        )
+
+        self.assertIs(
+            args.handler, cmd_assistant_shadow_optimization_verification
+        )
+        self.assertEqual(args.shadow_report, "shadow_report.json")
+        self.assertEqual(args.baseline_level_report, "level_before.json")
+        self.assertEqual(args.candidate_level_report, "level_after.json")
+        self.assertEqual(args.report_id, "shadow_verification_001")
+        self.assertEqual(args.output, "verification.json")
+
+    def test_actor_gpu_study_handler_passes_exact_capture_set_file_hash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            capture_set_path = Path(directory) / "capture_set.json"
+            output_path = Path(directory) / "report.json"
+            capture_set_path.write_bytes(b'{"host_written": true}\r\n')
+            args = build_parser().parse_args(
+                [
+                    "assistant-actor-gpu-impact-study-review",
+                    "--prompt",
+                    "Measure repeatability",
+                    "--capture-set",
+                    str(capture_set_path),
+                    "--output",
+                    str(output_path),
+                ]
+            )
+            report = SimpleNamespace(
+                status="review_complete",
+                capture_set=SimpleNamespace(
+                    target=SimpleNamespace(actor_label="HeroStatue"),
+                    sequence_capture_ids=[str(index) for index in range(8)],
+                ),
+                aggregates=[object()],
+                findings=[],
+                report_id="actor_gpu_study_test",
+                model_dump=lambda mode: {"status": "review_complete"},
+            )
+            result = SimpleNamespace(
+                report=report,
+                response=SimpleNamespace(model="fake-model"),
+                attempt_count=1,
+                recovery_reason=None,
+            )
+            expected = hashlib.sha256(capture_set_path.read_bytes()).hexdigest()
+            with patch(
+                "render_master_bot.cli._settings",
+                return_value=SimpleNamespace(planner_model="fake-model"),
+            ), patch(
+                "render_master_bot.cli._client",
+                return_value=object(),
+            ), patch(
+                "render_master_bot.cli.load_actor_gpu_impact_study_capture_set",
+                return_value=object(),
+            ), patch(
+                "render_master_bot.cli.review_actor_gpu_impact_study",
+                return_value=result,
+            ) as review:
+                self.assertEqual(cmd_assistant_actor_gpu_impact_study_review(args), 0)
             self.assertEqual(review.call_args.kwargs["source_file_sha256"], expected)
 
     def test_external_material_import_parsers_separate_proposal_and_approval(self):

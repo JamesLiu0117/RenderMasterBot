@@ -6,6 +6,9 @@ these strict models. Unknown fields are rejected.
 
 | Contract | Producer | Consumer | Purpose |
 | --- | --- | --- | --- |
+| `UnrealConversationContext` | Unreal Editor conversation host | local conversation router | bounded project, level, play-mode, selection, and workflow-readiness context |
+| `AssistantConversationRequest` | Unreal Editor conversation host | local conversation router | one current request plus at most 24 prior user/assistant messages |
+| `AssistantConversationTurn` | host-validated local conversation router | Unreal Editor workspace | auditable respond, clarify, or fixed-whitelist route decision |
 | `TechniqueCard` | knowledge ingestion | retriever/planner | cited graphics knowledge |
 | `AssetCard` | Unreal asset scanner | retriever/planner/adapter | resolvable project assets |
 | `UnrealSelectionContext` | Unreal Editor assistant | proposal builder | captured Actor, component, mesh, and slot evidence |
@@ -28,12 +31,21 @@ these strict models. Unknown fields are rejected.
 | `AssistantCameraBatchProposal` | bounded camera batch proposal builder | Unreal Editor assistant/operator | approval-gated coordinated property action for the complete camera selection |
 | `UnrealPerformanceSelectionContext` | Unreal Editor assistant | performance review builder | ordered measured evidence for 1-32 selected native StaticMeshActors |
 | `AssistantPerformanceProposal` | bounded performance review builder | Unreal Editor assistant/operator | evidence-backed read-only findings or approval-gated shadow/culling action |
+| `UnrealLevelAuditContext` | Unreal Editor whole-level scanner | deterministic auditor/model reviewer | complete static evidence for every eligible native StaticMeshActor in one level |
+| `AssistantLevelAuditReport` | deterministic priority builder and bounded local-model reviewer | Unreal Editor assistant/operator | recomputable whole-level triage with optional approval-gated shadow/culling actions |
 | `UnrealRuntimePerformanceCapture` | Unreal Editor PIE/SIE sampler | runtime review builder/auditor | raw consecutive frame/thread/GPU samples plus recomputable summaries and memory evidence |
 | `AssistantRuntimePerformanceReport` | bounded runtime review builder | Unreal Editor assistant/operator | read-only evidence-cited diagnosis or explicit profiler capability gap |
 | `UnrealInsightsGpuCapture` | Unreal Editor trace recorder and UE TraceServices parser | GPU scope review builder/auditor | hash-bound trace identity, GPU queues, and ranked inclusive scope evidence |
 | `AssistantInsightsGpuReport` | bounded GPU scope review builder | Unreal Editor assistant/operator | read-only scope-cited diagnosis or explicit attribution capability gap |
 | `UnrealActorGpuImpactExperiment` | Unreal Editor controlled A/B recorder and deterministic comparator | Actor GPU review builder/auditor | one restored runtime Actor target, two trace-backed captures, and normalized matched-scope deltas |
 | `AssistantActorGpuImpactReport` | bounded Actor GPU impact review builder | Unreal Editor assistant/operator | read-only delta-cited impact candidates or explicit direct-attribution capability gap |
+| `UnrealActorGpuImpactStudyCaptureSet` | Unreal Editor fixed-schedule trace recorder | deterministic study aggregator/auditor | two A/A controls plus three counterbalanced visible/hidden pairs with verified restoration |
+| `AssistantActorGpuImpactStudyReport` | deterministic aggregator and bounded local-model reviewer | Unreal Editor assistant/operator | all-eight-scope median/MAD/noise/vote evidence with aggregate-cited interpretation |
+| `UnrealShadowOptimizationCaptureSet` | Unreal Editor fixed-schedule Cast Shadow recorder | deterministic optimization analyzer/auditor | two A/A controls plus three counterbalanced shadow-on/off pairs with verified runtime restoration |
+| `AssistantShadowOptimizationReport` | deterministic host analyzer | Unreal Editor assistant/operator | fixed-threshold rejection or one approval-gated Cast Shadow action |
+| `UnrealLevelProfilingRun` | Unreal Editor profiling orchestrator | deterministic cross-stage synthesizer/auditor | one workload-bound static audit, runtime baseline, GPU trace, and deterministic Top-2 Actor-study outcomes |
+| `AssistantLevelProfilingReport` | deterministic cross-stage synthesizer | Unreal Editor assistant/operator | recomputable profiling-first level summary with bounded skips, Actor findings, and explicit evidence limits |
+| `AssistantShadowOptimizationVerificationReport` | deterministic post-apply comparator | Unreal Editor assistant/operator | hash-bound before/after whole-level evidence and fixed retain, rollback, or unresolved recommendation |
 | `RenderSpec` | planner or human | validator/engine adapter | complete requested scene |
 | `RenderSpecPatch` | evaluator or human | patch validator | bounded correction proposal |
 | `EvaluationReport` | visual/rule evaluator | repair planner/benchmark | findings and verdict |
@@ -43,15 +55,33 @@ these strict models. Unknown fields are rejected.
 | `RenderWorkflowManifest` | orchestrator | user/auditor/dataset builder | bounded lifecycle and stop evidence |
 | `CapabilityManifest` | Unreal project probe | planner/adapter | observed engine capabilities |
 | `RunManifest` | orchestration layer | dataset builder/auditor | reproducible run evidence |
+| `TrainingExample` | training dataset builder | SFT loader/auditor | hash-pinned planner messages and validated response with workflow provenance |
+| `TrainingDatasetManifest` | training dataset builder | trainer/auditor | deterministic split identity, accepted sources, exclusions, and file hashes |
+| `TrainingDatasetAuditReport` | training dataset auditor | operator/training gate | integrity, leakage, duplicate, and data-volume readiness evidence |
+| `TrainingCampaignSuite` | dataset curator | campaign planner/runner | frozen prompts, source hashes, budgets, and host-owned success expectations |
+| `TrainingReferenceSuite` | human curator or deterministic compiler | reference validator/runner | non-model-authored RenderSpecs, retrieval context, rationale, and campaign identity |
+| `TrainingReferenceValidationReport` | deterministic reference validator | operator/reference campaign gate | recomputable asset, expectation, preflight, coverage, and run-readiness evidence |
+| `TrainingCampaignRun` | campaign runner | operator/dataset eligibility gate | resumable isolated attempts and hash-bound training eligibility decisions |
+| `TrainingBaselineReport` | baseline builder | operator/training comparison | frozen base-model outcomes, per-category metrics, failure counts, and self-hash |
 
 Although the early planning note called these "six contracts," the actual
-boundary now contains thirty-seven top-level contracts. `CorrectionDecision` is kept
+boundary now contains fifty-seven top-level contracts. `CorrectionDecision` is kept
 separate from `EvaluationReport` so visual observation and executable repair
 remain independently testable.
 
 ## Safety properties
 
 - Every model uses `extra="forbid"`; invented keys fail validation.
+- Conversation output has only three outcomes: answer without execution,
+  request explicit missing context, or select one registered action intent.
+  The model cannot return a command, function, module, file mutation, or raw
+  Unreal API call. C++ independently revalidates the outcome/intent pairing,
+  active conversation ID, turn ID, and original request.
+- Selection-dependent routes are downgraded to clarification when the required
+  bounded Actor, mesh, light, camera, lighting-rig, PIE/SIE, completed-profile,
+  or applied-optimization context is absent. First-turn action text preserves
+  the user's exact request so the general router cannot invent coordinates or
+  convert units before the specialized capability validates semantics.
 - `RenderSpecPatch` can modify only scene content (`objects`, `camera`,
   `lights`, `render`, and `notes`). It cannot rewrite contract metadata.
 - Object material assignments reference catalog asset IDs and named mesh slots;
@@ -128,6 +158,15 @@ remain independently testable.
   selected Actor, including no-ops. Unreal revalidates the complete evidence;
   one stale Actor rejects the batch, one grouped transaction applies it, and
   the level is never saved automatically.
+- Whole-level audit contexts cover every eligible native StaticMeshActor in one
+  Editor level, preserve an explicit excluded count, and fail instead of
+  truncating above 4,096 captured Actors. Python recomputes level totals and a
+  transparent per-Actor static priority from captured evidence.
+- The full level-audit report preserves every assessment, while the model sees
+  only the 64 highest host-owned priorities and references them by exact
+  `assessment_id`. Static priority is never runtime cost. At most 32 explicit
+  Cast Shadow/Max Draw Distance actions may be proposed; Unreal revalidates all
+  action targets before one grouped Undo transaction and never saves the level.
 - Runtime performance captures preserve every raw consecutive PIE/SIE sample.
   Python recomputes nearest-rank summaries, frame-budget misses, and the largest
   available P95 component; tampered host summaries fail before inference.
@@ -155,6 +194,52 @@ remain independently testable.
   embeds the exact experiment, preserves canonical and source-file hashes, is
   permanently read-only, and may describe association or an impact candidate
   but never direct pass/draw/material/shader/asset causation.
+- Repeatable Actor GPU capture sets require exactly eight chronologically
+  ordered captures under `AA_AB_BA_AB`: two visible controls and AB, BA, AB
+  paired trials. Capture IDs and trace filenames are unique; project, world,
+  mode, viewport, GPU, channels, and requested duration must remain unchanged.
+- Study aggregation intersects queue-local scope identity across all eight
+  Top-64 sets. A/A absolute difference, three paired visible-minus-hidden
+  deltas, median, MAD, direction votes, signal excess, and classification are
+  recomputed from embedded raw captures whenever the report validates.
+- Study findings may cite only exact `aggregate_id` values. Complete reports
+  require at least one common aggregate and remain permanently read-only. A
+  stable candidate exceeds the single A/A control difference with a majority
+  paired direction; it is not direct Actor/draw/material/shader causation.
+- Level profiling runs require the exact read-only Full Level Audit, 30-frame
+  warmup plus 120-sample runtime capture, and five-second GPU trace. Runtime and
+  GPU evidence must match project, world, PIE/SIE mode, viewport, and GPU; the
+  audit must match the same project.
+- Actor attempts must be exactly the first two deterministic audit assessments
+  that recommend repeatable studies. Each is either a complete eight-capture
+  restored study or an explicit bounded skip; alternate Actors cannot be
+  silently substituted.
+- Level profiling reports recompute their frame, GPU-scope, Actor count, stable
+  candidate, ID, and hash fields from embedded evidence. They are permanently
+  read-only and explicitly reject image-based performance claims, direct draw/
+  material/shader attribution, packaged-build parity, or hidden runtime state.
+- Shadow optimization capture sets require a baseline with Cast Shadow enabled,
+  exactly two shadow-on A/A controls, three counterbalanced shadow-on/off pairs,
+  one-second warmups, five-second traces, identical workload identity, and a
+  proven restored runtime shadow state. The experiment never edits the Editor
+  scene.
+- Shadow optimization reports are model-free and recompute all common-scope
+  aggregates from the eight embedded traces. A formal proposal requires a
+  stable decreased candidate, at least 1.0 ms/s above A/A noise, at least 1%
+  relative reduction, at least two decreased votes, and MAD no greater than the
+  absolute median. The only allowed action is Cast Shadow true to false; it
+  remains approval-gated, stale-state checked, Undo-backed, and unsaved.
+- Shadow optimization verification embeds and hash-binds the original shadow
+  experiment, the original whole-level profiling report, and one fresh
+  post-apply profiling report. Project, world, PIE/SIE mode, viewport, GPU,
+  target transition, report IDs, run IDs, and file hashes must match or remain
+  distinct as appropriate; otherwise the decision is `unresolved`.
+- Retain/rollback is host-recomputed with fixed guards: frame P95 and GPU P95
+  may regress by at most the larger of 0.5 ms or 2%, frame-budget misses may
+  increase by at most 0.02, and the qualified GPU scope may regress by at most
+  the larger of 1.0 ms/s or 2%. Rollback requires explicit approval, exact
+  current-state revalidation, one new Undo-backed `false -> true` edit, and no
+  automatic save. It never uses global Undo, so unrelated edits are preserved.
 - External-material operational records freeze provider metadata, four local
   map hashes, the exact five planned Unreal paths, and the canonical proposal
   SHA-256. A mismatched approval hash stops before Unreal is launched.
@@ -183,6 +268,17 @@ remain independently testable.
 - Terminal runs require an end timestamp, and failed runs require an error.
 - Capability assertions record whether they were confirmed, inferred, not
   detected, or contradicted, together with the evidence source.
+- Training examples require exactly ordered system/user/assistant messages; the
+  assistant content must validate as the declared response contract and match
+  both its canonical response hash and complete example hash.
+- Training manifests keep workflow groups intact across train, validation, and
+  test. Their audit reports independently reject split-file tampering,
+  membership drift, duplicates, and cross-split example or workflow overlap.
+- Campaign suites freeze project/catalog hashes and host-owned asset, material,
+  object-count, and visual expectations. Retries keep stable logical workflow
+  IDs while writing distinct attempt directories.
+- Campaign-gated builder 0.2 trains on the hash-verified final RenderSpec and
+  removes non-executable notes from positive targets.
 
 ## CLI
 
@@ -194,6 +290,7 @@ render-master validate examples/run_manifest.json --contract run-manifest
 render-master validate correction.json --contract correction-decision
 render-master validate visual_suite.json --contract visual-benchmark-suite
 render-master validate workflow_manifest.json --contract render-workflow-manifest
+render-master validate examples/unreal_level_audit_context.json --contract unreal-level-audit-context
 render-master validate selection_context.json --contract unreal-selection-context
 render-master validate material_proposal.json --contract assistant-material-proposal
 render-master validate actor_transform.json --contract unreal-actor-transform-context
@@ -221,6 +318,21 @@ render-master validate examples/unreal_insights_gpu_capture.json --contract unre
 render-master schema assistant-insights-gpu-report -o assistant_insights_gpu_report.schema.json
 render-master validate examples/unreal_actor_gpu_impact_experiment.json --contract unreal-actor-gpu-impact-experiment
 render-master schema assistant-actor-gpu-impact-report -o assistant_actor_gpu_impact_report.schema.json
+render-master validate examples/unreal_actor_gpu_impact_study_capture_set.json --contract unreal-actor-gpu-impact-study-capture-set
+render-master schema assistant-actor-gpu-impact-study-report -o assistant_actor_gpu_impact_study_report.schema.json
+render-master schema unreal-shadow-optimization-capture-set -o unreal_shadow_optimization_capture_set.schema.json
+render-master schema assistant-shadow-optimization-report -o assistant_shadow_optimization_report.schema.json
+render-master schema unreal-level-profiling-run -o unreal_level_profiling_run.schema.json
+render-master schema assistant-level-profiling-report -o assistant_level_profiling_report.schema.json
+render-master schema assistant-shadow-optimization-verification-report -o assistant_shadow_optimization_verification_report.schema.json
+render-master schema training-example -o training_example.schema.json
+render-master schema training-dataset-manifest -o training_dataset_manifest.schema.json
+render-master schema training-dataset-audit-report -o training_dataset_audit_report.schema.json
+render-master schema training-campaign-suite -o training_campaign_suite.schema.json
+render-master schema training-reference-suite -o training_reference_suite.schema.json
+render-master schema training-reference-validation-report -o reference_validation.schema.json
+render-master schema training-campaign-run -o training_campaign_run.schema.json
+render-master schema training-baseline-report -o training_baseline_report.schema.json
 ```
 
 `render-master schema` and `render-master validate` default to `render-spec`,

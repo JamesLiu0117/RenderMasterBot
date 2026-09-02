@@ -4,7 +4,9 @@
 #include "DynamicRHI.h"
 #include "Editor.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/GameViewportClient.h"
+#include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "GenericPlatform/GenericPlatformMisc.h"
@@ -57,6 +59,25 @@ bool ReadInsightsObject(
         return false;
     }
     OutObject = *Value;
+    return true;
+}
+
+bool ReadInsightsInteger(
+    const TSharedPtr<FJsonObject>& Object,
+    const TCHAR* Field,
+    const int32 Minimum,
+    const int32 Maximum,
+    int32& OutValue)
+{
+    double Value = 0.0;
+    if (!Object.IsValid() || !Object->TryGetNumberField(Field, Value)
+        || !FMath::IsFinite(Value)
+        || !FMath::IsNearlyEqual(Value, FMath::RoundToDouble(Value))
+        || Value < Minimum || Value > Maximum)
+    {
+        return false;
+    }
+    OutValue = static_cast<int32>(Value);
     return true;
 }
 
@@ -574,6 +595,518 @@ bool RenderMasterParseActorGpuImpactReportFile(
     return true;
 }
 
+bool RenderMasterParseActorGpuImpactStudyReportFile(
+    const FString& Filename,
+    FRenderMasterActorGpuImpactStudyReport& OutReport,
+    FString& OutError)
+{
+    OutReport = FRenderMasterActorGpuImpactStudyReport();
+    FString JsonText;
+    if (!FFileHelper::LoadFileToString(JsonText, *Filename))
+    {
+        OutError = FString::Printf(
+            TEXT("Could not read Actor GPU impact study report: %s"), *Filename);
+        return false;
+    }
+    TSharedPtr<FJsonObject> Root;
+    const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonText);
+    if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+    {
+        OutError = TEXT("Actor GPU impact study report is not valid JSON.");
+        return false;
+    }
+    TSharedPtr<FJsonObject> CaptureSetObject;
+    if (!Root->TryGetStringField(TEXT("report_id"), OutReport.ReportId)
+        || !Root->TryGetStringField(TEXT("status"), OutReport.Status)
+        || !Root->TryGetStringField(TEXT("request"), OutReport.Request)
+        || !Root->TryGetStringField(
+            TEXT("capture_set_sha256"), OutReport.CaptureSetSha256)
+        || !Root->TryGetStringField(
+            TEXT("capture_set_file_sha256"), OutReport.CaptureSetFileSha256)
+        || !Root->TryGetStringField(TEXT("summary"), OutReport.Summary)
+        || !Root->TryGetBoolField(
+            TEXT("modifies_editor_scene"), OutReport.bModifiesEditorScene)
+        || !ReadInsightsObject(Root, TEXT("capture_set"), CaptureSetObject)
+        || !CaptureSetObject->TryGetStringField(
+            TEXT("study_id"), OutReport.StudyId))
+    {
+        OutError = TEXT("Actor GPU impact study report is missing evidence fields.");
+        return false;
+    }
+    Root->TryGetStringField(
+        TEXT("primary_aggregate_id"), OutReport.PrimaryAggregateId);
+    if (OutReport.ReportId.IsEmpty() || OutReport.Request.IsEmpty()
+        || OutReport.StudyId.IsEmpty() || OutReport.Summary.IsEmpty()
+        || !IsLowerHexInsightsSha256(OutReport.CaptureSetSha256)
+        || !IsLowerHexInsightsSha256(OutReport.CaptureSetFileSha256)
+        || OutReport.bModifiesEditorScene
+        || (OutReport.Status != TEXT("review_complete")
+            && OutReport.Status != TEXT("unresolved")))
+    {
+        OutError = TEXT("Actor GPU impact study report has an unsafe identity.");
+        return false;
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* AggregateValues = nullptr;
+    if (!Root->TryGetArrayField(TEXT("aggregates"), AggregateValues)
+        || AggregateValues == nullptr || AggregateValues->Num() > 64)
+    {
+        OutError = TEXT("Actor GPU impact study aggregates are missing or invalid.");
+        return false;
+    }
+    TSet<FString> AggregateIds;
+    for (const TSharedPtr<FJsonValue>& AggregateValue : *AggregateValues)
+    {
+        const TSharedPtr<FJsonObject> Aggregate =
+            AggregateValue.IsValid() ? AggregateValue->AsObject() : nullptr;
+        FRenderMasterActorGpuStudyAggregate Parsed;
+        double DecreasedVotes = -1.0;
+        double IncreasedVotes = -1.0;
+        double UnchangedVotes = -1.0;
+        if (!Aggregate.IsValid()
+            || !Aggregate->TryGetStringField(
+                TEXT("aggregate_id"), Parsed.AggregateId)
+            || !Aggregate->TryGetStringField(TEXT("queue_name"), Parsed.QueueName)
+            || !Aggregate->TryGetStringField(TEXT("scope_name"), Parsed.ScopeName)
+            || !Aggregate->TryGetStringField(
+                TEXT("classification"), Parsed.Classification)
+            || !Aggregate->TryGetStringField(
+                TEXT("dominant_direction_when_hidden"), Parsed.DominantDirection)
+            || !Aggregate->TryGetNumberField(
+                TEXT("median_visible_total_ms_per_second"),
+                Parsed.MedianVisibleMsPerSecond)
+            || !Aggregate->TryGetNumberField(
+                TEXT("median_hidden_total_ms_per_second"),
+                Parsed.MedianHiddenMsPerSecond)
+            || !Aggregate->TryGetNumberField(
+                TEXT("median_baseline_minus_hidden_ms_per_second"),
+                Parsed.MedianDeltaMsPerSecond)
+            || !Aggregate->TryGetNumberField(
+                TEXT("delta_mad_ms_per_second"), Parsed.DeltaMadMsPerSecond)
+            || !Aggregate->TryGetNumberField(
+                TEXT("control_noise_abs_ms_per_second"),
+                Parsed.ControlNoiseMsPerSecond)
+            || !Aggregate->TryGetNumberField(
+                TEXT("signal_excess_over_control_noise_ms_per_second"),
+                Parsed.SignalExcessMsPerSecond)
+            || !Aggregate->TryGetNumberField(
+                TEXT("relative_reduction_percent"),
+                Parsed.RelativeReductionPercent)
+            || !Aggregate->TryGetNumberField(
+                TEXT("decreased_vote_count"), DecreasedVotes)
+            || !Aggregate->TryGetNumberField(
+                TEXT("increased_vote_count"), IncreasedVotes)
+            || !Aggregate->TryGetNumberField(
+                TEXT("unchanged_vote_count"), UnchangedVotes))
+        {
+            OutError = TEXT("Actor GPU impact study contains an invalid aggregate.");
+            return false;
+        }
+        const bool bClassificationValid =
+            Parsed.Classification == TEXT("stable_candidate")
+            || Parsed.Classification == TEXT("noise_limited")
+            || Parsed.Classification == TEXT("inconsistent_direction");
+        const bool bDirectionValid = Parsed.DominantDirection == TEXT("decreased")
+            || Parsed.DominantDirection == TEXT("increased")
+            || Parsed.DominantDirection == TEXT("unchanged")
+            || Parsed.DominantDirection == TEXT("mixed");
+        if (Parsed.AggregateId.IsEmpty() || Parsed.QueueName.IsEmpty()
+            || Parsed.ScopeName.IsEmpty() || !bClassificationValid
+            || !bDirectionValid || AggregateIds.Contains(Parsed.AggregateId)
+            || !FMath::IsFinite(Parsed.MedianVisibleMsPerSecond)
+            || !FMath::IsFinite(Parsed.MedianHiddenMsPerSecond)
+            || !FMath::IsFinite(Parsed.MedianDeltaMsPerSecond)
+            || !FMath::IsFinite(Parsed.DeltaMadMsPerSecond)
+            || !FMath::IsFinite(Parsed.ControlNoiseMsPerSecond)
+            || !FMath::IsFinite(Parsed.SignalExcessMsPerSecond)
+            || !FMath::IsFinite(Parsed.RelativeReductionPercent)
+            || DecreasedVotes < 0.0 || IncreasedVotes < 0.0
+            || UnchangedVotes < 0.0
+            || !FMath::IsNearlyEqual(
+                DecreasedVotes + IncreasedVotes + UnchangedVotes, 3.0)
+            || !FMath::IsNearlyEqual(DecreasedVotes, FMath::RoundToDouble(DecreasedVotes))
+            || !FMath::IsNearlyEqual(IncreasedVotes, FMath::RoundToDouble(IncreasedVotes))
+            || !FMath::IsNearlyEqual(UnchangedVotes, FMath::RoundToDouble(UnchangedVotes)))
+        {
+            OutError = TEXT("Actor GPU impact study aggregate values are unsafe.");
+            return false;
+        }
+        Parsed.DecreasedVotes = static_cast<int32>(DecreasedVotes);
+        Parsed.IncreasedVotes = static_cast<int32>(IncreasedVotes);
+        Parsed.UnchangedVotes = static_cast<int32>(UnchangedVotes);
+        AggregateIds.Add(Parsed.AggregateId);
+        OutReport.Aggregates.Add(MoveTemp(Parsed));
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* FindingValues = nullptr;
+    if (!Root->TryGetArrayField(TEXT("findings"), FindingValues)
+        || FindingValues == nullptr || FindingValues->Num() > 16)
+    {
+        OutError = TEXT("Actor GPU impact study findings are missing or invalid.");
+        return false;
+    }
+    for (const TSharedPtr<FJsonValue>& FindingValue : *FindingValues)
+    {
+        const TSharedPtr<FJsonObject> Finding =
+            FindingValue.IsValid() ? FindingValue->AsObject() : nullptr;
+        FString Severity;
+        FString Category;
+        FString Observation;
+        FString Recommendation;
+        const FString Evidence = ReadInsightsStringArray(
+            Finding,
+            TEXT("evidence_aggregate_ids"),
+            &OutReport.CitedAggregateIds);
+        if (!Finding.IsValid()
+            || !Finding->TryGetStringField(TEXT("severity"), Severity)
+            || !Finding->TryGetStringField(TEXT("category"), Category)
+            || !Finding->TryGetStringField(TEXT("observation"), Observation)
+            || !Finding->TryGetStringField(
+                TEXT("recommendation"), Recommendation)
+            || Evidence.IsEmpty() || Observation.IsEmpty()
+            || Recommendation.IsEmpty())
+        {
+            OutError = TEXT("Actor GPU impact study contains an invalid finding.");
+            return false;
+        }
+        OutReport.Findings.Add(FString::Printf(
+            TEXT("[%s / %s] %s\nEvidence aggregates: %s\nRecommendation: %s"),
+            *Severity,
+            *Category,
+            *Observation,
+            *Evidence,
+            *Recommendation));
+    }
+    OutReport.MissingCapabilities = ReadInsightsStringArray(
+        Root, TEXT("missing_capabilities"));
+    if (OutReport.Status == TEXT("review_complete")
+        && (!OutReport.MissingCapabilities.IsEmpty()
+            || OutReport.Aggregates.IsEmpty()))
+    {
+        OutError = TEXT("A complete Actor GPU impact study requires aggregates only.");
+        return false;
+    }
+    if (OutReport.Status == TEXT("unresolved")
+        && (!OutReport.PrimaryAggregateId.IsEmpty()
+            || !OutReport.Findings.IsEmpty()
+            || OutReport.MissingCapabilities.IsEmpty()))
+    {
+        OutError = TEXT("An unresolved Actor GPU study must contain only gaps.");
+        return false;
+    }
+    return true;
+}
+
+bool RenderMasterParseShadowOptimizationReportFile(
+    const FString& Filename,
+    FRenderMasterShadowOptimizationReport& OutReport,
+    FString& OutError)
+{
+    OutReport = FRenderMasterShadowOptimizationReport();
+    FString JsonText;
+    if (!FFileHelper::LoadFileToString(JsonText, *Filename))
+    {
+        OutError = FString::Printf(
+            TEXT("Could not read shadow optimization report: %s"), *Filename);
+        return false;
+    }
+    TSharedPtr<FJsonObject> Root;
+    const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonText);
+    if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+    {
+        OutError = TEXT("Shadow optimization report is not valid JSON.");
+        return false;
+    }
+    FString SchemaVersion;
+    FString AnalysisMethod;
+    FString VisualEvidenceRole;
+    TSharedPtr<FJsonObject> CaptureSet;
+    TSharedPtr<FJsonObject> Target;
+    TSharedPtr<FJsonObject> WorkloadCapture;
+    FString ProjectName;
+    FString LevelPath;
+    bool bCaptureSetRestored = false;
+    bool bCaptureSetModifies = true;
+    bool bCandidateCastShadow = true;
+    if (!Root->TryGetStringField(TEXT("schema_version"), SchemaVersion)
+        || SchemaVersion != TEXT("0.1")
+        || !Root->TryGetStringField(TEXT("report_id"), OutReport.ReportId)
+        || !Root->TryGetStringField(TEXT("status"), OutReport.Status)
+        || !Root->TryGetStringField(TEXT("decision"), OutReport.Decision)
+        || !Root->TryGetStringField(
+            TEXT("capture_set_sha256"), OutReport.CaptureSetSha256)
+        || !Root->TryGetStringField(
+            TEXT("capture_set_file_sha256"), OutReport.CaptureSetFileSha256)
+        || !Root->TryGetStringField(TEXT("analysis_method"), AnalysisMethod)
+        || AnalysisMethod != TEXT("deterministic_host")
+        || !Root->TryGetStringField(TEXT("summary"), OutReport.Summary)
+        || !Root->TryGetBoolField(
+            TEXT("runtime_state_restored"), OutReport.bRuntimeStateRestored)
+        || !Root->TryGetBoolField(
+            TEXT("modifies_editor_scene"), OutReport.bModifiesEditorScene)
+        || !Root->TryGetBoolField(
+            TEXT("approval_required"), OutReport.bApprovalRequired)
+        || !Root->TryGetBoolField(TEXT("auto_save"), OutReport.bAutoSave)
+        || !Root->TryGetBoolField(
+            TEXT("undo_supported"), OutReport.bUndoSupported)
+        || !Root->TryGetStringField(
+            TEXT("visual_evidence_role"), VisualEvidenceRole)
+        || VisualEvidenceRole != TEXT("operator_regression_review")
+        || !ReadInsightsObject(Root, TEXT("capture_set"), CaptureSet)
+        || !CaptureSet->TryGetStringField(
+            TEXT("experiment_id"), OutReport.ExperimentId)
+        || !CaptureSet->TryGetBoolField(
+            TEXT("runtime_state_restored"), bCaptureSetRestored)
+        || !CaptureSet->TryGetBoolField(
+            TEXT("modifies_editor_scene"), bCaptureSetModifies)
+        || !CaptureSet->TryGetBoolField(
+            TEXT("candidate_cast_shadow"), bCandidateCastShadow)
+        || !ReadInsightsObject(CaptureSet, TEXT("target"), Target)
+        || !Target->TryGetStringField(TEXT("project_name"), ProjectName)
+        || !Target->TryGetStringField(TEXT("level_path"), LevelPath)
+        || !RenderMasterParsePerformanceEvidenceJson(
+            Target,
+            ProjectName,
+            LevelPath,
+            OutReport.ProposedAction.Target,
+            OutError))
+    {
+        if (OutError.IsEmpty())
+            OutError = TEXT("Shadow optimization report is missing safety evidence.");
+        return false;
+    }
+    const TArray<TSharedPtr<FJsonValue>>* ControlCaptures = nullptr;
+    if (!CaptureSet->TryGetArrayField(
+            TEXT("noise_control_baseline"), ControlCaptures)
+        || ControlCaptures == nullptr || ControlCaptures->Num() != 2
+        || !(*ControlCaptures)[0].IsValid()
+        || !(WorkloadCapture = (*ControlCaptures)[0]->AsObject()).IsValid()
+        || !WorkloadCapture->TryGetStringField(
+            TEXT("project_name"), OutReport.ProjectName)
+        || !WorkloadCapture->TryGetStringField(
+            TEXT("world_path"), OutReport.WorldPath)
+        || !WorkloadCapture->TryGetStringField(
+            TEXT("capture_mode"), OutReport.CaptureMode)
+        || !ReadInsightsInteger(
+            WorkloadCapture,
+            TEXT("viewport_width_px"),
+            1,
+            16384,
+            OutReport.ViewportSize.X)
+        || !ReadInsightsInteger(
+            WorkloadCapture,
+            TEXT("viewport_height_px"),
+            1,
+            16384,
+            OutReport.ViewportSize.Y)
+        || !WorkloadCapture->TryGetStringField(
+            TEXT("gpu_name"), OutReport.GpuName)
+        || OutReport.ProjectName.IsEmpty()
+        || OutReport.WorldPath.IsEmpty()
+        || (OutReport.CaptureMode != TEXT("pie")
+            && OutReport.CaptureMode != TEXT("simulate"))
+        || OutReport.GpuName.IsEmpty())
+    {
+        OutError = TEXT("Shadow optimization workload identity is invalid.");
+        return false;
+    }
+    Root->TryGetStringField(
+        TEXT("primary_aggregate_id"), OutReport.PrimaryAggregateId);
+    if (OutReport.ReportId.IsEmpty() || OutReport.ExperimentId.IsEmpty()
+        || OutReport.Summary.IsEmpty()
+        || !IsLowerHexInsightsSha256(OutReport.CaptureSetSha256)
+        || !IsLowerHexInsightsSha256(OutReport.CaptureSetFileSha256)
+        || !OutReport.bRuntimeStateRestored || !bCaptureSetRestored
+        || OutReport.bModifiesEditorScene || bCaptureSetModifies
+        || bCandidateCastShadow
+        || OutReport.bAutoSave || !OutReport.bUndoSupported
+        || !OutReport.ProposedAction.Target.Before.bCastShadow)
+    {
+        OutError = TEXT("Shadow optimization report safety flags are invalid.");
+        return false;
+    }
+
+    TSharedPtr<FJsonObject> Thresholds;
+    double MinimumSignal = 0.0;
+    double MinimumRelative = 0.0;
+    double MaximumMadRatio = 0.0;
+    double MinimumVotes = 0.0;
+    if (!ReadInsightsObject(Root, TEXT("thresholds"), Thresholds)
+        || !Thresholds->TryGetNumberField(
+            TEXT("minimum_signal_excess_ms_per_second"), MinimumSignal)
+        || !Thresholds->TryGetNumberField(
+            TEXT("minimum_relative_reduction_percent"), MinimumRelative)
+        || !Thresholds->TryGetNumberField(
+            TEXT("maximum_mad_to_median_ratio"), MaximumMadRatio)
+        || !Thresholds->TryGetNumberField(
+            TEXT("minimum_decreased_votes"), MinimumVotes)
+        || !FMath::IsNearlyEqual(MinimumSignal, 1.0)
+        || !FMath::IsNearlyEqual(MinimumRelative, 1.0)
+        || !FMath::IsNearlyEqual(MaximumMadRatio, 1.0)
+        || !FMath::IsNearlyEqual(MinimumVotes, 2.0))
+    {
+        OutError = TEXT("Shadow optimization decision thresholds are invalid.");
+        return false;
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* AggregateValues = nullptr;
+    if (!Root->TryGetArrayField(TEXT("aggregates"), AggregateValues)
+        || AggregateValues == nullptr || AggregateValues->Num() > 64)
+    {
+        OutError = TEXT("Shadow optimization aggregates are missing or invalid.");
+        return false;
+    }
+    TSet<FString> AggregateIds;
+    for (const TSharedPtr<FJsonValue>& Value : *AggregateValues)
+    {
+        const TSharedPtr<FJsonObject> Json =
+            Value.IsValid() ? Value->AsObject() : nullptr;
+        FRenderMasterShadowOptimizationAggregate Parsed;
+        double Decreased = -1.0;
+        double Increased = -1.0;
+        double Unchanged = -1.0;
+        if (!Json.IsValid()
+            || !Json->TryGetStringField(TEXT("aggregate_id"), Parsed.AggregateId)
+            || !Json->TryGetStringField(TEXT("queue_name"), Parsed.QueueName)
+            || !Json->TryGetStringField(TEXT("scope_name"), Parsed.ScopeName)
+            || !Json->TryGetStringField(
+                TEXT("classification"), Parsed.Classification)
+            || !Json->TryGetStringField(
+                TEXT("dominant_direction_when_disabled"),
+                Parsed.DominantDirection)
+            || !Json->TryGetNumberField(
+                TEXT("median_baseline_total_ms_per_second"),
+                Parsed.MedianBaselineMsPerSecond)
+            || !Json->TryGetNumberField(
+                TEXT("median_candidate_total_ms_per_second"),
+                Parsed.MedianCandidateMsPerSecond)
+            || !Json->TryGetNumberField(
+                TEXT("median_baseline_minus_candidate_ms_per_second"),
+                Parsed.MedianDeltaMsPerSecond)
+            || !Json->TryGetNumberField(
+                TEXT("delta_mad_ms_per_second"), Parsed.DeltaMadMsPerSecond)
+            || !Json->TryGetNumberField(
+                TEXT("control_noise_abs_ms_per_second"),
+                Parsed.ControlNoiseMsPerSecond)
+            || !Json->TryGetNumberField(
+                TEXT("signal_excess_over_control_noise_ms_per_second"),
+                Parsed.SignalExcessMsPerSecond)
+            || !Json->TryGetNumberField(
+                TEXT("relative_reduction_percent"),
+                Parsed.RelativeReductionPercent)
+            || !Json->TryGetNumberField(TEXT("decreased_vote_count"), Decreased)
+            || !Json->TryGetNumberField(TEXT("increased_vote_count"), Increased)
+            || !Json->TryGetNumberField(TEXT("unchanged_vote_count"), Unchanged))
+        {
+            OutError = TEXT("Shadow optimization contains an invalid aggregate.");
+            return false;
+        }
+        if (Parsed.AggregateId.IsEmpty() || Parsed.QueueName.IsEmpty()
+            || Parsed.ScopeName.IsEmpty() || AggregateIds.Contains(Parsed.AggregateId)
+            || !FMath::IsFinite(Parsed.MedianBaselineMsPerSecond)
+            || Parsed.MedianBaselineMsPerSecond <= 0.0
+            || !FMath::IsFinite(Parsed.MedianCandidateMsPerSecond)
+            || !FMath::IsFinite(Parsed.MedianDeltaMsPerSecond)
+            || !FMath::IsFinite(Parsed.DeltaMadMsPerSecond)
+            || !FMath::IsFinite(Parsed.ControlNoiseMsPerSecond)
+            || !FMath::IsFinite(Parsed.SignalExcessMsPerSecond)
+            || !FMath::IsFinite(Parsed.RelativeReductionPercent)
+            || Decreased < 0.0 || Increased < 0.0 || Unchanged < 0.0
+            || !FMath::IsNearlyEqual(Decreased + Increased + Unchanged, 3.0)
+            || !FMath::IsNearlyEqual(Decreased, FMath::RoundToDouble(Decreased))
+            || !FMath::IsNearlyEqual(Increased, FMath::RoundToDouble(Increased))
+            || !FMath::IsNearlyEqual(Unchanged, FMath::RoundToDouble(Unchanged)))
+        {
+            OutError = TEXT("Shadow optimization aggregate values are unsafe.");
+            return false;
+        }
+        Parsed.DecreasedVotes = static_cast<int32>(Decreased);
+        Parsed.IncreasedVotes = static_cast<int32>(Increased);
+        Parsed.UnchangedVotes = static_cast<int32>(Unchanged);
+        AggregateIds.Add(Parsed.AggregateId);
+        OutReport.Aggregates.Add(MoveTemp(Parsed));
+    }
+
+    const FString RejectionText = ReadInsightsStringArray(
+        Root, TEXT("rejection_reasons"), &OutReport.RejectionReasons);
+    TSharedPtr<FJsonObject> ProposedAction;
+    OutReport.bHasProposedAction = ReadInsightsObject(
+        Root, TEXT("proposed_action"), ProposedAction);
+    if (OutReport.bHasProposedAction
+        && !RenderMasterParsePerformanceActionJson(
+            ProposedAction,
+            ProjectName,
+            LevelPath,
+            OutReport.ProposedAction.Target,
+            OutReport.ProposedAction,
+            OutError))
+    {
+        return false;
+    }
+    auto IsQualifying = [](const FRenderMasterShadowOptimizationAggregate& Item)
+    {
+        return Item.Classification == TEXT("stable_candidate")
+            && Item.DominantDirection == TEXT("decreased")
+            && Item.SignalExcessMsPerSecond >= 1.0
+            && Item.RelativeReductionPercent >= 1.0
+            && Item.DecreasedVotes >= 2
+            && Item.DeltaMadMsPerSecond
+                <= FMath::Abs(Item.MedianDeltaMsPerSecond);
+    };
+    const FRenderMasterShadowOptimizationAggregate* Primary =
+        OutReport.Aggregates.FindByPredicate(
+            [&OutReport](const FRenderMasterShadowOptimizationAggregate& Item)
+            {
+                return Item.AggregateId == OutReport.PrimaryAggregateId;
+            });
+    const bool bAnyQualifying = OutReport.Aggregates.ContainsByPredicate(
+        IsQualifying);
+    if (OutReport.Status == TEXT("proposed"))
+    {
+        if (OutReport.Decision != TEXT("propose_apply")
+            || !OutReport.bApprovalRequired || !OutReport.bHasProposedAction
+            || Primary == nullptr || !IsQualifying(*Primary)
+            || !RejectionText.IsEmpty()
+            || OutReport.ProposedAction.Before.bCastShadow != true
+            || OutReport.ProposedAction.After.bCastShadow != false
+            || !FMath::IsNearlyEqual(
+                OutReport.ProposedAction.Before.MaxDrawDistanceCm,
+                OutReport.ProposedAction.After.MaxDrawDistanceCm,
+                0.01f))
+        {
+            OutError = TEXT("Shadow optimization proposal is not evidence-bound.");
+            return false;
+        }
+    }
+    else if (OutReport.Status == TEXT("rejected"))
+    {
+        if (OutReport.Decision != TEXT("reject") || OutReport.bApprovalRequired
+            || OutReport.bHasProposedAction || bAnyQualifying
+            || RejectionText.IsEmpty() || !OutReport.PrimaryAggregateId.IsEmpty())
+        {
+            OutError = TEXT("Rejected shadow optimization report is inconsistent.");
+            return false;
+        }
+    }
+    else if (OutReport.Status == TEXT("unresolved"))
+    {
+        if (OutReport.Decision != TEXT("unresolved")
+            || OutReport.bApprovalRequired || OutReport.bHasProposedAction
+            || !OutReport.Aggregates.IsEmpty() || RejectionText.IsEmpty()
+            || !OutReport.PrimaryAggregateId.IsEmpty())
+        {
+            OutError = TEXT("Unresolved shadow optimization report is inconsistent.");
+            return false;
+        }
+    }
+    else
+    {
+        OutError = TEXT("Shadow optimization report status is unsupported.");
+        return false;
+    }
+    return true;
+}
+
 FRenderMasterInsightsGpuAssistant::FRenderMasterInsightsGpuAssistant(
     TSharedPtr<FRenderMasterWorkflowController> InWorkflowController)
     : WorkflowController(MoveTemp(InWorkflowController))
@@ -668,6 +1201,10 @@ bool FRenderMasterInsightsGpuAssistant::StartReview(const FString& Prompt)
     Report = FRenderMasterInsightsGpuReport();
     ActorImpactReport = FRenderMasterActorGpuImpactReport();
     bActorImpactExperiment = false;
+    bRepeatableActorImpactStudy = false;
+    bShadowOptimizationStudy = false;
+    bShadowOptimizationApplied = false;
+    bShadowOptimizationRejected = false;
     bCapturingActorVariant = false;
     AnalysisSession.Reset();
     AnalysisService.Reset();
@@ -842,6 +1379,10 @@ bool FRenderMasterInsightsGpuAssistant::StartActorImpactReview(
     ProcessLog.Reset();
     ReviewRequest = CleanPrompt;
     bActorImpactExperiment = true;
+    bRepeatableActorImpactStudy = false;
+    bShadowOptimizationStudy = false;
+    bShadowOptimizationApplied = false;
+    bShadowOptimizationRejected = false;
     bCapturingActorVariant = false;
     bImpactActorHidden = false;
     bOriginalImpactActorHidden = RuntimeActor->IsHidden();
@@ -918,6 +1459,295 @@ bool FRenderMasterInsightsGpuAssistant::StartActorImpactReview(
     return true;
 }
 
+bool FRenderMasterInsightsGpuAssistant::StartActorImpactStudy(
+    const FString& Prompt,
+    AActor* SelectedActor)
+{
+    return StartRepeatableActorStudy(Prompt, SelectedActor, false);
+}
+
+bool FRenderMasterInsightsGpuAssistant::StartActorShadowOptimizationStudy(
+    const FString& Prompt,
+    AActor* SelectedActor)
+{
+    return StartRepeatableActorStudy(Prompt, SelectedActor, true);
+}
+
+bool FRenderMasterInsightsGpuAssistant::StartRepeatableActorStudy(
+    const FString& Prompt,
+    AActor* SelectedActor,
+    bool bShadowOptimization)
+{
+    if (!CanStart()) return false;
+    const FString CleanPrompt = Prompt.TrimStartAndEnd();
+    if (CleanPrompt.IsEmpty())
+    {
+        Fail(bShadowOptimization
+            ? TEXT("Enter a Cast Shadow optimization question before starting the experiment.")
+            : TEXT("Enter a repeatable selected-Actor GPU question before starting the study."));
+        return false;
+    }
+    if (!WorkflowController.IsValid())
+    {
+        Fail(TEXT("RenderMasterBot runtime configuration is unavailable."));
+        return false;
+    }
+    const FString Python = WorkflowController->GetPythonExecutable();
+    const FString Root = WorkflowController->GetWorkflowRoot();
+    if (!FPaths::FileExists(Python) || Root.IsEmpty())
+    {
+        Fail(TEXT(
+            "Configure an existing Python executable and workflow root in Render & Evaluate."));
+        return false;
+    }
+    if (Python.Contains(TEXT("\"")) || Root.Contains(TEXT("\"")))
+    {
+        Fail(TEXT("Assistant runtime paths cannot contain a double quote."));
+        return false;
+    }
+    if (FTraceAuxiliary::IsConnected())
+    {
+        Fail(FString::Printf(
+            TEXT("Another Unreal trace is already active at %s. Stop it before starting the repeatable Actor study; the Assistant will not interrupt external traces."),
+            *FTraceAuxiliary::GetTraceDestinationString()));
+        return false;
+    }
+    UWorld* PlayWorld = GEditor != nullptr ? GEditor->PlayWorld : nullptr;
+    if (PlayWorld == nullptr)
+    {
+        Fail(TEXT(
+            "Start PIE or SIE, keep one level Actor selected, stabilize the workload, then start the repeatable study."));
+        return false;
+    }
+    if (!IsValid(SelectedActor))
+    {
+        Fail(TEXT("Select exactly one Actor that existed before PIE/SIE started."));
+        return false;
+    }
+    AActor* EditorActor = SelectedActor;
+    AActor* RuntimeActor = nullptr;
+    if (SelectedActor->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor))
+    {
+        RuntimeActor = SelectedActor;
+        EditorActor = EditorUtilities::GetEditorWorldCounterpartActor(SelectedActor);
+    }
+    else
+    {
+        RuntimeActor = EditorUtilities::GetSimWorldCounterpartActor(SelectedActor);
+    }
+    if (!IsValid(EditorActor) || !IsValid(RuntimeActor)
+        || RuntimeActor->GetWorld() != PlayWorld)
+    {
+        Fail(TEXT(
+            "The selected Actor has no stable PIE/SIE counterpart. Select an Actor placed in the level before play started."));
+        return false;
+    }
+    TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents;
+    RuntimeActor->GetComponents(PrimitiveComponents);
+    PrimitiveComponents.RemoveAll([](const UPrimitiveComponent* Component)
+    {
+        return !IsValid(Component) || !Component->IsRegistered();
+    });
+    if (PrimitiveComponents.IsEmpty())
+    {
+        Fail(TEXT("The selected Actor has no registered runtime Primitive Component to measure."));
+        return false;
+    }
+    if (RuntimeActor->IsHidden())
+    {
+        Fail(TEXT("The selected runtime Actor must be visible before the study starts."));
+        return false;
+    }
+    AStaticMeshActor* EditorStaticMeshActor = Cast<AStaticMeshActor>(EditorActor);
+    AStaticMeshActor* RuntimeStaticMeshActor = Cast<AStaticMeshActor>(RuntimeActor);
+    UStaticMeshComponent* EditorStaticMeshComponent = EditorStaticMeshActor != nullptr
+        ? EditorStaticMeshActor->GetStaticMeshComponent()
+        : nullptr;
+    UStaticMeshComponent* RuntimeStaticMeshComponent = RuntimeStaticMeshActor != nullptr
+        ? RuntimeStaticMeshActor->GetStaticMeshComponent()
+        : nullptr;
+    FRenderMasterPerformanceEvidence ShadowEvidence;
+    FString ShadowEvidenceError;
+    if (bShadowOptimization
+        && (EditorStaticMeshActor == nullptr || RuntimeStaticMeshActor == nullptr
+            || EditorStaticMeshComponent == nullptr
+            || RuntimeStaticMeshComponent == nullptr
+            || !RuntimeStaticMeshComponent->IsRegistered()
+            || !RenderMasterCapturePerformanceEvidence(
+                EditorStaticMeshActor,
+                EditorStaticMeshComponent,
+                ShadowEvidence,
+                ShadowEvidenceError)
+            || !ShadowEvidence.Before.bCastShadow
+            || !RuntimeStaticMeshComponent->CastShadow))
+    {
+        Fail(ShadowEvidenceError.IsEmpty()
+            ? TEXT("Shadow optimization requires one editable native StaticMeshActor whose Editor and PIE/SIE components currently have Cast Shadow enabled.")
+            : ShadowEvidenceError);
+        return false;
+    }
+    FViewport* Viewport = nullptr;
+    if (UGameViewportClient* GameViewport = PlayWorld->GetGameViewport())
+        Viewport = GameViewport->Viewport;
+    if (Viewport == nullptr && GEditor != nullptr)
+        Viewport = GEditor->GetActiveViewport();
+    const FIntPoint ViewportSize = Viewport != nullptr
+        ? Viewport->GetSizeXY()
+        : FIntPoint::ZeroValue;
+    if (ViewportSize.X < 1 || ViewportSize.Y < 1)
+    {
+        Fail(TEXT("The active PIE/SIE viewport has no measurable render size."));
+        return false;
+    }
+
+    Capture = FRenderMasterInsightsGpuCapture();
+    BaselineCapture = FRenderMasterInsightsGpuCapture();
+    Report = FRenderMasterInsightsGpuReport();
+    ActorImpactReport = FRenderMasterActorGpuImpactReport();
+    ActorImpactStudyReport = FRenderMasterActorGpuImpactStudyReport();
+    ShadowOptimizationReport = FRenderMasterShadowOptimizationReport();
+    ActorImpactDeltas.Reset();
+    ActorImpactStudyCaptures.Reset();
+    UnmatchedBaselineScopeIds.Reset();
+    UnmatchedVariantScopeIds.Reset();
+    AnalysisSession.Reset();
+    AnalysisService.Reset();
+    ErrorText.Reset();
+    ProcessLog.Reset();
+    ReviewRequest = CleanPrompt;
+    bActorImpactExperiment = true;
+    bRepeatableActorImpactStudy = true;
+    bShadowOptimizationStudy = bShadowOptimization;
+    bShadowOptimizationApplied = false;
+    bShadowOptimizationRejected = false;
+    bCapturingActorVariant = false;
+    bImpactActorHidden = false;
+    bOriginalImpactActorHidden = RuntimeActor->IsHidden();
+    bOriginalRuntimeCastShadow = RuntimeStaticMeshComponent != nullptr
+        ? RuntimeStaticMeshComponent->CastShadow
+        : true;
+    bShadowCandidateActive = false;
+    ImpactEditorActor = EditorActor;
+    ImpactRuntimeActor = RuntimeActor;
+    ShadowEditorComponent = bShadowOptimization
+        ? EditorStaticMeshComponent
+        : nullptr;
+    ShadowRuntimeComponent = bShadowOptimization
+        ? RuntimeStaticMeshComponent
+        : nullptr;
+    ShadowTargetEvidence = bShadowOptimization
+        ? ShadowEvidence
+        : FRenderMasterPerformanceEvidence();
+    ImpactEditorActorPath = EditorActor->GetPathName().Left(500);
+    ImpactRuntimeActorPath = RuntimeActor->GetPathName().Left(500);
+    ImpactActorLabel = EditorActor->GetActorLabel().Left(240);
+    ImpactActorClass = EditorActor->GetClass()->GetPathName().Left(500);
+    ImpactPrimitiveComponentCount = PrimitiveComponents.Num();
+    CaptureWorld = PlayWorld;
+    const FString StudyGuid = FGuid::NewGuid().ToString(
+        EGuidFormats::Digits).ToLower();
+    ActorImpactStudyId = bShadowOptimization
+        ? FString::Printf(TEXT("shadow_optimization_%s"), *StudyGuid)
+        : FString::Printf(TEXT("actor_gpu_study_%s"), *StudyGuid);
+    ShadowOptimizationExperimentId = bShadowOptimization
+        ? ActorImpactStudyId
+        : FString();
+    ActorImpactExperimentId.Reset();
+    RequestDirectory = FPaths::Combine(
+        Root,
+        bShadowOptimization
+            ? TEXT("assistant-shadow-optimization")
+            : TEXT("assistant-actor-gpu-impact-study"),
+        ActorImpactStudyId);
+    IFileManager::Get().MakeDirectory(*RequestDirectory, true);
+    PromptPath = FPaths::Combine(RequestDirectory, TEXT("request.txt"));
+    ActorImpactStudyCaptureSetPath = FPaths::Combine(
+        RequestDirectory, TEXT("actor_gpu_impact_study_capture_set.json"));
+    ShadowOptimizationCaptureSetPath = FPaths::Combine(
+        RequestDirectory, TEXT("shadow_optimization_capture_set.json"));
+    ReportOutputPath = FPaths::Combine(
+        RequestDirectory,
+        bShadowOptimization
+            ? TEXT("shadow_optimization_report.json")
+            : TEXT("actor_gpu_impact_study_report.json"));
+    ActorImpactStudyCaptureSetFileSha256.Reset();
+    ShadowOptimizationCaptureSetFileSha256.Reset();
+    CaptureFileSha256.Reset();
+
+    auto AddStudyCapture = [this](
+        const TCHAR* Label,
+        const TCHAR* FileStem,
+        bool bVariant)
+    {
+        FRenderMasterActorGpuStudyCapturePlan& Plan =
+            ActorImpactStudyCaptures.AddDefaulted_GetRef();
+        Plan.Label = Label;
+        Plan.bVariant = bVariant;
+        Plan.TracePath = FPaths::Combine(
+            RequestDirectory, FString(FileStem) + TEXT(".utrace"));
+        Plan.CapturePath = FPaths::Combine(
+            RequestDirectory, FString(FileStem) + TEXT("_capture.json"));
+    };
+    if (bShadowOptimization)
+    {
+        AddStudyCapture(TEXT("A/A control 1 of 2 (Cast Shadow on)"), TEXT("control_shadow_on_01"), false);
+        AddStudyCapture(TEXT("A/A control 2 of 2 (Cast Shadow on)"), TEXT("control_shadow_on_02"), false);
+        AddStudyCapture(TEXT("trial 1 A (Cast Shadow on)"), TEXT("trial_001_shadow_on"), false);
+        AddStudyCapture(TEXT("trial 1 B (Cast Shadow off)"), TEXT("trial_001_shadow_off"), true);
+        AddStudyCapture(TEXT("trial 2 B (Cast Shadow off)"), TEXT("trial_002_shadow_off"), true);
+        AddStudyCapture(TEXT("trial 2 A (Cast Shadow on)"), TEXT("trial_002_shadow_on"), false);
+        AddStudyCapture(TEXT("trial 3 A (Cast Shadow on)"), TEXT("trial_003_shadow_on"), false);
+        AddStudyCapture(TEXT("trial 3 B (Cast Shadow off)"), TEXT("trial_003_shadow_off"), true);
+    }
+    else
+    {
+        AddStudyCapture(TEXT("A/A control 1 of 2 (visible)"), TEXT("control_visible_01"), false);
+        AddStudyCapture(TEXT("A/A control 2 of 2 (visible)"), TEXT("control_visible_02"), false);
+        AddStudyCapture(TEXT("trial 1 A (visible)"), TEXT("trial_001_visible"), false);
+        AddStudyCapture(TEXT("trial 1 B (hidden)"), TEXT("trial_001_hidden"), true);
+        AddStudyCapture(TEXT("trial 2 B (hidden)"), TEXT("trial_002_hidden"), true);
+        AddStudyCapture(TEXT("trial 2 A (visible)"), TEXT("trial_002_visible"), false);
+        AddStudyCapture(TEXT("trial 3 A (visible)"), TEXT("trial_003_visible"), false);
+        AddStudyCapture(TEXT("trial 3 B (hidden)"), TEXT("trial_003_hidden"), true);
+    }
+    BaselineTracePath = ActorImpactStudyCaptures[0].TracePath;
+    BaselineCapturePath = ActorImpactStudyCaptures[0].CapturePath;
+
+    BaselineCapture.ProjectName = FApp::GetProjectName();
+    BaselineCapture.WorldPath = PlayWorld->GetPackage()->GetName();
+    BaselineCapture.CaptureMode = GEditor->IsSimulatingInEditor()
+        ? TEXT("simulate")
+        : TEXT("pie");
+    BaselineCapture.ViewportSize = ViewportSize;
+    BaselineCapture.GpuName = GRHIAdapterName.IsEmpty()
+        ? TEXT("Unknown RHI adapter")
+        : GRHIAdapterName.Left(240);
+    BaselineCapture.Channels = {
+        TEXT("cpu"), TEXT("gpu"), TEXT("frame"), TEXT("bookmark")};
+
+    if (!FFileHelper::SaveStringToFile(
+            ReviewRequest,
+            *PromptPath,
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+    {
+        Fail(bShadowOptimization
+            ? TEXT("Could not write the Cast Shadow optimization request.")
+            : TEXT("Could not write the repeatable Actor GPU study request."));
+        return false;
+    }
+    ActorImpactStudyCaptureIndex = 0;
+    VariantWarmupStartedSeconds = FPlatformTime::Seconds();
+    State = ERenderMasterInsightsGpuState::WarmingStudyCapture;
+    AppendLog(bShadowOptimization
+        ? FString::Printf(
+            TEXT("Starting Cast Shadow optimization experiment for %s: 8 captures in AA_AB_BA_AB order, with runtime-only shadow changes and 1.0-second warmups."),
+            *ImpactActorLabel)
+        : FString::Printf(
+            TEXT("Starting repeatable GPU study for %s: 8 captures in AA_AB_BA_AB order, with 1.0-second warmup before every capture."),
+            *ImpactActorLabel));
+    return true;
+}
+
 bool FRenderMasterInsightsGpuAssistant::Tick(float DeltaTime)
 {
     (void)DeltaTime;
@@ -929,6 +1759,11 @@ bool FRenderMasterInsightsGpuAssistant::Tick(float DeltaTime)
     if (State == ERenderMasterInsightsGpuState::WarmingVariant)
     {
         TickVariantWarmup();
+        return true;
+    }
+    if (State == ERenderMasterInsightsGpuState::WarmingStudyCapture)
+    {
+        TickStudyCaptureWarmup();
         return true;
     }
     if (State == ERenderMasterInsightsGpuState::Analyzing
@@ -976,7 +1811,16 @@ bool FRenderMasterInsightsGpuAssistant::TickCapture()
         Fail(Error.IsEmpty() ? TEXT("Could not stop the GPU trace.") : Error);
         return false;
     }
-    if (bActorImpactExperiment && bCapturingActorVariant
+    if (bRepeatableActorImpactStudy
+        && ActorImpactStudyCaptureIndex == ActorImpactStudyCaptures.Num() - 1
+        && (bImpactActorHidden || bShadowCandidateActive)
+        && !RestoreImpactActor(Error))
+    {
+        Fail(Error);
+        return false;
+    }
+    if (bActorImpactExperiment && !bRepeatableActorImpactStudy
+        && bCapturingActorVariant
         && !RestoreImpactActor(Error))
     {
         Fail(Error);
@@ -1017,6 +1861,233 @@ bool FRenderMasterInsightsGpuAssistant::TickVariantWarmup()
         return false;
     }
     return true;
+}
+
+bool FRenderMasterInsightsGpuAssistant::TickStudyCaptureWarmup()
+{
+    UWorld* World = CaptureWorld.Get();
+    AActor* RuntimeActor = ImpactRuntimeActor.Get();
+    if (!bRepeatableActorImpactStudy || World == nullptr
+        || GEditor == nullptr || GEditor->PlayWorld != World
+        || !IsValid(RuntimeActor)
+        || !ActorImpactStudyCaptures.IsValidIndex(ActorImpactStudyCaptureIndex))
+    {
+        FString RestoreError;
+        RestoreImpactActor(RestoreError);
+        Fail(TEXT("PIE/SIE or the selected Actor changed during study warmup."));
+        return false;
+    }
+    const bool bExpectedVariant =
+        ActorImpactStudyCaptures[ActorImpactStudyCaptureIndex].bVariant;
+    UStaticMeshComponent* RuntimeShadowComponent = ShadowRuntimeComponent.Get();
+    const bool bStateMatches = bShadowOptimizationStudy
+        ? IsValid(RuntimeShadowComponent)
+            && RuntimeShadowComponent->CastShadow == !bExpectedVariant
+            && bShadowCandidateActive == bExpectedVariant
+        : RuntimeActor->IsHidden() == bExpectedVariant;
+    if (!bStateMatches)
+    {
+        FString RestoreError;
+        RestoreImpactActor(RestoreError);
+        Fail(TEXT("The selected Actor state changed during study warmup."));
+        return false;
+    }
+    constexpr double StudyWarmupSeconds = 1.0;
+    if (FPlatformTime::Seconds() - VariantWarmupStartedSeconds
+        < StudyWarmupSeconds)
+    {
+        return true;
+    }
+    FString Error;
+    if (!BeginActorStudyCapture(Error))
+    {
+        Fail(Error);
+        return false;
+    }
+    return true;
+}
+
+bool FRenderMasterInsightsGpuAssistant::BeginActorStudyCapture(
+    FString& OutError)
+{
+    UWorld* PlayWorld = CaptureWorld.Get();
+    AActor* RuntimeActor = ImpactRuntimeActor.Get();
+    if (!bRepeatableActorImpactStudy || !IsValid(PlayWorld)
+        || GEditor == nullptr || GEditor->PlayWorld != PlayWorld
+        || !IsValid(RuntimeActor)
+        || !ActorImpactStudyCaptures.IsValidIndex(ActorImpactStudyCaptureIndex))
+    {
+        OutError = TEXT("The repeatable Actor GPU study state is unavailable.");
+        return false;
+    }
+    const FRenderMasterActorGpuStudyCapturePlan& Plan =
+        ActorImpactStudyCaptures[ActorImpactStudyCaptureIndex];
+    UStaticMeshComponent* RuntimeShadowComponent = ShadowRuntimeComponent.Get();
+    const bool bStateMatches = bShadowOptimizationStudy
+        ? IsValid(RuntimeShadowComponent)
+            && RuntimeShadowComponent->CastShadow == !Plan.bVariant
+            && bShadowCandidateActive == Plan.bVariant
+        : RuntimeActor->IsHidden() == Plan.bVariant;
+    if (!bStateMatches)
+    {
+        OutError = TEXT("The selected Actor state does not match the study schedule.");
+        return false;
+    }
+    if (FTraceAuxiliary::IsConnected())
+    {
+        OutError = TEXT("Another Unreal trace started during the Actor GPU study.");
+        return false;
+    }
+    FViewport* Viewport = nullptr;
+    if (UGameViewportClient* GameViewport = PlayWorld->GetGameViewport())
+        Viewport = GameViewport->Viewport;
+    if (Viewport == nullptr && GEditor != nullptr)
+        Viewport = GEditor->GetActiveViewport();
+    const FIntPoint ViewportSize = Viewport != nullptr
+        ? Viewport->GetSizeXY()
+        : FIntPoint::ZeroValue;
+    if (ViewportSize != BaselineCapture.ViewportSize)
+    {
+        OutError = TEXT("The PIE/SIE viewport changed during the Actor GPU study.");
+        return false;
+    }
+
+    Capture = FRenderMasterInsightsGpuCapture();
+    Capture.CaptureId = FString::Printf(
+        TEXT("%s_capture_%03d"),
+        *ActorImpactStudyId,
+        ActorImpactStudyCaptureIndex + 1);
+    Capture.CapturedAtUtc = FDateTime::UtcNow().ToIso8601();
+    Capture.ProjectName = BaselineCapture.ProjectName;
+    Capture.WorldPath = BaselineCapture.WorldPath;
+    Capture.CaptureMode = BaselineCapture.CaptureMode;
+    Capture.ViewportSize = BaselineCapture.ViewportSize;
+    Capture.GpuName = BaselineCapture.GpuName;
+    Capture.Channels = BaselineCapture.Channels;
+    TracePath = Plan.TracePath;
+    CapturePath = Plan.CapturePath;
+    Capture.TraceFileName = FPaths::GetCleanFilename(TracePath);
+    CaptureFileSha256.Reset();
+    bCapturingActorVariant = Plan.bVariant;
+
+    FTraceAuxiliary::FOptions Options;
+    Options.bTruncateFile = true;
+    Options.bExcludeTail = true;
+    if (!FTraceAuxiliary::Start(
+            FTraceAuxiliary::EConnectionType::File,
+            *TracePath,
+            InsightsTraceChannels,
+            &Options))
+    {
+        OutError = TEXT("Unreal could not start the scheduled Actor GPU trace.");
+        return false;
+    }
+    bOwnsTrace = true;
+    CaptureStartedSeconds = FPlatformTime::Seconds();
+    State = ERenderMasterInsightsGpuState::Capturing;
+    AppendLog(FString::Printf(
+        TEXT("Capture %d of %d: %s for %.1f seconds."),
+        ActorImpactStudyCaptureIndex + 1,
+        ActorImpactStudyCaptures.Num(),
+        *Plan.Label,
+        Capture.RequestedDurationSeconds));
+    return true;
+}
+
+bool FRenderMasterInsightsGpuAssistant::CompleteActorStudyCapture(
+    FString& OutError)
+{
+    if (!ActorImpactStudyCaptures.IsValidIndex(ActorImpactStudyCaptureIndex))
+    {
+        OutError = TEXT("The completed Actor GPU study capture has no schedule entry.");
+        return false;
+    }
+    ActorImpactStudyCaptures[ActorImpactStudyCaptureIndex].Capture = Capture;
+    if (ActorImpactStudyCaptureIndex + 1 < ActorImpactStudyCaptures.Num())
+    {
+        ++ActorImpactStudyCaptureIndex;
+        const bool bNextVariant =
+            ActorImpactStudyCaptures[ActorImpactStudyCaptureIndex].bVariant;
+        AActor* RuntimeActor = ImpactRuntimeActor.Get();
+        if (!IsValid(RuntimeActor) || RuntimeActor->GetWorld() != CaptureWorld.Get())
+        {
+            OutError = TEXT("The selected runtime Actor disappeared during the study.");
+            return false;
+        }
+        if (!ApplyRepeatableStudyVariant(bNextVariant, OutError)) return false;
+        VariantWarmupStartedSeconds = FPlatformTime::Seconds();
+        State = ERenderMasterInsightsGpuState::WarmingStudyCapture;
+        AppendLog(FString::Printf(
+            TEXT("Capture %d parsed. Preparing %s with a 1.0-second warmup."),
+            ActorImpactStudyCaptureIndex,
+            *ActorImpactStudyCaptures[ActorImpactStudyCaptureIndex].Label));
+        return true;
+    }
+
+    if (!RestoreImpactActor(OutError)) return false;
+    if (bShadowOptimizationStudy)
+    {
+        if (!WriteShadowOptimizationCaptureSet(OutError)) return false;
+    }
+    else if (!WriteActorImpactStudyCaptureSet(OutError)) return false;
+    int64 CaptureSetFileSizeBytes = 0;
+    if (!HashInsightsFile(
+            bShadowOptimizationStudy
+                ? ShadowOptimizationCaptureSetPath
+                : ActorImpactStudyCaptureSetPath,
+            bShadowOptimizationStudy
+                ? ShadowOptimizationCaptureSetFileSha256
+                : ActorImpactStudyCaptureSetFileSha256,
+            CaptureSetFileSizeBytes,
+            OutError))
+    {
+        return false;
+    }
+    return bShadowOptimizationStudy
+        ? StartShadowOptimizationProcess(OutError)
+        : StartActorImpactStudyReviewProcess(OutError);
+}
+
+bool FRenderMasterInsightsGpuAssistant::ApplyRepeatableStudyVariant(
+    bool bVariant,
+    FString& OutError)
+{
+    AActor* RuntimeActor = ImpactRuntimeActor.Get();
+    if (!IsValid(RuntimeActor) || RuntimeActor->GetWorld() != CaptureWorld.Get())
+    {
+        OutError = TEXT("The selected runtime Actor disappeared during the study.");
+        return false;
+    }
+    if (bShadowOptimizationStudy)
+    {
+        UStaticMeshComponent* Component = ShadowRuntimeComponent.Get();
+        if (!IsValid(Component) || !Component->IsRegistered())
+        {
+            OutError = TEXT("The runtime Static Mesh Component disappeared during shadow optimization.");
+            return false;
+        }
+        const bool bExpectedCastShadow = bVariant ? false : bOriginalRuntimeCastShadow;
+        Component->SetCastShadow(bExpectedCastShadow);
+        if (Component->CastShadow != bExpectedCastShadow)
+        {
+            OutError = TEXT("Unreal could not apply the scheduled runtime Cast Shadow state.");
+            return false;
+        }
+        bShadowCandidateActive = bVariant;
+        return true;
+    }
+    if (bVariant)
+    {
+        RuntimeActor->SetActorHiddenInGame(true);
+        if (!RuntimeActor->IsHidden())
+        {
+            OutError = TEXT("Unreal could not apply the scheduled hidden state.");
+            return false;
+        }
+        bImpactActorHidden = true;
+        return true;
+    }
+    return RestoreImpactActor(OutError);
 }
 
 bool FRenderMasterInsightsGpuAssistant::BeginActorVariantCapture(
@@ -1262,6 +2333,10 @@ bool FRenderMasterInsightsGpuAssistant::FinalizeTraceAnalysis(FString& OutError)
     }
     AnalysisSession.Reset();
     AnalysisService.Reset();
+    if (bRepeatableActorImpactStudy)
+    {
+        return CompleteActorStudyCapture(OutError);
+    }
     if (bActorImpactExperiment && !bCapturingActorVariant)
     {
         BaselineCapture = Capture;
@@ -1539,6 +2614,278 @@ bool FRenderMasterInsightsGpuAssistant::WriteActorImpactExperiment(
     return true;
 }
 
+bool FRenderMasterInsightsGpuAssistant::WriteActorImpactStudyCaptureSet(
+    FString& OutError)
+{
+    AActor* RuntimeActor = ImpactRuntimeActor.Get();
+    if (!bRepeatableActorImpactStudy || ActorImpactStudyCaptures.Num() != 8
+        || !IsValid(RuntimeActor) || bImpactActorHidden
+        || RuntimeActor->IsHidden() != bOriginalImpactActorHidden)
+    {
+        OutError = TEXT(
+            "The repeatable Actor GPU capture set requires eight captures and verified restoration.");
+        return false;
+    }
+    const bool ExpectedHiddenStates[8] = {
+        false, false, false, true, true, false, false, true};
+    for (int32 Index = 0; Index < ActorImpactStudyCaptures.Num(); ++Index)
+    {
+        if (ActorImpactStudyCaptures[Index].bVariant != ExpectedHiddenStates[Index])
+        {
+            OutError = TEXT("The Actor GPU study schedule no longer matches AA_AB_BA_AB.");
+            return false;
+        }
+    }
+    TArray<TSharedPtr<FJsonObject>> CaptureObjects;
+    for (const FRenderMasterActorGpuStudyCapturePlan& Plan : ActorImpactStudyCaptures)
+    {
+        if (Plan.Capture.CaptureId.IsEmpty()
+            || !FPaths::FileExists(Plan.TracePath)
+            || !FPaths::FileExists(Plan.CapturePath))
+        {
+            OutError = TEXT("A scheduled Actor GPU study artifact is missing.");
+            return false;
+        }
+        FString Text;
+        TSharedPtr<FJsonObject> Object;
+        if (!FFileHelper::LoadFileToString(Text, *Plan.CapturePath))
+        {
+            OutError = FString::Printf(
+                TEXT("Could not read study capture JSON: %s"), *Plan.CapturePath);
+            return false;
+        }
+        const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Text);
+        FString StoredCaptureId;
+        if (!FJsonSerializer::Deserialize(Reader, Object) || !Object.IsValid()
+            || !Object->TryGetStringField(TEXT("capture_id"), StoredCaptureId)
+            || StoredCaptureId != Plan.Capture.CaptureId)
+        {
+            OutError = FString::Printf(
+                TEXT("Study capture JSON identity is invalid: %s"), *Plan.CapturePath);
+            return false;
+        }
+        CaptureObjects.Add(Object);
+    }
+
+    TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+    Root->SetStringField(TEXT("schema_version"), TEXT("0.1"));
+    Root->SetStringField(TEXT("study_id"), ActorImpactStudyId);
+    Root->SetStringField(TEXT("created_at_utc"), FDateTime::UtcNow().ToIso8601());
+    Root->SetStringField(
+        TEXT("method"), TEXT("temporary_runtime_actor_hidden_counterbalanced"));
+    TSharedRef<FJsonObject> Target = MakeShared<FJsonObject>();
+    Target->SetStringField(TEXT("editor_actor_path"), ImpactEditorActorPath);
+    Target->SetStringField(TEXT("runtime_actor_path"), ImpactRuntimeActorPath);
+    Target->SetStringField(TEXT("actor_label"), ImpactActorLabel);
+    Target->SetStringField(TEXT("actor_class"), ImpactActorClass);
+    Target->SetNumberField(
+        TEXT("primitive_component_count"), ImpactPrimitiveComponentCount);
+    Target->SetBoolField(TEXT("baseline_hidden_in_game"), false);
+    Target->SetBoolField(TEXT("restored_hidden_in_game"), false);
+    Root->SetObjectField(TEXT("target"), Target);
+    Root->SetNumberField(
+        TEXT("requested_capture_duration_seconds"),
+        ActorImpactStudyCaptures[0].Capture.RequestedDurationSeconds);
+    Root->SetNumberField(TEXT("warmup_seconds"), 1.0);
+    Root->SetStringField(TEXT("schedule"), TEXT("AA_AB_BA_AB"));
+
+    TArray<TSharedPtr<FJsonValue>> ControlValues;
+    ControlValues.Add(MakeShared<FJsonValueObject>(CaptureObjects[0].ToSharedRef()));
+    ControlValues.Add(MakeShared<FJsonValueObject>(CaptureObjects[1].ToSharedRef()));
+    Root->SetArrayField(TEXT("noise_control_visible"), ControlValues);
+
+    auto MakeTrial = [&CaptureObjects](
+        const TCHAR* TrialId,
+        const TCHAR* Order,
+        int32 VisibleIndex,
+        int32 HiddenIndex)
+    {
+        TSharedRef<FJsonObject> Trial = MakeShared<FJsonObject>();
+        Trial->SetStringField(TEXT("trial_id"), TrialId);
+        Trial->SetStringField(TEXT("order"), Order);
+        Trial->SetObjectField(
+            TEXT("visible"), CaptureObjects[VisibleIndex].ToSharedRef());
+        Trial->SetObjectField(
+            TEXT("hidden"), CaptureObjects[HiddenIndex].ToSharedRef());
+        return MakeShared<FJsonValueObject>(Trial);
+    };
+    TArray<TSharedPtr<FJsonValue>> Trials;
+    Trials.Add(MakeTrial(
+        TEXT("trial_001"), TEXT("visible_then_hidden"), 2, 3));
+    Trials.Add(MakeTrial(
+        TEXT("trial_002"), TEXT("hidden_then_visible"), 5, 4));
+    Trials.Add(MakeTrial(
+        TEXT("trial_003"), TEXT("visible_then_hidden"), 6, 7));
+    Root->SetArrayField(TEXT("trials"), Trials);
+
+    TArray<TSharedPtr<FJsonValue>> SequenceIds;
+    for (const FRenderMasterActorGpuStudyCapturePlan& Plan : ActorImpactStudyCaptures)
+        SequenceIds.Add(MakeShared<FJsonValueString>(Plan.Capture.CaptureId));
+    Root->SetArrayField(TEXT("sequence_capture_ids"), SequenceIds);
+    Root->SetNumberField(TEXT("trial_count"), 3);
+    Root->SetStringField(
+        TEXT("repeatability"), TEXT("counterbalanced_three_trial"));
+    Root->SetBoolField(TEXT("runtime_state_restored"), true);
+    TArray<TSharedPtr<FJsonValue>> Notes;
+    Notes.Add(MakeShared<FJsonValueString>(TEXT(
+        "Two Actor-visible A/A captures estimate no-change scope noise.")));
+    Notes.Add(MakeShared<FJsonValueString>(TEXT(
+        "Three paired trials use counterbalanced AB, BA, AB order.")));
+    Notes.Add(MakeShared<FJsonValueString>(TEXT(
+        "Every trace is preceded by a one-second state warmup.")));
+    Notes.Add(MakeShared<FJsonValueString>(TEXT(
+        "Only scopes present in all eight Top-64 sets can produce an aggregate.")));
+    Notes.Add(MakeShared<FJsonValueString>(TEXT(
+        "The study measures association and does not prove direct Actor draw ownership.")));
+    Root->SetArrayField(TEXT("measurement_notes"), Notes);
+
+    FString JsonText;
+    if (!SerializeInsightsJson(Root, JsonText)
+        || !FFileHelper::SaveStringToFile(
+            JsonText,
+            *ActorImpactStudyCaptureSetPath,
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+    {
+        OutError = FString::Printf(
+            TEXT("Could not write Actor GPU impact study capture set: %s"),
+            *ActorImpactStudyCaptureSetPath);
+        return false;
+    }
+    return true;
+}
+
+bool FRenderMasterInsightsGpuAssistant::WriteShadowOptimizationCaptureSet(
+    FString& OutError)
+{
+    AActor* EditorActor = ImpactEditorActor.Get();
+    UStaticMeshComponent* RuntimeComponent = ShadowRuntimeComponent.Get();
+    if (!bShadowOptimizationStudy || ActorImpactStudyCaptures.Num() != 8
+        || !IsValid(EditorActor) || !IsValid(RuntimeComponent)
+        || bShadowCandidateActive
+        || RuntimeComponent->CastShadow != bOriginalRuntimeCastShadow
+        || !bOriginalRuntimeCastShadow)
+    {
+        OutError = TEXT(
+            "The shadow optimization capture set requires eight captures and verified Cast Shadow restoration.");
+        return false;
+    }
+    const bool ExpectedCandidateStates[8] = {
+        false, false, false, true, true, false, false, true};
+    for (int32 Index = 0; Index < ActorImpactStudyCaptures.Num(); ++Index)
+    {
+        if (ActorImpactStudyCaptures[Index].bVariant
+            != ExpectedCandidateStates[Index])
+        {
+            OutError = TEXT(
+                "The shadow optimization schedule no longer matches AA_AB_BA_AB.");
+            return false;
+        }
+    }
+
+    TArray<TSharedPtr<FJsonObject>> CaptureObjects;
+    for (const FRenderMasterActorGpuStudyCapturePlan& Plan : ActorImpactStudyCaptures)
+    {
+        if (Plan.Capture.CaptureId.IsEmpty()
+            || !FPaths::FileExists(Plan.TracePath)
+            || !FPaths::FileExists(Plan.CapturePath))
+        {
+            OutError = TEXT("A scheduled shadow optimization artifact is missing.");
+            return false;
+        }
+        FString Text;
+        TSharedPtr<FJsonObject> Object;
+        if (!FFileHelper::LoadFileToString(Text, *Plan.CapturePath))
+        {
+            OutError = FString::Printf(
+                TEXT("Could not read shadow capture JSON: %s"), *Plan.CapturePath);
+            return false;
+        }
+        const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Text);
+        FString StoredCaptureId;
+        if (!FJsonSerializer::Deserialize(Reader, Object) || !Object.IsValid()
+            || !Object->TryGetStringField(TEXT("capture_id"), StoredCaptureId)
+            || StoredCaptureId != Plan.Capture.CaptureId)
+        {
+            OutError = FString::Printf(
+                TEXT("Shadow capture JSON identity is invalid: %s"),
+                *Plan.CapturePath);
+            return false;
+        }
+        CaptureObjects.Add(Object);
+    }
+
+    const FString ProjectName = FApp::GetProjectName();
+    const FString LevelPath = EditorActor->GetWorld() != nullptr
+        ? EditorActor->GetWorld()->GetPackage()->GetName()
+        : FString();
+    if (LevelPath.IsEmpty())
+    {
+        OutError = TEXT("The formal Editor level identity is unavailable.");
+        return false;
+    }
+    TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+    Root->SetStringField(TEXT("schema_version"), TEXT("0.1"));
+    Root->SetStringField(
+        TEXT("experiment_id"), ShadowOptimizationExperimentId);
+    Root->SetStringField(TEXT("created_at_utc"), FDateTime::UtcNow().ToIso8601());
+    Root->SetStringField(TEXT("request"), ReviewRequest);
+    Root->SetObjectField(
+        TEXT("target"),
+        RenderMasterPerformanceEvidenceJson(
+            ShadowTargetEvidence, ProjectName, LevelPath));
+    Root->SetStringField(TEXT("runtime_actor_path"), ImpactRuntimeActorPath);
+    Root->SetBoolField(TEXT("candidate_cast_shadow"), false);
+    Root->SetNumberField(
+        TEXT("requested_capture_duration_seconds"),
+        ActorImpactStudyCaptures[0].Capture.RequestedDurationSeconds);
+    Root->SetNumberField(TEXT("warmup_seconds_per_capture"), 1.0);
+    Root->SetStringField(TEXT("schedule"), TEXT("AA_AB_BA_AB"));
+    Root->SetBoolField(TEXT("runtime_state_restored"), true);
+    Root->SetBoolField(TEXT("modifies_editor_scene"), false);
+
+    TArray<TSharedPtr<FJsonValue>> Controls;
+    Controls.Add(MakeShared<FJsonValueObject>(CaptureObjects[0].ToSharedRef()));
+    Controls.Add(MakeShared<FJsonValueObject>(CaptureObjects[1].ToSharedRef()));
+    Root->SetArrayField(TEXT("noise_control_baseline"), Controls);
+    auto MakeTrial = [&CaptureObjects](
+        const TCHAR* TrialId,
+        const TCHAR* Order,
+        int32 BaselineIndex,
+        int32 CandidateIndex)
+    {
+        TSharedRef<FJsonObject> Trial = MakeShared<FJsonObject>();
+        Trial->SetStringField(TEXT("trial_id"), TrialId);
+        Trial->SetStringField(TEXT("order"), Order);
+        Trial->SetObjectField(
+            TEXT("baseline"), CaptureObjects[BaselineIndex].ToSharedRef());
+        Trial->SetObjectField(
+            TEXT("candidate"), CaptureObjects[CandidateIndex].ToSharedRef());
+        return MakeShared<FJsonValueObject>(Trial);
+    };
+    TArray<TSharedPtr<FJsonValue>> Trials;
+    Trials.Add(MakeTrial(
+        TEXT("trial_001"), TEXT("baseline_then_candidate"), 2, 3));
+    Trials.Add(MakeTrial(
+        TEXT("trial_002"), TEXT("candidate_then_baseline"), 5, 4));
+    Trials.Add(MakeTrial(
+        TEXT("trial_003"), TEXT("baseline_then_candidate"), 6, 7));
+    Root->SetArrayField(TEXT("trials"), Trials);
+
+    FString JsonText;
+    if (!SerializeInsightsJson(Root, JsonText)
+        || !FFileHelper::SaveStringToFile(
+            JsonText,
+            *ShadowOptimizationCaptureSetPath,
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+    {
+        OutError = FString::Printf(
+            TEXT("Could not write shadow optimization capture set: %s"),
+            *ShadowOptimizationCaptureSetPath);
+        return false;
+    }
+    return true;
+}
+
 bool FRenderMasterInsightsGpuAssistant::StartReviewProcess(FString& OutError)
 {
     const FString Python = WorkflowController->GetPythonExecutable();
@@ -1630,8 +2977,105 @@ bool FRenderMasterInsightsGpuAssistant::StartActorImpactReviewProcess(
     return true;
 }
 
+bool FRenderMasterInsightsGpuAssistant::StartActorImpactStudyReviewProcess(
+    FString& OutError)
+{
+    const FString Python = WorkflowController->GetPythonExecutable();
+    const FString ReportId = ActorImpactStudyId + TEXT("_review");
+    const FString Arguments = FString::Printf(
+        TEXT("-m render_master_bot assistant-actor-gpu-impact-study-review --prompt-file %s --capture-set %s --report-id %s --output %s"),
+        *QuoteInsightsArgument(PromptPath),
+        *QuoteInsightsArgument(ActorImpactStudyCaptureSetPath),
+        *QuoteInsightsArgument(ReportId),
+        *QuoteInsightsArgument(ReportOutputPath));
+    if (!FPlatformProcess::CreatePipe(StdOutRead, StdOutWrite)
+        || !FPlatformProcess::CreatePipe(StdErrRead, StdErrWrite))
+    {
+        CloseProcessResources();
+        OutError = TEXT("Could not create Actor GPU study review process pipes.");
+        return false;
+    }
+    uint32 ProcessId = 0;
+    ProcessHandle = FPlatformProcess::CreateProc(
+        *Python,
+        *Arguments,
+        false,
+        true,
+        true,
+        &ProcessId,
+        0,
+        nullptr,
+        StdOutWrite,
+        nullptr,
+        StdErrWrite);
+    if (!ProcessHandle.IsValid())
+    {
+        CloseProcessResources();
+        OutError = FString::Printf(TEXT("Could not start Python: %s"), *Python);
+        return false;
+    }
+    State = ERenderMasterInsightsGpuState::Reviewing;
+    AppendLog(FString::Printf(
+        TEXT("Eight Actor GPU traces are complete and restored; deterministic study review process %u started."),
+        ProcessId));
+    return true;
+}
+
+bool FRenderMasterInsightsGpuAssistant::StartShadowOptimizationProcess(
+    FString& OutError)
+{
+    const FString Python = WorkflowController->GetPythonExecutable();
+    const FString ReportId = ShadowOptimizationExperimentId + TEXT("_report");
+    const FString Arguments = FString::Printf(
+        TEXT("-m render_master_bot assistant-shadow-optimization --capture-set %s --report-id %s --output %s"),
+        *QuoteInsightsArgument(ShadowOptimizationCaptureSetPath),
+        *QuoteInsightsArgument(ReportId),
+        *QuoteInsightsArgument(ReportOutputPath));
+    if (!FPlatformProcess::CreatePipe(StdOutRead, StdOutWrite)
+        || !FPlatformProcess::CreatePipe(StdErrRead, StdErrWrite))
+    {
+        CloseProcessResources();
+        OutError = TEXT("Could not create shadow optimization process pipes.");
+        return false;
+    }
+    uint32 ProcessId = 0;
+    ProcessHandle = FPlatformProcess::CreateProc(
+        *Python,
+        *Arguments,
+        false,
+        true,
+        true,
+        &ProcessId,
+        0,
+        nullptr,
+        StdOutWrite,
+        nullptr,
+        StdErrWrite);
+    if (!ProcessHandle.IsValid())
+    {
+        CloseProcessResources();
+        OutError = FString::Printf(TEXT("Could not start Python: %s"), *Python);
+        return false;
+    }
+    State = ERenderMasterInsightsGpuState::Reviewing;
+    AppendLog(FString::Printf(
+        TEXT("Eight Cast Shadow traces are complete and runtime state is restored; deterministic decision process %u started."),
+        ProcessId));
+    return true;
+}
+
 void FRenderMasterInsightsGpuAssistant::CompleteProcess()
 {
+    if (bShadowOptimizationStudy)
+    {
+        CompleteShadowOptimizationProcess();
+        return;
+    }
+    if (bRepeatableActorImpactStudy)
+    {
+        CompleteActorImpactStudyProcess();
+        return;
+    }
     if (bActorImpactExperiment)
     {
         CompleteActorImpactProcess();
@@ -1758,6 +3202,116 @@ void FRenderMasterInsightsGpuAssistant::CompleteActorImpactProcess()
         : ERenderMasterInsightsGpuState::Unresolved;
 }
 
+void FRenderMasterInsightsGpuAssistant::CompleteActorImpactStudyProcess()
+{
+    int32 ReturnCode = -1;
+    FPlatformProcess::GetProcReturnCode(ProcessHandle, &ReturnCode);
+    const FString StdOut = FPlatformProcess::ReadPipe(StdOutRead);
+    const FString StdErr = FPlatformProcess::ReadPipe(StdErrRead);
+    if (!StdOut.IsEmpty()) AppendLog(StdOut.TrimStartAndEnd());
+    if (!StdErr.IsEmpty()) AppendLog(StdErr.TrimStartAndEnd());
+    CloseProcessResources();
+    if (ReturnCode != 0)
+    {
+        Fail(ProcessLog.IsEmpty()
+            ? FString::Printf(
+                TEXT("Actor GPU impact study review exited with code %d."),
+                ReturnCode)
+            : ProcessLog);
+        return;
+    }
+    FString Error;
+    if (!RenderMasterParseActorGpuImpactStudyReportFile(
+            ReportOutputPath, ActorImpactStudyReport, Error))
+    {
+        Fail(Error);
+        return;
+    }
+    if (ActorImpactStudyReport.StudyId != ActorImpactStudyId)
+    {
+        Fail(TEXT("Actor GPU study report does not match the host capture set."));
+        return;
+    }
+    if (ActorImpactStudyReport.CaptureSetFileSha256
+        != ActorImpactStudyCaptureSetFileSha256)
+    {
+        Fail(TEXT("Actor GPU study report does not match the capture-set file hash."));
+        return;
+    }
+    auto HasAggregate = [this](const FString& AggregateId)
+    {
+        return ActorImpactStudyReport.Aggregates.ContainsByPredicate(
+            [&AggregateId](const FRenderMasterActorGpuStudyAggregate& Aggregate)
+            {
+                return Aggregate.AggregateId == AggregateId;
+            });
+    };
+    if (!ActorImpactStudyReport.PrimaryAggregateId.IsEmpty()
+        && !HasAggregate(ActorImpactStudyReport.PrimaryAggregateId))
+    {
+        Fail(TEXT("Actor GPU study names an unavailable primary aggregate."));
+        return;
+    }
+    for (const FString& CitedAggregateId : ActorImpactStudyReport.CitedAggregateIds)
+    {
+        if (!HasAggregate(CitedAggregateId))
+        {
+            Fail(TEXT("Actor GPU study cites an unavailable aggregate."));
+            return;
+        }
+    }
+    State = ActorImpactStudyReport.Status == TEXT("review_complete")
+        ? ERenderMasterInsightsGpuState::Complete
+        : ERenderMasterInsightsGpuState::Unresolved;
+}
+
+void FRenderMasterInsightsGpuAssistant::CompleteShadowOptimizationProcess()
+{
+    int32 ReturnCode = -1;
+    FPlatformProcess::GetProcReturnCode(ProcessHandle, &ReturnCode);
+    const FString StdOut = FPlatformProcess::ReadPipe(StdOutRead);
+    const FString StdErr = FPlatformProcess::ReadPipe(StdErrRead);
+    if (!StdOut.IsEmpty()) AppendLog(StdOut.TrimStartAndEnd());
+    if (!StdErr.IsEmpty()) AppendLog(StdErr.TrimStartAndEnd());
+    CloseProcessResources();
+    if (ReturnCode != 0)
+    {
+        Fail(ProcessLog.IsEmpty()
+            ? FString::Printf(
+                TEXT("Shadow optimization analysis exited with code %d."),
+                ReturnCode)
+            : ProcessLog);
+        return;
+    }
+    FString Error;
+    if (!RenderMasterParseShadowOptimizationReportFile(
+            ReportOutputPath, ShadowOptimizationReport, Error))
+    {
+        Fail(Error);
+        return;
+    }
+    if (ShadowOptimizationReport.ExperimentId
+            != ShadowOptimizationExperimentId
+        || ShadowOptimizationReport.CaptureSetFileSha256
+            != ShadowOptimizationCaptureSetFileSha256)
+    {
+        Fail(TEXT(
+            "Shadow optimization report does not match the host capture-set identity."));
+        return;
+    }
+    if (!RenderMasterPerformanceEvidenceMatches(
+            ShadowOptimizationReport.ProposedAction.Target,
+            ShadowTargetEvidence))
+    {
+        Fail(TEXT(
+            "Shadow optimization report target does not match the host-frozen Actor evidence."));
+        return;
+    }
+    State = ShadowOptimizationReport.Status == TEXT("unresolved")
+        ? ERenderMasterInsightsGpuState::Unresolved
+        : ERenderMasterInsightsGpuState::Complete;
+}
+
 bool FRenderMasterInsightsGpuAssistant::StopOwnedTrace(FString& OutError)
 {
     if (!bOwnsTrace) return true;
@@ -1778,25 +3332,133 @@ bool FRenderMasterInsightsGpuAssistant::StopOwnedTrace(FString& OutError)
 
 bool FRenderMasterInsightsGpuAssistant::RestoreImpactActor(FString& OutError)
 {
-    if (!bImpactActorHidden) return true;
-    AActor* RuntimeActor = ImpactRuntimeActor.Get();
-    if (!IsValid(RuntimeActor))
+    bool bRestored = true;
+    if (bImpactActorHidden)
     {
-        OutError = TEXT(
-            "The selected runtime Actor was destroyed before its hidden state could be restored.");
+        AActor* RuntimeActor = ImpactRuntimeActor.Get();
+        if (!IsValid(RuntimeActor))
+        {
+            OutError = TEXT(
+                "The selected runtime Actor was destroyed before its hidden state could be restored.");
+            bRestored = false;
+        }
+        else
+        {
+            RuntimeActor->SetActorHiddenInGame(bOriginalImpactActorHidden);
+            if (RuntimeActor->IsHidden() != bOriginalImpactActorHidden)
+            {
+                OutError = TEXT(
+                    "Unreal could not restore the selected runtime Actor hidden state.");
+                bRestored = false;
+            }
+            else
+            {
+                bImpactActorHidden = false;
+                AppendLog(FString::Printf(
+                    TEXT("Restored %s to its original PIE/SIE hidden state."),
+                    *ImpactActorLabel));
+            }
+        }
+    }
+    if (bShadowOptimizationStudy && bShadowCandidateActive)
+    {
+        UStaticMeshComponent* Component = ShadowRuntimeComponent.Get();
+        if (!IsValid(Component))
+        {
+            if (!OutError.IsEmpty()) OutError += TEXT(" ");
+            OutError += TEXT(
+                "The runtime Static Mesh Component was destroyed before Cast Shadow restoration.");
+            bRestored = false;
+        }
+        else
+        {
+            Component->SetCastShadow(bOriginalRuntimeCastShadow);
+            if (Component->CastShadow != bOriginalRuntimeCastShadow)
+            {
+                if (!OutError.IsEmpty()) OutError += TEXT(" ");
+                OutError += TEXT(
+                    "Unreal could not restore the runtime Cast Shadow state.");
+                bRestored = false;
+            }
+            else
+            {
+                bShadowCandidateActive = false;
+                AppendLog(FString::Printf(
+                    TEXT("Restored Cast Shadow for %s after the temporary PIE/SIE experiment."),
+                    *ImpactActorLabel));
+            }
+        }
+    }
+    return bRestored;
+}
+
+bool FRenderMasterInsightsGpuAssistant::CanApplyShadowOptimization() const
+{
+    return bShadowOptimizationStudy
+        && !bShadowOptimizationApplied
+        && !bShadowOptimizationRejected
+        && State == ERenderMasterInsightsGpuState::Complete
+        && ShadowOptimizationReport.Status == TEXT("proposed")
+        && ShadowOptimizationReport.bApprovalRequired
+        && ShadowOptimizationReport.bHasProposedAction
+        && GEditor != nullptr && GEditor->PlayWorld == nullptr
+        && IsValid(ImpactEditorActor.Get())
+        && IsValid(ShadowEditorComponent.Get());
+}
+
+bool FRenderMasterInsightsGpuAssistant::CanRejectShadowOptimization() const
+{
+    return bShadowOptimizationStudy
+        && !bShadowOptimizationApplied
+        && !bShadowOptimizationRejected
+        && State == ERenderMasterInsightsGpuState::Complete
+        && ShadowOptimizationReport.Status == TEXT("proposed");
+}
+
+bool FRenderMasterInsightsGpuAssistant::ApplyShadowOptimizationProposal()
+{
+    if (!CanApplyShadowOptimization()) return false;
+    AStaticMeshActor* EditorActor = Cast<AStaticMeshActor>(ImpactEditorActor.Get());
+    UStaticMeshComponent* EditorComponent = ShadowEditorComponent.Get();
+    FString Error;
+    FRenderMasterPerformanceEvidence Current;
+    if (!IsValid(EditorActor) || !IsValid(EditorComponent)
+        || !RenderMasterCapturePerformanceEvidence(
+            EditorActor, EditorComponent, Current, Error)
+        || !RenderMasterPerformanceEvidenceMatches(Current, ShadowTargetEvidence)
+        || !RenderMasterPerformanceSnapshotsMatch(
+            Current.Before, ShadowOptimizationReport.ProposedAction.Before))
+    {
+        Fail(Error.IsEmpty()
+            ? TEXT("The formal Actor changed after profiling; the shadow proposal was rejected as stale.")
+            : Error);
         return false;
     }
-    RuntimeActor->SetActorHiddenInGame(bOriginalImpactActorHidden);
-    if (RuntimeActor->IsHidden() != bOriginalImpactActorHidden)
+    TArray<AStaticMeshActor*> Actors = {EditorActor};
+    TArray<UStaticMeshComponent*> Components = {EditorComponent};
+    TArray<FRenderMasterPerformanceAction> Actions = {
+        ShadowOptimizationReport.ProposedAction};
+    if (!RenderMasterApplyPerformanceBatch(
+            Actors, Components, Actions, Error, true))
     {
-        OutError = TEXT("Unreal could not restore the selected runtime Actor hidden state.");
+        Fail(Error.IsEmpty()
+            ? TEXT("Unreal rejected the approved shadow optimization.")
+            : Error);
         return false;
     }
-    bImpactActorHidden = false;
+    bShadowOptimizationApplied = true;
     AppendLog(FString::Printf(
-        TEXT("Restored %s to its original PIE/SIE hidden state."),
+        TEXT("Applied the profiled Cast Shadow change to %s as one Undo transaction; the level was not saved."),
         *ImpactActorLabel));
     return true;
+}
+
+void FRenderMasterInsightsGpuAssistant::RejectShadowOptimizationProposal()
+{
+    if (!CanRejectShadowOptimization()) return;
+    bShadowOptimizationRejected = true;
+    AppendLog(TEXT(
+        "The measured shadow proposal was rejected. No formal Editor change was applied."));
 }
 
 void FRenderMasterInsightsGpuAssistant::Dismiss()
@@ -1806,7 +3468,11 @@ void FRenderMasterInsightsGpuAssistant::Dismiss()
     AnalysisSession.Reset();
     AnalysisService.Reset();
     State = ERenderMasterInsightsGpuState::Dismissed;
-    AppendLog(bActorImpactExperiment
+    AppendLog(bShadowOptimizationStudy
+        ? TEXT("Shadow optimization dismissed. Preserved traces remain available; runtime state is restored.")
+        : bRepeatableActorImpactStudy
+        ? TEXT("Repeatable Actor GPU study dismissed. Preserved traces remain available.")
+        : bActorImpactExperiment
         ? TEXT("Actor GPU impact review dismissed. Preserved traces remain available.")
         : TEXT("GPU scope review dismissed. The .utrace artifact was preserved."));
 }
@@ -1885,13 +3551,15 @@ bool FRenderMasterInsightsGpuAssistant::OpenTracePathInInsights(
 
 bool FRenderMasterInsightsGpuAssistant::CanStart() const
 {
-    return !IsBusy() && !ProcessHandle.IsValid() && !bOwnsTrace;
+    return !IsBusy() && !ProcessHandle.IsValid() && !bOwnsTrace
+        && !CanRejectShadowOptimization();
 }
 
 bool FRenderMasterInsightsGpuAssistant::IsBusy() const
 {
     return State == ERenderMasterInsightsGpuState::Capturing
         || State == ERenderMasterInsightsGpuState::WarmingVariant
+        || State == ERenderMasterInsightsGpuState::WarmingStudyCapture
         || State == ERenderMasterInsightsGpuState::Analyzing
         || State == ERenderMasterInsightsGpuState::Reviewing;
 }
@@ -1912,7 +3580,17 @@ bool FRenderMasterInsightsGpuAssistant::CanOpenBaselineTrace() const
 
 FText FRenderMasterInsightsGpuAssistant::GetTitleText() const
 {
-    return bActorImpactExperiment
+    return bShadowOptimizationStudy
+        ? NSLOCTEXT(
+            "RenderMasterBot",
+            "ShadowOptimizationTitle",
+            "Cast Shadow Optimization Experiment")
+        : bRepeatableActorImpactStudy
+        ? NSLOCTEXT(
+            "RenderMasterBot",
+            "ActorGpuImpactStudyTitle",
+            "Repeatable Selected Actor GPU Study")
+        : bActorImpactExperiment
         ? NSLOCTEXT(
             "RenderMasterBot",
             "ActorGpuImpactTitle",
@@ -1928,6 +3606,15 @@ FText FRenderMasterInsightsGpuAssistant::GetStateText() const
     switch (State)
     {
         case ERenderMasterInsightsGpuState::Capturing:
+            if (bRepeatableActorImpactStudy
+                && ActorImpactStudyCaptures.IsValidIndex(
+                    ActorImpactStudyCaptureIndex))
+            {
+                return FText::FromString(FString::Printf(
+                    TEXT("Capture %d/8: %s"),
+                    ActorImpactStudyCaptureIndex + 1,
+                    *ActorImpactStudyCaptures[ActorImpactStudyCaptureIndex].Label));
+            }
             return bActorImpactExperiment
                 ? FText::FromString(bCapturingActorVariant
                     ? TEXT("Capturing Actor-hidden variant")
@@ -1938,14 +3625,30 @@ FText FRenderMasterInsightsGpuAssistant::GetStateText() const
                 "RenderMasterBot",
                 "ActorGpuWarmingVariant",
                 "Warming Actor-hidden variant");
+        case ERenderMasterInsightsGpuState::WarmingStudyCapture:
+            return NSLOCTEXT(
+                "RenderMasterBot",
+                "ActorGpuStudyWarming",
+                "Warming scheduled study state");
         case ERenderMasterInsightsGpuState::Analyzing:
             return NSLOCTEXT("RenderMasterBot", "InsightsGpuAnalyzing", "Parsing GPU timelines");
         case ERenderMasterInsightsGpuState::Reviewing:
-            return bActorImpactExperiment
+            return bShadowOptimizationStudy
+                ? NSLOCTEXT("RenderMasterBot", "ShadowOptimizationAnalyzing", "Evaluating fixed performance gates")
+                : bRepeatableActorImpactStudy
+                ? NSLOCTEXT("RenderMasterBot", "ActorGpuStudyReviewing", "Reviewing repeatable Actor evidence")
+                : bActorImpactExperiment
                 ? NSLOCTEXT("RenderMasterBot", "ActorGpuReviewing", "Reviewing measured Actor impact")
                 : NSLOCTEXT("RenderMasterBot", "InsightsGpuReviewing", "Reviewing measured GPU scopes");
         case ERenderMasterInsightsGpuState::Complete:
-            return bActorImpactExperiment
+            return bShadowOptimizationStudy
+                ? FText::FromString(
+                    ShadowOptimizationReport.Status == TEXT("proposed")
+                        ? TEXT("Measured shadow proposal ready for approval")
+                        : TEXT("Shadow candidate rejected by profiling"))
+                : bRepeatableActorImpactStudy
+                ? NSLOCTEXT("RenderMasterBot", "ActorGpuStudyComplete", "Repeatable Actor GPU study complete")
+                : bActorImpactExperiment
                 ? NSLOCTEXT("RenderMasterBot", "ActorGpuComplete", "Actor GPU impact review complete")
                 : NSLOCTEXT("RenderMasterBot", "InsightsGpuComplete", "Read-only GPU scope review complete");
         case ERenderMasterInsightsGpuState::Unresolved:
@@ -1961,6 +3664,237 @@ FText FRenderMasterInsightsGpuAssistant::GetStateText() const
 
 FText FRenderMasterInsightsGpuAssistant::GetSummaryText() const
 {
+    if (bShadowOptimizationStudy)
+    {
+        if (State == ERenderMasterInsightsGpuState::Capturing
+            && ActorImpactStudyCaptures.IsValidIndex(ActorImpactStudyCaptureIndex))
+        {
+            const double Remaining = FMath::Max(
+                0.0,
+                Capture.RequestedDurationSeconds
+                    - (FPlatformTime::Seconds() - CaptureStartedSeconds));
+            return FText::FromString(FString::Printf(
+                TEXT("Capture %d of 8 (%s): %.1f seconds remain for %s at %dx%d. Keep camera, effects, motion, and workload unchanged."),
+                ActorImpactStudyCaptureIndex + 1,
+                *ActorImpactStudyCaptures[ActorImpactStudyCaptureIndex].Label,
+                Remaining,
+                *ImpactActorLabel,
+                Capture.ViewportSize.X,
+                Capture.ViewportSize.Y));
+        }
+        if (State == ERenderMasterInsightsGpuState::WarmingStudyCapture
+            && ActorImpactStudyCaptures.IsValidIndex(ActorImpactStudyCaptureIndex))
+        {
+            const double Remaining = FMath::Max(
+                0.0,
+                1.0 - (FPlatformTime::Seconds() - VariantWarmupStartedSeconds));
+            return FText::FromString(FString::Printf(
+                TEXT("Preparing capture %d of 8 (%s). %.1f seconds of fixed warmup remain; Cast Shadow is %s only on the PIE/SIE component."),
+                ActorImpactStudyCaptureIndex + 1,
+                *ActorImpactStudyCaptures[ActorImpactStudyCaptureIndex].Label,
+                Remaining,
+                bShadowCandidateActive ? TEXT("disabled") : TEXT("enabled")));
+        }
+        if (State == ERenderMasterInsightsGpuState::Analyzing)
+        {
+            return FText::FromString(FString::Printf(
+                TEXT("Unreal TraceServices is parsing shadow capture %d of 8. Completed traces remain preserved and the fixed AA_AB_BA_AB schedule is enforced."),
+                ActorImpactStudyCaptureIndex + 1));
+        }
+        if (State == ERenderMasterInsightsGpuState::Reviewing)
+        {
+            return FText::FromString(FString::Printf(
+                TEXT("All 8 traces are preserved and Cast Shadow is restored for %s. The deterministic host is recomputing common scopes, A/A noise, paired medians, MAD, direction votes, and fixed decision thresholds. No model decides the performance result."),
+                *ImpactActorLabel));
+        }
+        FString Evidence;
+        if (!ShadowOptimizationReport.Aggregates.IsEmpty())
+        {
+            Evidence = FString::Printf(
+                TEXT("\n\nMeasured evidence for %s: 2 Cast-Shadow-on controls | 3 counterbalanced on/off trials | %d scopes common to all 8 traces\nLargest paired median changes:"),
+                *ImpactActorLabel,
+                ShadowOptimizationReport.Aggregates.Num());
+            const int32 VisibleAggregates = FMath::Min(
+                5, ShadowOptimizationReport.Aggregates.Num());
+            for (int32 Index = 0; Index < VisibleAggregates; ++Index)
+            {
+                const FRenderMasterShadowOptimizationAggregate& Aggregate =
+                    ShadowOptimizationReport.Aggregates[Index];
+                Evidence += FString::Printf(
+                    TEXT("\n%s  %s [%s] - median %+.3f ms/s | MAD %.3f | A/A noise %.3f | signal excess %.3f | reduction %+.2f%% | votes %d down / %d up / %d same | %s"),
+                    *Aggregate.AggregateId,
+                    *Aggregate.ScopeName,
+                    *Aggregate.QueueName,
+                    Aggregate.MedianDeltaMsPerSecond,
+                    Aggregate.DeltaMadMsPerSecond,
+                    Aggregate.ControlNoiseMsPerSecond,
+                    Aggregate.SignalExcessMsPerSecond,
+                    Aggregate.RelativeReductionPercent,
+                    Aggregate.DecreasedVotes,
+                    Aggregate.IncreasedVotes,
+                    Aggregate.UnchangedVotes,
+                    *Aggregate.Classification);
+            }
+        }
+        if (State == ERenderMasterInsightsGpuState::Complete)
+        {
+            if (bShadowOptimizationApplied)
+            {
+                return FText::FromString(
+                    ShadowOptimizationReport.Summary + Evidence
+                    + TEXT("\n\nThe approved Cast Shadow change was applied to the formal Actor as one Undo transaction. The level was not saved; one Ctrl+Z restores the original setting."));
+            }
+            if (bShadowOptimizationRejected)
+            {
+                return FText::FromString(
+                    ShadowOptimizationReport.Summary + Evidence
+                    + TEXT("\n\nThe proposal was rejected. Runtime state is restored and no formal level property changed."));
+            }
+            if (ShadowOptimizationReport.Status == TEXT("proposed"))
+            {
+                const FString ApprovalInstruction =
+                    GEditor != nullptr && GEditor->PlayWorld != nullptr
+                    ? TEXT("Stop PIE/SIE, inspect the visual consequence in the Editor viewport, then use Approve & Apply Shadow Optimization. The formal Actor is revalidated before one Undo transaction.")
+                    : TEXT("Inspect the visual consequence in the Editor viewport, then use Approve & Apply Shadow Optimization. The formal Actor is revalidated before one Undo transaction.");
+                return FText::FromString(
+                    ShadowOptimizationReport.Summary + Evidence
+                    + TEXT("\n\nPrimary qualifying aggregate: ")
+                    + ShadowOptimizationReport.PrimaryAggregateId
+                    + TEXT("\n\n") + ApprovalInstruction
+                    + TEXT(" Images are not used to award the performance win; operator inspection is only a visual regression gate."));
+            }
+            return FText::FromString(
+                ShadowOptimizationReport.Summary + Evidence
+                + TEXT("\n\nThe candidate was rolled back automatically in PIE/SIE. No approval action is available and the formal level remains unchanged."));
+        }
+        if (State == ERenderMasterInsightsGpuState::Unresolved)
+        {
+            return FText::FromString(
+                ShadowOptimizationReport.Summary + Evidence
+                + TEXT("\n\nThe temporary candidate was restored and no formal change is available."));
+        }
+        if (State == ERenderMasterInsightsGpuState::Failed)
+            return FText::FromString(ErrorText + Evidence);
+        if (State == ERenderMasterInsightsGpuState::Dismissed)
+        {
+            return NSLOCTEXT(
+                "RenderMasterBot",
+                "ShadowOptimizationDismissedSummary",
+                "The shadow optimization experiment was dismissed. Completed traces remain preserved, runtime Cast Shadow was restored, and no formal level change was applied.");
+        }
+    }
+    if (bRepeatableActorImpactStudy)
+    {
+        if (State == ERenderMasterInsightsGpuState::Capturing
+            && ActorImpactStudyCaptures.IsValidIndex(ActorImpactStudyCaptureIndex))
+        {
+            const double Remaining = FMath::Max(
+                0.0,
+                Capture.RequestedDurationSeconds
+                    - (FPlatformTime::Seconds() - CaptureStartedSeconds));
+            return FText::FromString(FString::Printf(
+                TEXT("Capture %d of 8 (%s): %.1f seconds remain for %s at %dx%d. Keep camera, effects, motion, and workload unchanged."),
+                ActorImpactStudyCaptureIndex + 1,
+                *ActorImpactStudyCaptures[ActorImpactStudyCaptureIndex].Label,
+                Remaining,
+                *ImpactActorLabel,
+                Capture.ViewportSize.X,
+                Capture.ViewportSize.Y));
+        }
+        if (State == ERenderMasterInsightsGpuState::WarmingStudyCapture
+            && ActorImpactStudyCaptures.IsValidIndex(ActorImpactStudyCaptureIndex))
+        {
+            const double Remaining = FMath::Max(
+                0.0,
+                1.0 - (FPlatformTime::Seconds() - VariantWarmupStartedSeconds));
+            return FText::FromString(FString::Printf(
+                TEXT("Preparing capture %d of 8 (%s). %.1f seconds of fixed warmup remain; the Actor is %s only in PIE/SIE."),
+                ActorImpactStudyCaptureIndex + 1,
+                *ActorImpactStudyCaptures[ActorImpactStudyCaptureIndex].Label,
+                Remaining,
+                bImpactActorHidden ? TEXT("hidden") : TEXT("visible")));
+        }
+        if (State == ERenderMasterInsightsGpuState::Analyzing)
+        {
+            return FText::FromString(FString::Printf(
+                TEXT("Unreal TraceServices is parsing capture %d of 8. Completed traces remain preserved; the runtime Actor follows the fixed AA_AB_BA_AB schedule."),
+                ActorImpactStudyCaptureIndex + 1));
+        }
+        if (State == ERenderMasterInsightsGpuState::Reviewing)
+        {
+            return FText::FromString(FString::Printf(
+                TEXT("All 8 traces are preserved and %s is restored. The deterministic host is intersecting common scopes, computing A/A noise, three paired deltas, median, MAD, and direction votes before model interpretation."),
+                *ImpactActorLabel));
+        }
+        FString Evidence;
+        if (!ActorImpactStudyReport.Aggregates.IsEmpty())
+        {
+            Evidence = FString::Printf(
+                TEXT("\n\nRepeatable evidence for %s: 2 visible control captures | 3 counterbalanced trials | %d scopes common to all 8 traces\nLargest paired median changes:"),
+                *ImpactActorLabel,
+                ActorImpactStudyReport.Aggregates.Num());
+            const int32 VisibleAggregates = FMath::Min(
+                5, ActorImpactStudyReport.Aggregates.Num());
+            for (int32 Index = 0; Index < VisibleAggregates; ++Index)
+            {
+                const FRenderMasterActorGpuStudyAggregate& Aggregate =
+                    ActorImpactStudyReport.Aggregates[Index];
+                Evidence += FString::Printf(
+                    TEXT("\n%s  %s [%s] — median %+.3f ms/s | MAD %.3f | A/A noise %.3f | votes %d↓ %d↑ %d= | %s"),
+                    *Aggregate.AggregateId,
+                    *Aggregate.ScopeName,
+                    *Aggregate.QueueName,
+                    Aggregate.MedianDeltaMsPerSecond,
+                    Aggregate.DeltaMadMsPerSecond,
+                    Aggregate.ControlNoiseMsPerSecond,
+                    Aggregate.DecreasedVotes,
+                    Aggregate.IncreasedVotes,
+                    Aggregate.UnchangedVotes,
+                    *Aggregate.Classification);
+            }
+        }
+        if (State == ERenderMasterInsightsGpuState::Complete)
+        {
+            FString Text = ActorImpactStudyReport.Summary + Evidence;
+            if (!ActorImpactStudyReport.PrimaryAggregateId.IsEmpty())
+                Text += TEXT("\n\nPrimary measured aggregate: ")
+                    + ActorImpactStudyReport.PrimaryAggregateId;
+            if (!ActorImpactStudyReport.Findings.IsEmpty())
+            {
+                Text += TEXT("\n\nFindings:\n");
+                for (int32 Index = 0;
+                    Index < ActorImpactStudyReport.Findings.Num();
+                    ++Index)
+                {
+                    Text += FString::Printf(
+                        TEXT("%d. %s%s"),
+                        Index + 1,
+                        *ActorImpactStudyReport.Findings[Index],
+                        Index + 1 < ActorImpactStudyReport.Findings.Num()
+                            ? TEXT("\n") : TEXT(""));
+                }
+            }
+            Text += TEXT(
+                "\n\nA stable candidate exceeds the single A/A control difference and agrees in at least two of three paired trials. It remains association evidence, not direct pass/draw/material/shader causation. The runtime Actor was restored; no Editor scene change was made.");
+            return FText::FromString(Text);
+        }
+        if (State == ERenderMasterInsightsGpuState::Unresolved)
+        {
+            return FText::FromString(
+                ActorImpactStudyReport.Summary + Evidence
+                + TEXT("\n\nRequired next evidence: ")
+                + ActorImpactStudyReport.MissingCapabilities);
+        }
+        if (State == ERenderMasterInsightsGpuState::Failed)
+            return FText::FromString(ErrorText + Evidence);
+        if (State == ERenderMasterInsightsGpuState::Dismissed)
+        {
+            return NSLOCTEXT(
+                "RenderMasterBot",
+                "ActorGpuStudyDismissedSummary",
+                "The repeatable Actor GPU study was dismissed. All completed traces remain in the workflow folder, and the runtime Actor is restored.");
+        }
+    }
     if (bActorImpactExperiment)
     {
         if (State == ERenderMasterInsightsGpuState::Capturing)
@@ -2176,6 +4110,7 @@ FLinearColor FRenderMasterInsightsGpuAssistant::GetStateColor() const
             return FLinearColor(0.12f, 0.55f, 0.28f, 1.0f);
         case ERenderMasterInsightsGpuState::Capturing:
         case ERenderMasterInsightsGpuState::WarmingVariant:
+        case ERenderMasterInsightsGpuState::WarmingStudyCapture:
         case ERenderMasterInsightsGpuState::Analyzing:
         case ERenderMasterInsightsGpuState::Reviewing:
             return FLinearColor(0.16f, 0.50f, 0.78f, 1.0f);

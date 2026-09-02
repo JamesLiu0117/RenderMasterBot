@@ -1,0 +1,119 @@
+{
+  "schema_version": "0.1",
+  "study_id": "actor_gpu_study_example_001",
+  "created_at_utc": "2026-08-19T18:30:00Z",
+  "method": "temporary_runtime_actor_hidden_counterbalanced",
+  "target": {
+    "editor_actor_path": "/Game/Maps/Studio.Studio:PersistentLevel.HeroStatue",
+    "runtime_actor_path": "/Game/Maps/UEDPIE_0_Studio.Studio:PersistentLevel.HeroStatue",
+    "actor_label": "HeroStatue",
+    "actor_class": "/Script/Engine.StaticMeshActor",
+    "primitive_component_count": 1,
+    "baseline_hidden_in_game": false,
+    "restored_hidden_in_game": false
+  },
+  "requested_capture_duration_seconds": 5.0,
+  "warmup_seconds": 1.0,
+  "schedule": "AA_AB_BA_AB",
+  "noise_control_visible": [
+    {
+      "schema_version": "0.1",
+      "capture_id": "study_capture_001",
+      "captured_at_utc": "2026-08-19T18:30:01Z",
+      "project_name": "OptimizationPlugin",
+      "world_path": "/Game/Maps/UEDPIE_0_Studio",
+      "capture_mode": "pie",
+      "requested_duration_seconds": 5.0,
+      "captured_duration_seconds": 5.0,
+      "analyzed_trace_duration_seconds": 5.2,
+      "viewport_width_px": 1920,
+      "viewport_height_px": 1080,
+      "gpu_name": "Example GPU",
+      "trace_file_name": "control_visible_01.utrace",
+      "trace_file_size_bytes": 10001,
+      "trace_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "channels": ["cpu", "gpu", "frame", "bookmark"],
+      "gpu_queue_count": 1,
+      "total_gpu_event_count": 5,
+      "queues": [{"queue_id": "queue_000", "display_name": "Graphics", "gpu_index": 0, "queue_index": 0, "queue_type": 0, "event_count": 5}],
+      "scopes": [{"scope_id": "scope_000", "queue_id": "queue_000", "name": "ShadowDepths", "instance_count": 5, "total_inclusive_ms": 50.0, "mean_inclusive_ms": 10.0, "max_inclusive_ms": 11.0, "min_depth": 1, "max_depth": 1}],
+      "measurement_notes": ["Inclusive GPU scope timings can overlap."]
+    },
+    {
+      "schema_version": "0.1",
+      "capture_id": "study_capture_002",
+      "captured_at_utc": "2026-08-19T18:30:02Z",
+      "project_name": "OptimizationPlugin",
+      "world_path": "/Game/Maps/UEDPIE_0_Studio",
+      "capture_mode": "pie",
+      "requested_duration_seconds": 5.0,
+      "captured_duration_seconds": 5.0,
+      "analyzed_trace_duration_seconds": 5.2,
+      "viewport_width_px": 1920,
+      "viewport_height_px": 1080,
+      "gpu_name": "Example GPU",
+      "trace_file_name": "control_visible_02.utrace",
+      "trace_file_size_bytes": 10002,
+      "trace_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "channels": ["cpu", "gpu", "frame", "bookmark"],
+      "gpu_queue_count": 1,
+      "total_gpu_event_count": 5,
+      "queues": [{"queue_id": "queue_000", "display_name": "Graphics", "gpu_index": 0, "queue_index": 0, "queue_type": 0, "event_count": 5}],
+      "scopes": [{"scope_id": "scope_000", "queue_id": "queue_000", "name": "ShadowDepths", "instance_count": 5, "total_inclusive_ms": 49.0, "mean_inclusive_ms": 9.8, "max_inclusive_ms": 10.8, "min_depth": 1, "max_depth": 1}],
+      "measurement_notes": ["Inclusive GPU scope timings can overlap."]
+    }
+  ],
+  "trials": [
+    {
+      "trial_id": "trial_001",
+      "order": "visible_then_hidden",
+      "visible": {
+        "schema_version": "0.1", "capture_id": "study_capture_003", "captured_at_utc": "2026-08-19T18:30:03Z", "project_name": "OptimizationPlugin", "world_path": "/Game/Maps/UEDPIE_0_Studio", "capture_mode": "pie", "requested_duration_seconds": 5.0, "captured_duration_seconds": 5.0, "analyzed_trace_duration_seconds": 5.2, "viewport_width_px": 1920, "viewport_height_px": 1080, "gpu_name": "Example GPU", "trace_file_name": "trial_001_visible.utrace", "trace_file_size_bytes": 10003, "trace_sha256": "3333333333333333333333333333333333333333333333333333333333333333", "channels": ["cpu", "gpu", "frame", "bookmark"], "gpu_queue_count": 1, "total_gpu_event_count": 5,
+        "queues": [{"queue_id": "queue_000", "display_name": "Graphics", "gpu_index": 0, "queue_index": 0, "queue_type": 0, "event_count": 5}],
+        "scopes": [{"scope_id": "scope_000", "queue_id": "queue_000", "name": "ShadowDepths", "instance_count": 5, "total_inclusive_ms": 52.0, "mean_inclusive_ms": 10.4, "max_inclusive_ms": 11.4, "min_depth": 1, "max_depth": 1}], "measurement_notes": ["Inclusive GPU scope timings can overlap."]
+      },
+      "hidden": {
+        "schema_version": "0.1", "capture_id": "study_capture_004", "captured_at_utc": "2026-08-19T18:30:04Z", "project_name": "OptimizationPlugin", "world_path": "/Game/Maps/UEDPIE_0_Studio", "capture_mode": "pie", "requested_duration_seconds": 5.0, "captured_duration_seconds": 5.0, "analyzed_trace_duration_seconds": 5.2, "viewport_width_px": 1920, "viewport_height_px": 1080, "gpu_name": "Example GPU", "trace_file_name": "trial_001_hidden.utrace", "trace_file_size_bytes": 10004, "trace_sha256": "4444444444444444444444444444444444444444444444444444444444444444", "channels": ["cpu", "gpu", "frame", "bookmark"], "gpu_queue_count": 1, "total_gpu_event_count": 5,
+        "queues": [{"queue_id": "queue_000", "display_name": "Graphics", "gpu_index": 0, "queue_index": 0, "queue_type": 0, "event_count": 5}],
+        "scopes": [{"scope_id": "scope_000", "queue_id": "queue_000", "name": "ShadowDepths", "instance_count": 5, "total_inclusive_ms": 30.0, "mean_inclusive_ms": 6.0, "max_inclusive_ms": 7.0, "min_depth": 1, "max_depth": 1}], "measurement_notes": ["Inclusive GPU scope timings can overlap."]
+      }
+    },
+    {
+      "trial_id": "trial_002",
+      "order": "hidden_then_visible",
+      "visible": {
+        "schema_version": "0.1", "capture_id": "study_capture_006", "captured_at_utc": "2026-08-19T18:30:06Z", "project_name": "OptimizationPlugin", "world_path": "/Game/Maps/UEDPIE_0_Studio", "capture_mode": "pie", "requested_duration_seconds": 5.0, "captured_duration_seconds": 5.0, "analyzed_trace_duration_seconds": 5.2, "viewport_width_px": 1920, "viewport_height_px": 1080, "gpu_name": "Example GPU", "trace_file_name": "trial_002_visible.utrace", "trace_file_size_bytes": 10006, "trace_sha256": "6666666666666666666666666666666666666666666666666666666666666666", "channels": ["cpu", "gpu", "frame", "bookmark"], "gpu_queue_count": 1, "total_gpu_event_count": 5,
+        "queues": [{"queue_id": "queue_000", "display_name": "Graphics", "gpu_index": 0, "queue_index": 0, "queue_type": 0, "event_count": 5}],
+        "scopes": [{"scope_id": "scope_000", "queue_id": "queue_000", "name": "ShadowDepths", "instance_count": 5, "total_inclusive_ms": 51.0, "mean_inclusive_ms": 10.2, "max_inclusive_ms": 11.2, "min_depth": 1, "max_depth": 1}], "measurement_notes": ["Inclusive GPU scope timings can overlap."]
+      },
+      "hidden": {
+        "schema_version": "0.1", "capture_id": "study_capture_005", "captured_at_utc": "2026-08-19T18:30:05Z", "project_name": "OptimizationPlugin", "world_path": "/Game/Maps/UEDPIE_0_Studio", "capture_mode": "pie", "requested_duration_seconds": 5.0, "captured_duration_seconds": 5.0, "analyzed_trace_duration_seconds": 5.2, "viewport_width_px": 1920, "viewport_height_px": 1080, "gpu_name": "Example GPU", "trace_file_name": "trial_002_hidden.utrace", "trace_file_size_bytes": 10005, "trace_sha256": "5555555555555555555555555555555555555555555555555555555555555555", "channels": ["cpu", "gpu", "frame", "bookmark"], "gpu_queue_count": 1, "total_gpu_event_count": 5,
+        "queues": [{"queue_id": "queue_000", "display_name": "Graphics", "gpu_index": 0, "queue_index": 0, "queue_type": 0, "event_count": 5}],
+        "scopes": [{"scope_id": "scope_000", "queue_id": "queue_000", "name": "ShadowDepths", "instance_count": 5, "total_inclusive_ms": 31.0, "mean_inclusive_ms": 6.2, "max_inclusive_ms": 7.2, "min_depth": 1, "max_depth": 1}], "measurement_notes": ["Inclusive GPU scope timings can overlap."]
+      }
+    },
+    {
+      "trial_id": "trial_003",
+      "order": "visible_then_hidden",
+      "visible": {
+        "schema_version": "0.1", "capture_id": "study_capture_007", "captured_at_utc": "2026-08-19T18:30:07Z", "project_name": "OptimizationPlugin", "world_path": "/Game/Maps/UEDPIE_0_Studio", "capture_mode": "pie", "requested_duration_seconds": 5.0, "captured_duration_seconds": 5.0, "analyzed_trace_duration_seconds": 5.2, "viewport_width_px": 1920, "viewport_height_px": 1080, "gpu_name": "Example GPU", "trace_file_name": "trial_003_visible.utrace", "trace_file_size_bytes": 10007, "trace_sha256": "7777777777777777777777777777777777777777777777777777777777777777", "channels": ["cpu", "gpu", "frame", "bookmark"], "gpu_queue_count": 1, "total_gpu_event_count": 5,
+        "queues": [{"queue_id": "queue_000", "display_name": "Graphics", "gpu_index": 0, "queue_index": 0, "queue_type": 0, "event_count": 5}],
+        "scopes": [{"scope_id": "scope_000", "queue_id": "queue_000", "name": "ShadowDepths", "instance_count": 5, "total_inclusive_ms": 50.5, "mean_inclusive_ms": 10.1, "max_inclusive_ms": 11.1, "min_depth": 1, "max_depth": 1}], "measurement_notes": ["Inclusive GPU scope timings can overlap."]
+      },
+      "hidden": {
+        "schema_version": "0.1", "capture_id": "study_capture_008", "captured_at_utc": "2026-08-19T18:30:08Z", "project_name": "OptimizationPlugin", "world_path": "/Game/Maps/UEDPIE_0_Studio", "capture_mode": "pie", "requested_duration_seconds": 5.0, "captured_duration_seconds": 5.0, "analyzed_trace_duration_seconds": 5.2, "viewport_width_px": 1920, "viewport_height_px": 1080, "gpu_name": "Example GPU", "trace_file_name": "trial_003_hidden.utrace", "trace_file_size_bytes": 10008, "trace_sha256": "8888888888888888888888888888888888888888888888888888888888888888", "channels": ["cpu", "gpu", "frame", "bookmark"], "gpu_queue_count": 1, "total_gpu_event_count": 5,
+        "queues": [{"queue_id": "queue_000", "display_name": "Graphics", "gpu_index": 0, "queue_index": 0, "queue_type": 0, "event_count": 5}],
+        "scopes": [{"scope_id": "scope_000", "queue_id": "queue_000", "name": "ShadowDepths", "instance_count": 5, "total_inclusive_ms": 30.5, "mean_inclusive_ms": 6.1, "max_inclusive_ms": 7.1, "min_depth": 1, "max_depth": 1}], "measurement_notes": ["Inclusive GPU scope timings can overlap."]
+      }
+    }
+  ],
+  "sequence_capture_ids": ["study_capture_001", "study_capture_002", "study_capture_003", "study_capture_004", "study_capture_005", "study_capture_006", "study_capture_007", "study_capture_008"],
+  "trial_count": 3,
+  "repeatability": "counterbalanced_three_trial",
+  "runtime_state_restored": true,
+  "measurement_notes": [
+    "Two visible A/A captures estimate no-change scope noise.",
+    "Three paired trials use counterbalanced AB, BA, AB ordering.",
+    "Inclusive GPU scopes can overlap and do not prove direct Actor causation."
+  ]
+}

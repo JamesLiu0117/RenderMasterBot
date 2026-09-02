@@ -1,7 +1,9 @@
 import json
+import struct
 import subprocess
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -65,6 +67,32 @@ def prepare_files(root: Path):
     return project, root / "UE", spec, assets
 
 
+def png_bytes(*, visible: bool = True) -> bytes:
+    width = 2
+    height = 2
+    pixels = (
+        b"\x00\x00\x00\xff\xff\xff" b"\x40\x20\x10\x80\x80\x80"
+        if visible
+        else b"\x00" * 12
+    )
+    raw = b"\x00" + pixels[:6] + b"\x00" + pixels[6:]
+
+    def chunk(kind: bytes, value: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(value))
+            + kind
+            + value
+            + struct.pack(">I", zlib.crc32(kind + value) & 0xFFFFFFFF)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
 def actor_evidence(request: dict) -> list[dict]:
     requested_exposure = request["camera"].get(
         "exposure",
@@ -122,6 +150,11 @@ class UnrealPreviewTests(unittest.TestCase):
             def fake_run(command, **kwargs):
                 nonlocal scratch_preview
                 self.assertIn("-RenderOffscreen", command)
+                self.assertIn("-DisablePlugins=RenderMasterBot", command)
+                self.assertIn("-DDC-ForceMemoryCache", command)
+                self.assertTrue(
+                    any(value.startswith("-ShaderWorkingDir=") for value in command)
+                )
                 request = json.loads(
                     Path(kwargs["env"]["RENDERMASTER_PREVIEW_REQUEST"]).read_text(
                         encoding="utf-8"
@@ -129,7 +162,7 @@ class UnrealPreviewTests(unittest.TestCase):
                 )
                 preview = Path(kwargs["env"]["RENDERMASTER_PREVIEW_DIRECTORY"]) / "beauty.png"
                 scratch_preview = preview
-                preview.write_bytes(b"png-data")
+                preview.write_bytes(png_bytes())
                 result = {
                     "schema_version": "0.1",
                     "status": "succeeded",
@@ -174,6 +207,55 @@ class UnrealPreviewTests(unittest.TestCase):
             )
             self.assertEqual(saved.status, "succeeded")
             self.assertTrue(all(artifact.sha256 for artifact in saved.output_artifacts))
+
+    def test_black_preview_is_rejected_even_when_unreal_reports_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project, engine, spec, assets = prepare_files(root)
+            run_directory = root / "black_run"
+
+            def fake_run(command, **kwargs):
+                request = json.loads(
+                    Path(kwargs["env"]["RENDERMASTER_PREVIEW_REQUEST"]).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                preview = Path(kwargs["env"]["RENDERMASTER_PREVIEW_DIRECTORY"]) / "beauty.png"
+                preview.write_bytes(png_bytes(visible=False))
+                result = {
+                    "schema_version": "0.1",
+                    "status": "succeeded",
+                    "project_name": "Project",
+                    "world_name": "Map",
+                    "scene_name": request["scene_name"],
+                    "render_spec_sha256": request["render_spec_sha256"],
+                    "actors": actor_evidence(request),
+                    "preview_files": [str(preview.resolve())],
+                    "warnings": [],
+                    "errors": [],
+                }
+                Path(kwargs["env"]["RENDERMASTER_PREVIEW_RESULT"]).write_text(
+                    json.dumps(result),
+                    encoding="utf-8",
+                )
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with patch("render_master_bot.unreal_preview.subprocess.run", side_effect=fake_run):
+                with self.assertRaisesRegex(UnrealPreviewError, "no meaningful visible pixels"):
+                    run_unreal_preview(
+                        project,
+                        engine_root=engine,
+                        render_spec_path=spec,
+                        asset_catalog_path=assets,
+                        run_directory=run_directory,
+                        run_id="preview_black",
+                    )
+
+            saved = RunManifest.model_validate_json(
+                (run_directory / "run_manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(saved.status, "failed")
+            self.assertIn("no meaningful visible pixels", saved.errors[0])
 
     def test_subprocess_failure_still_finalizes_failed_manifest(self):
         with tempfile.TemporaryDirectory() as directory:

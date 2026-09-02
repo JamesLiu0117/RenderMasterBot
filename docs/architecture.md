@@ -16,6 +16,12 @@ maps to Unreal Engine APIs. A separate vision model evaluates preview renders.
 The text planner then either proposes a host-validated `RenderSpecPatch` or
 records a missing capability.
 
+The user-facing **Conversation Orchestrator** sits above both tracks. It owns
+the local message timeline and chooses only among `respond`, `clarify`, and a
+fixed registered action route. It cannot call Unreal or generate a command.
+The selected action still crosses the existing specialized proposal,
+validation, approval, stale-state revalidation, and Undo boundary.
+
 ```text
 knowledge + assets -> gpt-oss planner -> RenderSpec -> strict validation -> Unreal
                                              ^                              |
@@ -46,7 +52,7 @@ Ollama's embedding endpoint explicitly instead of allowing Chroma to choose or
 download a default embedding function. The collection records its embedding
 model identity and rejects attempts to query it with a different model.
 
-See `contracts.md` for the thirty-seven public JSON boundaries used by both
+See `contracts.md` for the fifty-five public JSON boundaries used by both
 tracks.
 
 ## Next milestones
@@ -125,10 +131,41 @@ tracks.
     Actor-visible and runtime-hidden traces, verified state restoration,
     duration-normalized queue-local scope deltas, constrained local-model
     interpretation, and direct opening of both traces in Unreal Insights.~~
-30. Add repeated/interleaved trials and direct per-asset/per-material/
-    per-shader/per-draw attribution, plus general geometry-aware Actor
-    arrangement, packaged-build benchmarks, asset-level performance fixes,
-    richer shot-specific lighting tools, and multi-shot visual evaluation.
+30. ~~Add a repeatable selected-Actor GPU study with two visible A/A control
+    captures, counterbalanced AB/BA/AB trials, fixed warmups, restoration before
+    review, all-eight-scope intersection, host-computed median/MAD/noise/votes,
+    and aggregate-ID-constrained local-model interpretation.~~
+31. ~~Add Stage 1 of the Full Level Audit: enumerate every eligible native
+    StaticMeshActor, preserve explicit exclusions, compute deterministic
+    whole-level statistics and per-Actor priorities, bound model evidence to
+    the Top 64, and connect optional approval-gated Cast Shadow/Max Draw
+    Distance actions with stale-state rejection and one grouped Undo.~~
+32. ~~Orchestrate one read-only profiling-first audit with a fixed PIE/SIE
+    baseline, GPU-scope trace, deterministic Top-2 repeatable Actor studies,
+    cross-stage workload validation, bounded skips, and verified runtime-state
+    restoration. Images are auxiliary guards, not performance evidence.~~
+33. ~~Add the first profiling-gated candidate optimization: select one stable
+    Actor candidate, run a fixed Cast Shadow AA + AB/BA/AB experiment, compare
+    host-recomputed thresholds, restore runtime state, and allow only an
+    approval-time-revalidated, unsaved, one-Undo formal edit. Images remain
+    auxiliary visual-regression evidence.~~
+34. ~~Repeat the complete level workload after a formal candidate edit, compare
+    host-recomputed whole-level before/after metrics, and automatically offer
+    formal retain or rollback without unattended saving.~~
+35. ~~Add the first conversational product shell: a persistent Unreal message
+    timeline, strict answer/clarify/route contract, host-enforced context gates,
+    one primary Send flow, and fixed routing into existing bounded tools.~~
+36. ~~Add the Golden Reference training boundary: non-model-authored RenderSpecs,
+    frozen campaign/catalog identity, deterministic asset/expectation/preflight
+    validation, planner-free Unreal execution, and reuse of campaign eligibility
+    plus dataset leakage/readiness audits.~~
+37. Author and Unreal-validate the first 32-40 Golden References, freeze grouped
+    validation/test cases, then run the first QLoRA smoke experiment only after
+    the 20/2/2 audited data gate passes.
+38. Add direct per-asset/per-material/per-shader/per-draw attribution, plus
+    general geometry-aware Actor arrangement, packaged-build benchmarks,
+    asset-level performance fixes, richer shot-specific lighting tools, and
+    multi-shot visual evaluation.
 
 ## Default model roles
 

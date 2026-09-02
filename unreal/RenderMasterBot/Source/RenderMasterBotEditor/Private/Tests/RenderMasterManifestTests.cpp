@@ -18,8 +18,11 @@
 #include "RenderMasterCameraBatchAssistant.h"
 #include "RenderMasterMaterialAssistant.h"
 #include "RenderMasterPerformanceAssistant.h"
+#include "RenderMasterLevelAuditAssistant.h"
+#include "RenderMasterLevelProfilingAssistant.h"
 #include "RenderMasterRuntimePerformanceAssistant.h"
 #include "RenderMasterInsightsGpuAssistant.h"
+#include "RenderMasterShadowOptimizationVerificationAssistant.h"
 #include "RenderMasterLightAssistant.h"
 #include "RenderMasterLightingRigAssistant.h"
 #include "RenderMasterLightingRigReviewAssistant.h"
@@ -2102,6 +2105,629 @@ bool FRenderMasterActorGpuImpactReportTest::RunTest(const FString& Parameters)
     TestFalse(
         TEXT("Scene-modifying Actor GPU report is rejected"),
         RenderMasterParseActorGpuImpactReportFile(Path, Report, Error));
+    IFileManager::Get().Delete(*Path, false, true);
+    return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FRenderMasterActorGpuImpactStudyReportTest,
+    "RenderMasterBot.Editor.Assistant.ActorGpuImpactStudyReport",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRenderMasterActorGpuImpactStudyReportTest::RunTest(const FString& Parameters)
+{
+    const FString Json = TEXT(R"JSON({
+        "schema_version": "0.1",
+        "report_id": "actor_gpu_study_001_review",
+        "status": "review_complete",
+        "request": "Measure repeatable selected Actor GPU impact.",
+        "capture_set": {
+            "schema_version": "0.1",
+            "study_id": "actor_gpu_study_001"
+        },
+        "capture_set_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "capture_set_file_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "analyzed_by": {"provider": "ollama", "model": "gpt-oss:20b"},
+        "aggregates": [{
+            "aggregate_id": "aggregate_000",
+            "queue_name": "GPU0-Graphics0",
+            "scope_name": "ShadowDepths",
+            "classification": "stable_candidate",
+            "dominant_direction_when_hidden": "decreased",
+            "median_visible_total_ms_per_second": 10.2,
+            "median_hidden_total_ms_per_second": 6.1,
+            "median_baseline_minus_hidden_ms_per_second": 4.0,
+            "delta_mad_ms_per_second": 0.0,
+            "control_noise_abs_ms_per_second": 0.2,
+            "signal_excess_over_control_noise_ms_per_second": 3.8,
+            "relative_reduction_percent": 39.2157,
+            "decreased_vote_count": 3,
+            "increased_vote_count": 0,
+            "unchanged_vote_count": 0
+        }],
+        "summary": "ShadowDepths is a stable impact candidate above control noise.",
+        "primary_aggregate_id": "aggregate_000",
+        "findings": [{
+            "severity": "warning",
+            "category": "stable_candidate",
+            "evidence_aggregate_ids": ["aggregate_000"],
+            "observation": "All three paired trials decreased above A/A noise.",
+            "recommendation": "Repeat in a packaged benchmark before changing the asset."
+        }],
+        "missing_capabilities": [],
+        "modifies_editor_scene": false
+    })JSON");
+    const FString Path = FPaths::Combine(
+        FPaths::ProjectIntermediateDir(),
+        TEXT("RenderMasterActorGpuImpactStudyReportTest.json"));
+    TestTrue(
+        TEXT("Actor GPU study report fixture writes"),
+        FFileHelper::SaveStringToFile(Json, *Path));
+    FRenderMasterActorGpuImpactStudyReport Report;
+    FString Error;
+    TestTrue(
+        TEXT("Read-only repeatable Actor GPU study report parses"),
+        RenderMasterParseActorGpuImpactStudyReportFile(Path, Report, Error));
+    TestEqual(
+        TEXT("Study identity is preserved"),
+        Report.StudyId,
+        FString(TEXT("actor_gpu_study_001")));
+    TestEqual(TEXT("One aggregate is preserved"), Report.Aggregates.Num(), 1);
+    if (Report.Aggregates.Num() == 1)
+    {
+        TestEqual(
+            TEXT("Aggregate identity is preserved"),
+            Report.Aggregates[0].AggregateId,
+            FString(TEXT("aggregate_000")));
+        TestTrue(
+            TEXT("Aggregate median is preserved"),
+            FMath::IsNearlyEqual(
+                Report.Aggregates[0].MedianDeltaMsPerSecond, 4.0, 0.001));
+        TestEqual(
+            TEXT("Direction votes are preserved"),
+            Report.Aggregates[0].DecreasedVotes,
+            3);
+    }
+    TestEqual(TEXT("One cited aggregate is preserved"), Report.CitedAggregateIds.Num(), 1);
+    TestFalse(TEXT("Actor GPU study cannot modify the Editor"), Report.bModifiesEditorScene);
+    const FString Tampered = Json.Replace(
+        TEXT("\"decreased_vote_count\": 3"),
+        TEXT("\"decreased_vote_count\": 2"));
+    TestTrue(
+        TEXT("Tampered study report fixture writes"),
+        FFileHelper::SaveStringToFile(Tampered, *Path));
+    TestFalse(
+        TEXT("Invalid study vote total is rejected"),
+        RenderMasterParseActorGpuImpactStudyReportFile(Path, Report, Error));
+    IFileManager::Get().Delete(*Path, false, true);
+    return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FRenderMasterLevelAuditReportTest,
+    "RenderMasterBot.Editor.Assistant.LevelAuditReport",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRenderMasterLevelAuditReportTest::RunTest(const FString& Parameters)
+{
+    const FString Json = TEXT(R"JSON({
+        "schema_version": "0.1",
+        "audit_id": "level_audit_test_001",
+        "status": "review_only",
+        "request": "Audit the complete level.",
+        "context": {
+            "schema_version": "0.1",
+            "audit_id": "level_audit_test_001",
+            "captured_at_utc": "2026-08-19T20:30:00Z",
+            "project_name": "OptimizationPlugin",
+            "level_path": "/Game/Maps/AuditTest",
+            "static_mesh_actor_count": 1,
+            "excluded_actor_count": 0,
+            "actors": [{
+                "schema_version": "0.1",
+                "project_name": "OptimizationPlugin",
+                "level_path": "/Game/Maps/AuditTest",
+                "actor_name": "AuditRock",
+                "actor_path": "/Game/Maps/AuditTest:PersistentLevel.AuditRock",
+                "actor_class": "StaticMeshActor",
+                "actor_guid": "11111111111111111111111111111111",
+                "component_name": "StaticMeshComponent0",
+                "component_mobility": "static",
+                "is_editable": true,
+                "is_locked": false,
+                "mesh_path": "/Game/Test/SM_AuditRock.SM_AuditRock",
+                "lod_count": 1,
+                "lod0_triangles": 100000,
+                "material_slot_count": 5,
+                "nanite_enabled": false,
+                "collision_mode": "query_and_physics",
+                "component_tick_enabled": false,
+                "bounds_radius_cm": 420.0,
+                "performance": {
+                    "cast_shadow": true,
+                    "max_draw_distance_cm": 0.0
+                }
+            }]
+        },
+        "context_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "statistics": {
+            "captured_actor_count": 1,
+            "excluded_actor_count": 0,
+            "total_lod0_triangles": 100000,
+            "total_material_slots": 5,
+            "actors_without_nanite_count": 1,
+            "single_lod_actor_count": 1,
+            "ticking_component_count": 0,
+            "shadow_casting_actor_count": 1,
+            "unbounded_draw_distance_count": 1,
+            "query_and_physics_collision_count": 1,
+            "high_priority_actor_count": 1
+        },
+        "assessments": [{
+            "assessment_id": "audit_actor_0000",
+            "actor_path": "/Game/Maps/AuditTest:PersistentLevel.AuditRock",
+            "risk_score": 61,
+            "risk_band": "high",
+            "evidence_fields": [
+                "lod0_triangles", "nanite_enabled", "lod_count",
+                "material_slot_count", "collision_mode",
+                "max_draw_distance_cm", "bounds_radius_cm"
+            ],
+            "reasons": [
+                "LOD0 contains at least 100,000 triangles.",
+                "A high-triangle mesh is captured without Nanite enabled.",
+                "The high-triangle mesh has only one captured LOD.",
+                "The mesh exposes at least four material slots.",
+                "The component participates in query and physics collision.",
+                "A compact Actor has no component draw-distance limit."
+            ],
+            "recommended_next_test": "repeatable_actor_gpu_study"
+        }],
+        "analyzed_by": {"provider": "ollama", "model": "gpt-oss:20b"},
+        "summary": "AuditRock is the first static priority for runtime confirmation.",
+        "primary_assessment_id": "audit_actor_0000",
+        "findings": [{
+            "severity": "warning",
+            "category": "measurement",
+            "evidence_assessment_ids": ["audit_actor_0000"],
+            "observation": "The static score is high but is not measured runtime cost.",
+            "recommendation": "Run the repeatable Actor GPU study."
+        }],
+        "actions": [],
+        "missing_capabilities": [],
+        "modifies_editor_scene": false,
+        "auto_save": false,
+        "undo_supported": true
+    })JSON");
+    const FString Path = FPaths::Combine(
+        FPaths::ProjectIntermediateDir(),
+        TEXT("RenderMasterLevelAuditReportTest.json"));
+    TestTrue(TEXT("Level audit fixture writes"), FFileHelper::SaveStringToFile(Json, *Path));
+    FRenderMasterLevelAuditReport Report;
+    FString Error;
+    TestTrue(
+        TEXT("Whole-level static audit report parses"),
+        RenderMasterParseLevelAuditReportFile(Path, Report, Error));
+    TestEqual(TEXT("Audit identity is preserved"), Report.AuditId, FString(TEXT("level_audit_test_001")));
+    TestEqual(TEXT("One context Actor is preserved"), Report.ContextActors.Num(), 1);
+    TestEqual(TEXT("One assessment is preserved"), Report.Assessments.Num(), 1);
+    if (Report.Assessments.Num() == 1)
+    {
+        TestEqual(TEXT("Deterministic risk score is preserved"), Report.Assessments[0].RiskScore, 61);
+        TestEqual(TEXT("Risk band is preserved"), Report.Assessments[0].RiskBand, FString(TEXT("high")));
+    }
+    const FString Tampered = Json.Replace(
+        TEXT("\"risk_score\": 61"),
+        TEXT("\"risk_score\": 60"));
+    TestTrue(TEXT("Tampered level audit fixture writes"), FFileHelper::SaveStringToFile(Tampered, *Path));
+    TestFalse(
+        TEXT("Tampered deterministic risk score is rejected"),
+        RenderMasterParseLevelAuditReportFile(Path, Report, Error));
+    IFileManager::Get().Delete(*Path, false, true);
+    return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FRenderMasterLevelProfilingReportTest,
+    "RenderMasterBot.Editor.Assistant.LevelProfilingReport",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRenderMasterLevelProfilingReportTest::RunTest(const FString& Parameters)
+{
+    const FString Json = TEXT(R"JSON({
+        "schema_version": "0.1",
+        "report_id": "level_profile_test_001_report",
+        "status": "complete",
+        "run": {
+            "profiling_run_id": "level_profile_test_001",
+            "runtime_performance_report": {
+                "capture": {
+                    "project_name": "OptimizationPlugin",
+                    "world_path": "/Game/Maps/TestMap",
+                    "capture_mode": "pie",
+                    "viewport_width_px": 1920,
+                    "viewport_height_px": 1080,
+                    "gpu_name": "Test GPU"
+                }
+            },
+            "runtime_state_restored": true,
+            "modifies_editor_scene": false
+        },
+        "run_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "level_audit_id": "level_audit_test_001",
+        "runtime_capture_id": "runtime_test_001",
+        "gpu_capture_id": "gpu_test_001",
+        "actor_study_ids": ["study_test_001"],
+        "summary": "The fixed profiling workload completed with one stable Actor candidate.",
+        "primary_bottleneck": "gpu",
+        "frame_p95_ms": 19.5,
+        "frame_budget_miss_fraction": 0.25,
+        "gpu_p95_ms": 17.2,
+        "primary_gpu_scope_id": "scope_000",
+        "primary_gpu_scope_name": "RenderViewFamily",
+        "primary_gpu_scope_ms_per_second": 420.0,
+        "measured_actor_count": 1,
+        "skipped_actor_count": 0,
+        "stable_actor_candidate_count": 1,
+        "actor_findings": [{
+            "assessment_id": "audit_actor_0000",
+            "actor_path": "/Game/Maps/Test:PersistentLevel.Hero",
+            "actor_name": "Hero",
+            "static_risk_score": 90,
+            "static_risk_band": "critical",
+            "outcome": "stable_candidate",
+            "primary_aggregate_id": "aggregate_000",
+            "scope_name": "RenderViewFamily",
+            "median_delta_ms_per_second": 4.0,
+            "control_noise_ms_per_second": 0.5,
+            "signal_excess_ms_per_second": 3.5,
+            "relative_reduction_percent": 8.0,
+            "conclusion": "The three-trial median exceeded the A/A control noise."
+        }],
+        "limitations": [
+            "PIE includes Editor overhead.",
+            "Inclusive scopes are not direct draw attribution."
+        ],
+        "runtime_state_restored": true,
+        "modifies_editor_scene": false
+    })JSON");
+    const FString Path = FPaths::Combine(
+        FPaths::ProjectIntermediateDir(),
+        TEXT("RenderMasterLevelProfilingReportTest.json"));
+    TestTrue(
+        TEXT("Level profiling fixture writes"),
+        FFileHelper::SaveStringToFile(Json, *Path));
+    FRenderMasterLevelProfilingReport Report;
+    FString Error;
+    TestTrue(
+        TEXT("Profiling-first report parses"),
+        RenderMasterParseLevelProfilingReportFile(Path, Report, Error));
+    TestEqual(
+        TEXT("Profiling run identity is preserved"),
+        Report.ProfilingRunId,
+        FString(TEXT("level_profile_test_001")));
+    TestEqual(TEXT("One Actor finding is preserved"), Report.ActorFindings.Num(), 1);
+    TestFalse(TEXT("Profiling run cannot modify the Editor"), Report.bModifiesEditorScene);
+
+    const FString Unsafe = Json.Replace(
+        TEXT("\"runtime_state_restored\": true"),
+        TEXT("\"runtime_state_restored\": false"));
+    TestTrue(
+        TEXT("Unsafe profiling fixture writes"),
+        FFileHelper::SaveStringToFile(Unsafe, *Path));
+    TestFalse(
+        TEXT("Unrestored runtime state is rejected"),
+        RenderMasterParseLevelProfilingReportFile(Path, Report, Error));
+
+    const FString Tampered = Json.Replace(
+        TEXT("\"stable_actor_candidate_count\": 1"),
+        TEXT("\"stable_actor_candidate_count\": 0"));
+    TestTrue(
+        TEXT("Tampered profiling fixture writes"),
+        FFileHelper::SaveStringToFile(Tampered, *Path));
+    TestFalse(
+        TEXT("Tampered Actor counts are rejected"),
+        RenderMasterParseLevelProfilingReportFile(Path, Report, Error));
+    IFileManager::Get().Delete(*Path, false, true);
+    return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FRenderMasterShadowOptimizationReportTest,
+    "RenderMasterBot.Editor.Assistant.ShadowOptimizationReport",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRenderMasterShadowOptimizationReportTest::RunTest(const FString& Parameters)
+{
+    const FString ActorJson = TEXT(R"JSON({
+        "schema_version":"0.1","project_name":"OptimizationPlugin",
+        "level_path":"/Game/Maps/TestMap","actor_name":"PerformanceMeshA",
+        "actor_path":"/Game/Maps/TestMap:PersistentLevel.PerformanceMeshA",
+        "actor_class":"StaticMeshActor",
+        "actor_guid":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "component_name":"StaticMeshComponent0","component_mobility":"static",
+        "is_editable":true,"is_locked":false,
+        "mesh_path":"/Engine/BasicShapes/Cube.Cube","lod_count":1,
+        "lod0_triangles":12,"material_slot_count":1,"nanite_enabled":false,
+        "collision_mode":"query_and_physics","component_tick_enabled":false,
+        "bounds_radius_cm":86.6,
+        "performance":{"cast_shadow":true,"max_draw_distance_cm":0.0}
+    })JSON");
+    const FString Json = FString::Printf(TEXT(R"JSON({
+        "schema_version":"0.1",
+        "report_id":"shadow_optimization_test_report",
+        "status":"proposed","decision":"propose_apply",
+        "capture_set":{
+            "experiment_id":"shadow_optimization_test",
+            "target":%s,
+            "noise_control_baseline":[
+                {
+                    "project_name":"OptimizationPlugin",
+                    "world_path":"/Game/Maps/TestMap",
+                    "capture_mode":"pie",
+                    "viewport_width_px":1920,
+                    "viewport_height_px":1080,
+                    "gpu_name":"Test GPU"
+                },
+                {
+                    "project_name":"OptimizationPlugin",
+                    "world_path":"/Game/Maps/TestMap",
+                    "capture_mode":"pie",
+                    "viewport_width_px":1920,
+                    "viewport_height_px":1080,
+                    "gpu_name":"Test GPU"
+                }
+            ],
+            "runtime_state_restored":true,
+            "modifies_editor_scene":false,
+            "candidate_cast_shadow":false
+        },
+        "capture_set_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "capture_set_file_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "analysis_method":"deterministic_host",
+        "thresholds":{
+            "minimum_signal_excess_ms_per_second":1.0,
+            "minimum_relative_reduction_percent":1.0,
+            "maximum_mad_to_median_ratio":1.0,
+            "minimum_decreased_votes":2
+        },
+        "aggregates":[{
+            "aggregate_id":"aggregate_000","queue_name":"Graphics",
+            "scope_name":"ShadowDepths","classification":"stable_candidate",
+            "dominant_direction_when_disabled":"decreased",
+            "median_baseline_total_ms_per_second":10.0,
+            "median_candidate_total_ms_per_second":6.0,
+            "median_baseline_minus_candidate_ms_per_second":4.0,
+            "delta_mad_ms_per_second":0.2,
+            "control_noise_abs_ms_per_second":0.3,
+            "signal_excess_over_control_noise_ms_per_second":3.7,
+            "relative_reduction_percent":40.0,
+            "decreased_vote_count":3,"increased_vote_count":0,
+            "unchanged_vote_count":0
+        }],
+        "primary_aggregate_id":"aggregate_000",
+        "summary":"The temporary shadow candidate passed every fixed gate.",
+        "proposed_action":{
+            "target":%s,
+            "before":{"cast_shadow":true,"max_draw_distance_cm":0.0},
+            "after":{"cast_shadow":false,"max_draw_distance_cm":0.0},
+            "changes":[{"property":"cast_shadow","before":true,"after":false}],
+            "rationale":"Three counterbalanced trials exceeded control noise."
+        },
+        "rejection_reasons":[],
+        "runtime_state_restored":true,
+        "modifies_editor_scene":false,
+        "approval_required":true,
+        "auto_save":false,"undo_supported":true,
+        "visual_evidence_role":"operator_regression_review"
+    })JSON"), *ActorJson, *ActorJson);
+    const FString Path = FPaths::Combine(
+        FPaths::ProjectIntermediateDir(),
+        TEXT("RenderMasterShadowOptimizationReportTest.json"));
+    TestTrue(
+        TEXT("Shadow optimization fixture writes"),
+        FFileHelper::SaveStringToFile(Json, *Path));
+    FRenderMasterShadowOptimizationReport Report;
+    FString Error;
+    TestTrue(
+        TEXT("Measured shadow proposal parses"),
+        RenderMasterParseShadowOptimizationReportFile(Path, Report, Error));
+    TestEqual(
+        TEXT("Shadow target identity is preserved"),
+        Report.ProposedAction.Target.ActorName,
+        FString(TEXT("PerformanceMeshA")));
+    TestTrue(TEXT("Shadow proposal requires approval"), Report.bApprovalRequired);
+    TestFalse(
+        TEXT("Shadow report itself does not modify the Editor"),
+        Report.bModifiesEditorScene);
+
+    const FString Unsafe = Json.Replace(
+        TEXT("\"runtime_state_restored\":true"),
+        TEXT("\"runtime_state_restored\":false"));
+    TestTrue(
+        TEXT("Unsafe shadow fixture writes"),
+        FFileHelper::SaveStringToFile(Unsafe, *Path));
+    TestFalse(
+        TEXT("Unrestored shadow state is rejected"),
+        RenderMasterParseShadowOptimizationReportFile(Path, Report, Error));
+
+    const FString Tampered = Json.Replace(
+        TEXT("\"signal_excess_over_control_noise_ms_per_second\":3.7"),
+        TEXT("\"signal_excess_over_control_noise_ms_per_second\":0.1"));
+    TestTrue(
+        TEXT("Tampered shadow fixture writes"),
+        FFileHelper::SaveStringToFile(Tampered, *Path));
+    TestFalse(
+        TEXT("Below-threshold proposed result is rejected"),
+        RenderMasterParseShadowOptimizationReportFile(Path, Report, Error));
+    IFileManager::Get().Delete(*Path, false, true);
+    return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FRenderMasterShadowOptimizationVerificationReportTest,
+    "RenderMasterBot.Editor.Assistant.ShadowOptimizationVerificationReport",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRenderMasterShadowOptimizationVerificationReportTest::RunTest(
+    const FString& Parameters)
+{
+    const FString Json = TEXT(R"JSON({
+        "schema_version":"0.1",
+        "report_id":"shadow_verification_test_report",
+        "status":"complete",
+        "decision":"retain",
+        "analysis_method":"deterministic_host",
+        "summary":"The post-apply workload passed every fixed regression guard.",
+        "workload_matches":true,
+        "target_transition_matches":true,
+        "sources_are_distinct":true,
+        "formal_change_applied":true,
+        "modifies_editor_scene":false,
+        "retaining_requires_action":false,
+        "rollback_requires_approval":true,
+        "rollback_undo_supported":true,
+        "auto_save":false,
+        "visual_evidence_role":"operator_regression_review",
+        "shadow_optimization_report_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "shadow_optimization_report_file_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "baseline_level_profiling_report_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "baseline_level_profiling_report_file_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "candidate_level_profiling_report_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "candidate_level_profiling_report_file_sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "shadow_optimization_report":{
+            "report_id":"shadow_report",
+            "capture_set":{"experiment_id":"shadow_experiment"}
+        },
+        "baseline_level_profiling_report":{
+            "report_id":"baseline_level",
+            "run":{"profiling_run_id":"baseline_run"},
+            "frame_p95_ms":20.0,
+            "frame_budget_miss_fraction":0.10,
+            "gpu_p95_ms":18.0
+        },
+        "candidate_level_profiling_report":{
+            "report_id":"candidate_level",
+            "run":{"profiling_run_id":"candidate_run"},
+            "frame_p95_ms":19.5,
+            "frame_budget_miss_fraction":0.08,
+            "gpu_p95_ms":17.5
+        },
+        "thresholds":{
+            "maximum_frame_p95_regression_ms":0.5,
+            "maximum_frame_p95_regression_percent":2.0,
+            "maximum_gpu_p95_regression_ms":0.5,
+            "maximum_gpu_p95_regression_percent":2.0,
+            "maximum_frame_budget_miss_increase_fraction":0.02,
+            "maximum_target_scope_regression_ms_per_second":1.0,
+            "maximum_target_scope_regression_percent":2.0
+        },
+        "metrics":{
+            "baseline_frame_p95_ms":20.0,
+            "candidate_frame_p95_ms":19.5,
+            "frame_p95_delta_ms":-0.5,
+            "frame_p95_delta_percent":-2.5,
+            "baseline_frame_budget_miss_fraction":0.10,
+            "candidate_frame_budget_miss_fraction":0.08,
+            "frame_budget_miss_delta_fraction":-0.02,
+            "baseline_gpu_p95_ms":18.0,
+            "candidate_gpu_p95_ms":17.5,
+            "gpu_p95_delta_ms":-0.5,
+            "gpu_p95_delta_percent":-2.7777777778,
+            "target_scope_queue_name":"Graphics",
+            "target_scope_name":"ShadowDepths",
+            "baseline_target_scope_ms_per_second":100.0,
+            "candidate_target_scope_ms_per_second":95.0,
+            "target_scope_delta_ms_per_second":-5.0,
+            "target_scope_delta_percent":-5.0
+        },
+        "decision_reasons":["No fixed regression guard was exceeded."]
+    })JSON");
+    const FString Path = FPaths::Combine(
+        FPaths::ProjectIntermediateDir(),
+        TEXT("RenderMasterShadowVerificationReportTest.json"));
+    TestTrue(
+        TEXT("Shadow verification fixture writes"),
+        FFileHelper::SaveStringToFile(Json, *Path));
+    FRenderMasterShadowVerificationReport Report;
+    FString Error;
+    TestTrue(
+        TEXT("Retain recommendation parses"),
+        RenderMasterParseShadowVerificationReportFile(Path, Report, Error));
+    TestEqual(
+        TEXT("Retain recommendation is preserved"),
+        Report.Decision,
+        FString(TEXT("retain")));
+
+    FString Rollback = Json.Replace(
+        TEXT("\"decision\":\"retain\""),
+        TEXT("\"decision\":\"rollback\""));
+    Rollback = Rollback.Replace(
+        TEXT("\"frame_p95_ms\":19.5"),
+        TEXT("\"frame_p95_ms\":25.0"));
+    Rollback = Rollback.Replace(
+        TEXT("\"candidate_frame_p95_ms\":19.5"),
+        TEXT("\"candidate_frame_p95_ms\":25.0"));
+    Rollback = Rollback.Replace(
+        TEXT("\"frame_p95_delta_ms\":-0.5"),
+        TEXT("\"frame_p95_delta_ms\":5.0"));
+    TestTrue(
+        TEXT("Rollback verification fixture writes"),
+        FFileHelper::SaveStringToFile(Rollback, *Path));
+    TestTrue(
+        TEXT("Recomputed rollback recommendation parses"),
+        RenderMasterParseShadowVerificationReportFile(Path, Report, Error));
+    TestEqual(
+        TEXT("Rollback recommendation is preserved"),
+        Report.Decision,
+        FString(TEXT("rollback")));
+
+    FString Unresolved = Json.Replace(
+        TEXT("\"status\":\"complete\""),
+        TEXT("\"status\":\"unresolved\""));
+    Unresolved = Unresolved.Replace(
+        TEXT("\"decision\":\"retain\""),
+        TEXT("\"decision\":\"unresolved\""));
+    Unresolved = Unresolved.Replace(
+        TEXT("\"workload_matches\":true"),
+        TEXT("\"workload_matches\":false"));
+    TestTrue(
+        TEXT("Unresolved verification fixture writes"),
+        FFileHelper::SaveStringToFile(Unresolved, *Path));
+    TestTrue(
+        TEXT("Mismatched workload remains unresolved"),
+        RenderMasterParseShadowVerificationReportFile(Path, Report, Error));
+
+    const FString TamperedMetric = Json.Replace(
+        TEXT("\"candidate_frame_p95_ms\":19.5"),
+        TEXT("\"candidate_frame_p95_ms\":19.7"));
+    TestTrue(
+        TEXT("Tampered metric fixture writes"),
+        FFileHelper::SaveStringToFile(TamperedMetric, *Path));
+    TestFalse(
+        TEXT("Metric inconsistent with embedded source is rejected"),
+        RenderMasterParseShadowVerificationReportFile(Path, Report, Error));
+
+    const FString TamperedDecision = Json.Replace(
+        TEXT("\"decision\":\"retain\""),
+        TEXT("\"decision\":\"rollback\""));
+    TestTrue(
+        TEXT("Tampered decision fixture writes"),
+        FFileHelper::SaveStringToFile(TamperedDecision, *Path));
+    TestFalse(
+        TEXT("Decision inconsistent with recomputed guards is rejected"),
+        RenderMasterParseShadowVerificationReportFile(Path, Report, Error));
+
+    const FString TamperedThreshold = Json.Replace(
+        TEXT("\"maximum_frame_p95_regression_ms\":0.5"),
+        TEXT("\"maximum_frame_p95_regression_ms\":0.6"));
+    TestTrue(
+        TEXT("Tampered threshold fixture writes"),
+        FFileHelper::SaveStringToFile(TamperedThreshold, *Path));
+    TestFalse(
+        TEXT("Changed fixed threshold is rejected"),
+        RenderMasterParseShadowVerificationReportFile(Path, Report, Error));
+
     IFileManager::Get().Delete(*Path, false, true);
     return !HasAnyErrors();
 }

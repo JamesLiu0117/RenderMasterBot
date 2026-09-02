@@ -24,4 +24,5 @@ private:
     TSharedPtr<FRenderMasterWorkflowController> Controller;
     FDelegateHandle MenuStartupHandle;
     FTSTicker::FDelegateHandle AutoOpenTickerHandle;
+    bool bPanelRegistered = false;
 };

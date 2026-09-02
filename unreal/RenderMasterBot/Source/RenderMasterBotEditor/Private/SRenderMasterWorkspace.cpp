@@ -14,8 +14,11 @@
 #include "RenderMasterCameraAssistant.h"
 #include "RenderMasterCameraBatchAssistant.h"
 #include "RenderMasterPerformanceAssistant.h"
+#include "RenderMasterLevelAuditAssistant.h"
 #include "RenderMasterRuntimePerformanceAssistant.h"
 #include "RenderMasterInsightsGpuAssistant.h"
+#include "RenderMasterLevelProfilingAssistant.h"
+#include "RenderMasterShadowOptimizationVerificationAssistant.h"
 #include "RenderMasterWorkflowController.h"
 #include "RenderMasterMaterialAssistant.h"
 #include "RenderMasterLightAssistant.h"
@@ -30,6 +33,7 @@
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SExpandableArea.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
@@ -67,6 +71,16 @@ void SRenderMasterWorkspace::Construct(const FArguments& InArgs)
 {
     Controller = InArgs._Controller;
     check(Controller.IsValid());
+    ConversationAssistant = MakeShared<FRenderMasterConversationAssistant>(Controller);
+    ConversationAssistant->SetOnCompleted(
+        FOnRenderMasterConversationTurnCompleted::CreateSP(
+            this,
+            &SRenderMasterWorkspace::HandleConversationTurnCompleted));
+    ConversationAssistant->SetOnFailed(
+        FOnRenderMasterConversationTurnFailed::CreateSP(
+            this,
+            &SRenderMasterWorkspace::HandleConversationTurnFailed));
+    ConversationAssistant->Initialize();
     MaterialAssistant = MakeShared<FRenderMasterMaterialAssistant>(Controller);
     MaterialAssistant->Initialize();
     TransformAssistant = MakeShared<FRenderMasterTransformBatchAssistant>(Controller);
@@ -84,12 +98,27 @@ void SRenderMasterWorkspace::Construct(const FArguments& InArgs)
     CameraBatchAssistant->Initialize();
     PerformanceAssistant = MakeShared<FRenderMasterPerformanceAssistant>(Controller);
     PerformanceAssistant->Initialize();
+    LevelAuditAssistant = MakeShared<FRenderMasterLevelAuditAssistant>(Controller);
+    LevelAuditAssistant->Initialize();
     RuntimePerformanceAssistant =
         MakeShared<FRenderMasterRuntimePerformanceAssistant>(Controller);
     RuntimePerformanceAssistant->Initialize();
     InsightsGpuAssistant = MakeShared<FRenderMasterInsightsGpuAssistant>(Controller);
     InsightsGpuAssistant->Initialize();
+    LevelProfilingAssistant = MakeShared<FRenderMasterLevelProfilingAssistant>(
+        Controller,
+        LevelAuditAssistant,
+        RuntimePerformanceAssistant,
+        InsightsGpuAssistant);
+    LevelProfilingAssistant->Initialize();
+    ShadowVerificationAssistant =
+        MakeShared<FRenderMasterShadowOptimizationVerificationAssistant>(
+            Controller, LevelProfilingAssistant);
+    ShadowVerificationAssistant->Initialize();
     AssistantReply = TEXT("Tell me what you want to understand or change. I will inspect the current Unreal context before proposing an action.");
+    AddConversationMessage(
+        TEXT("assistant"),
+        TEXT("Tell me what you want to understand, analyze, or change. I can ask for missing context, answer basic questions, or route an approved capability from this conversation."));
 
     ChildSlot
     [
@@ -113,10 +142,26 @@ void SRenderMasterWorkspace::Construct(const FArguments& InArgs)
             ]
         ]
     ];
+    RefreshConversationMessages();
 }
 
 SRenderMasterWorkspace::~SRenderMasterWorkspace()
 {
+    if (ConversationAssistant.IsValid())
+    {
+        ConversationAssistant->Shutdown();
+        ConversationAssistant.Reset();
+    }
+    if (ShadowVerificationAssistant.IsValid())
+    {
+        ShadowVerificationAssistant->Shutdown();
+        ShadowVerificationAssistant.Reset();
+    }
+    if (LevelProfilingAssistant.IsValid())
+    {
+        LevelProfilingAssistant->Shutdown();
+        LevelProfilingAssistant.Reset();
+    }
     if (InsightsGpuAssistant.IsValid())
     {
         InsightsGpuAssistant->Shutdown();
@@ -126,6 +171,11 @@ SRenderMasterWorkspace::~SRenderMasterWorkspace()
     {
         RuntimePerformanceAssistant->Shutdown();
         RuntimePerformanceAssistant.Reset();
+    }
+    if (LevelAuditAssistant.IsValid())
+    {
+        LevelAuditAssistant->Shutdown();
+        LevelAuditAssistant.Reset();
     }
     if (PerformanceAssistant.IsValid())
     {
@@ -284,20 +334,119 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                 [
                                     SNew(SBox).HeightOverride(300.0f)
                                     [
-                                        SNew(SScrollBox)
-                                        + SScrollBox::Slot().Padding(0.0f, 0.0f, 0.0f, 8.0f)
+                                        SAssignNew(ConversationScrollBox, SScrollBox)
+                                        + SScrollBox::Slot()
                                         [
-                                            SNew(SBox)
-                                            .Visibility(this, &SRenderMasterWorkspace::GetLastRequestVisibility)
-                                            [
-                                                MakeMessage(LOCTEXT("YouSpeaker", "YOU"), TAttribute<FText>::CreateSP(this, &SRenderMasterWorkspace::GetLastRequest), FLinearColor(0.55f, 0.42f, 0.92f))
-                                            ]
+                                            SAssignNew(ConversationMessagesBox, SVerticalBox)
                                         ]
-                                        + SScrollBox::Slot().Padding(0.0f, 0.0f, 0.0f, 8.0f)
+                                        + SScrollBox::Slot().Padding(0.0f, 4.0f, 0.0f, 8.0f)
                                         [
-                                            MakeMessage(LOCTEXT("AssistantSpeaker", "ASSISTANT"), TAttribute<FText>::CreateSP(this, &SRenderMasterWorkspace::GetAssistantReply), FLinearColor(0.16f, 0.58f, 0.95f))
+                                            MakeMessage(
+                                                LOCTEXT("CurrentActivitySpeaker", "CURRENT ACTIVITY"),
+                                                TAttribute<FText>::CreateSP(this, &SRenderMasterWorkspace::GetAssistantReply),
+                                                FLinearColor(0.12f, 0.68f, 0.48f))
                                         ]
                                     ]
+                                ]
+                            ]
+                        ]
+
+                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
+                        [
+                            SNew(SBorder)
+                            .Visibility(this, &SRenderMasterWorkspace::GetShadowVerificationVisibility)
+                            .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+                            .BorderBackgroundColor_Lambda([Assistant = ShadowVerificationAssistant]() { return Assistant->GetStateColor(); })
+                            .Padding(16.0f)
+                            [
+                                SNew(SVerticalBox)
+                                + SVerticalBox::Slot().AutoHeight()
+                                [WorkspaceSectionTitle(LOCTEXT("ShadowVerificationTitle", "Post-Apply Shadow Verification"), TAttribute<FText>::CreateLambda([Assistant = ShadowVerificationAssistant]() { return Assistant->GetStateText(); }))]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(STextBlock)
+                                    .Text_Lambda([Assistant = ShadowVerificationAssistant]() { return Assistant->GetSummaryText(); })
+                                    .AutoWrapText(true)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 14.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SButton)
+                                    .Visibility(this, &SRenderMasterWorkspace::GetShadowVerificationStartVisibility)
+                                    .IsEnabled_Lambda([Assistant = ShadowVerificationAssistant]() { return Assistant->CanStartVerification(); })
+                                    .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                    .Text(LOCTEXT("RunShadowVerification", "Run Post-Apply Verification"))
+                                    .ToolTipText(LOCTEXT("RunShadowVerificationHelp", "Restart the same representative PIE/SIE workload first. The Assistant repeats the complete profiling chain and compares fresh whole-level evidence with fixed regression guards."))
+                                    .OnClicked(this, &SRenderMasterWorkspace::PrepareShadowVerificationAction)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SHorizontalBox)
+                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetShadowVerificationKeepVisibility)
+                                        .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                        .Text_Lambda([Assistant = ShadowVerificationAssistant]()
+                                        {
+                                            return Assistant->GetReport().Decision == TEXT("retain")
+                                                ? LOCTEXT("KeepVerifiedShadowOptimization", "Keep Optimization")
+                                                : LOCTEXT("KeepShadowOptimizationOverride", "Keep Anyway (Override Recommendation)");
+                                        })
+                                        .ToolTipText(LOCTEXT("KeepShadowOptimizationHelp", "Keep the current unsaved formal change. This performs no scene mutation and does not convert an unresolved or rollback result into a performance success claim."))
+                                        .OnClicked(this, &SRenderMasterWorkspace::KeepShadowOptimizationAction)
+                                    ]
+                                    + SHorizontalBox::Slot().FillWidth(1.0f)
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetShadowVerificationRollbackVisibility)
+                                        .Text(LOCTEXT("RollbackShadowOptimization", "Approve Rollback"))
+                                        .ToolTipText(LOCTEXT("RollbackShadowOptimizationHelp", "Stop PIE/SIE first. Revalidate the exact formal target, then restore Cast Shadow false to true as a new unsaved Undo transaction."))
+                                        .OnClicked(this, &SRenderMasterWorkspace::RollbackShadowOptimizationAction)
+                                    ]
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SButton)
+                                    .Visibility(this, &SRenderMasterWorkspace::GetShadowVerificationDismissVisibility)
+                                    .Text_Lambda([Assistant = ShadowVerificationAssistant]()
+                                    {
+                                        return Assistant->IsBusy()
+                                            ? LOCTEXT("CancelShadowVerification", "Cancel Verification")
+                                            : LOCTEXT("DismissShadowVerification", "Dismiss Verification");
+                                    })
+                                    .OnClicked(this, &SRenderMasterWorkspace::DismissShadowVerificationAction)
+                                ]
+                            ]
+                        ]
+
+                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
+                        [
+                            SNew(SBorder)
+                            .Visibility(this, &SRenderMasterWorkspace::GetLevelProfilingVisibility)
+                            .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+                            .BorderBackgroundColor_Lambda([Assistant = LevelProfilingAssistant]() { return Assistant->GetStateColor(); })
+                            .Padding(16.0f)
+                            [
+                                SNew(SVerticalBox)
+                                + SVerticalBox::Slot().AutoHeight()
+                                [WorkspaceSectionTitle(LOCTEXT("LevelProfilingTitle", "Profiling-First Level Audit"), TAttribute<FText>::CreateLambda([Assistant = LevelProfilingAssistant]() { return Assistant->GetStateText(); }))]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(STextBlock)
+                                    .Text_Lambda([Assistant = LevelProfilingAssistant]() { return Assistant->GetSummaryText(); })
+                                    .AutoWrapText(true)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 14.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SButton)
+                                    .Visibility(this, &SRenderMasterWorkspace::GetLevelProfilingDismissVisibility)
+                                    .Text_Lambda([Assistant = LevelProfilingAssistant]()
+                                    {
+                                        return Assistant->IsBusy()
+                                            ? LOCTEXT("CancelLevelProfiling", "Cancel Profiling Audit")
+                                            : LOCTEXT("DismissLevelProfiling", "Dismiss Profiling Report");
+                                    })
+                                    .OnClicked(this, &SRenderMasterWorkspace::DismissLevelProfilingAction)
                                 ]
                             ]
                         ]
@@ -325,8 +474,35 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                     + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
                                     [
                                         SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetShadowOptimizationApplyVisibility)
+                                        .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                        .Text(LOCTEXT("ApproveShadowOptimization", "Approve & Apply Shadow Optimization"))
+                                        .ToolTipText(LOCTEXT("ApproveShadowOptimizationHelp", "Stop PIE/SIE first. Revalidate the exact formal Actor, Component, Mesh, and Before state, then apply only Cast Shadow true to false as one unsaved Undo transaction."))
+                                        .OnClicked(this, &SRenderMasterWorkspace::ApproveShadowOptimizationAction)
+                                    ]
+                                    + SHorizontalBox::Slot().FillWidth(1.0f)
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetShadowOptimizationRejectVisibility)
+                                        .Text(LOCTEXT("RejectShadowOptimization", "Reject Shadow Optimization"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::RejectShadowOptimizationAction)
+                                    ]
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SHorizontalBox)
+                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                    [
+                                        SNew(SButton)
                                         .Visibility(this, &SRenderMasterWorkspace::GetInsightsGpuBaselineOpenVisibility)
-                                        .Text(LOCTEXT("OpenActorGpuBaselineTrace", "Open Baseline Trace"))
+                                        .Text_Lambda([Assistant = InsightsGpuAssistant]()
+                                        {
+                                            return Assistant->IsShadowOptimizationStudy()
+                                                ? LOCTEXT("OpenShadowOptimizationControlTrace", "Open First Shadow-On Control Trace")
+                                                : Assistant->IsRepeatableActorImpactStudy()
+                                                ? LOCTEXT("OpenActorGpuStudyControlTrace", "Open First A/A Control Trace")
+                                                : LOCTEXT("OpenActorGpuBaselineTrace", "Open Baseline Trace");
+                                        })
                                         .OnClicked(this, &SRenderMasterWorkspace::OpenInsightsGpuBaselineTraceAction)
                                     ]
                                     + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
@@ -336,8 +512,12 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                         .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
                                         .Text_Lambda([Assistant = InsightsGpuAssistant]()
                                         {
-                                            return Assistant->IsActorImpactExperiment()
-                                                ? LOCTEXT("OpenActorGpuVariantTrace", "Open Actor-Hidden Trace")
+                                            return Assistant->IsShadowOptimizationStudy()
+                                                ? LOCTEXT("OpenShadowOptimizationCandidateTrace", "Open Final Shadow-Off Trace")
+                                                : Assistant->IsActorImpactExperiment()
+                                                ? Assistant->IsRepeatableActorImpactStudy()
+                                                    ? LOCTEXT("OpenActorGpuStudyFinalTrace", "Open Final Hidden Trace")
+                                                    : LOCTEXT("OpenActorGpuVariantTrace", "Open Actor-Hidden Trace")
                                                 : LOCTEXT("OpenInsightsGpuTrace", "Open Trace in Unreal Insights");
                                         })
                                         .OnClicked(this, &SRenderMasterWorkspace::OpenInsightsGpuTraceAction)
@@ -376,6 +556,45 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                     .Visibility(this, &SRenderMasterWorkspace::GetRuntimePerformanceDismissVisibility)
                                     .Text(LOCTEXT("DismissRuntimePerformance", "Dismiss Review"))
                                     .OnClicked(this, &SRenderMasterWorkspace::DismissRuntimePerformanceAction)
+                                ]
+                            ]
+                        ]
+
+                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
+                        [
+                            SNew(SBorder)
+                            .Visibility(this, &SRenderMasterWorkspace::GetLevelAuditVisibility)
+                            .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+                            .BorderBackgroundColor_Lambda([Assistant = LevelAuditAssistant]() { return Assistant->GetStateColor(); })
+                            .Padding(16.0f)
+                            [
+                                SNew(SVerticalBox)
+                                + SVerticalBox::Slot().AutoHeight()
+                                [WorkspaceSectionTitle(LOCTEXT("LevelAuditTitle", "Full Level Audit"), TAttribute<FText>::CreateLambda([Assistant = LevelAuditAssistant]() { return Assistant->GetStateText(); }))]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(STextBlock)
+                                    .Text_Lambda([Assistant = LevelAuditAssistant]() { return Assistant->GetSummaryText(); })
+                                    .AutoWrapText(true)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 14.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SHorizontalBox)
+                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 6.0f, 0.0f)
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetLevelAuditApplyVisibility)
+                                        .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                        .Text(LOCTEXT("ApproveLevelAudit", "Approve & Apply Audit Actions"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::ApproveLevelAuditAction)
+                                    ]
+                                    + SHorizontalBox::Slot().AutoWidth()
+                                    [
+                                        SNew(SButton)
+                                        .Visibility(this, &SRenderMasterWorkspace::GetLevelAuditRejectVisibility)
+                                        .Text(LOCTEXT("DismissLevelAudit", "Dismiss / Reject"))
+                                        .OnClicked(this, &SRenderMasterWorkspace::RejectLevelAuditAction)
+                                    ]
                                 ]
                             ]
                         ]
@@ -516,6 +735,44 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                 + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
                                 [
                                     SNew(SHorizontalBox)
+                                    + SHorizontalBox::Slot().FillWidth(1.0f).Padding(0.0f, 0.0f, 8.0f, 0.0f)
+                                    [
+                                        SNew(SButton)
+                                        .HAlign(HAlign_Center)
+                                        .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                        .Text(LOCTEXT("SendConversation", "Send to Assistant"))
+                                        .ToolTipText(LOCTEXT("SendConversationHelp", "Let the local planner answer, ask a clarifying question, or route one registered bounded capability from the current Unreal context."))
+                                        .IsEnabled(this, &SRenderMasterWorkspace::CanSendConversationMessage)
+                                        .OnClicked(this, &SRenderMasterWorkspace::SendConversationMessage)
+                                    ]
+                                    + SHorizontalBox::Slot().AutoWidth()
+                                    [
+                                        SNew(SButton)
+                                        .Text(LOCTEXT("ClearConversation", "New Conversation"))
+                                        .ToolTipText(LOCTEXT("ClearConversationHelp", "Clear the local in-memory message timeline. This does not modify the Unreal project or delete preserved workflow evidence."))
+                                        .IsEnabled_Lambda([Assistant = ConversationAssistant]() { return !Assistant->IsThinking(); })
+                                        .OnClicked(this, &SRenderMasterWorkspace::ClearConversation)
+                                    ]
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SExpandableArea)
+                                    .InitiallyCollapsed(true)
+                                    .AreaTitle(LOCTEXT("AdvancedDirectTools", "Advanced Direct Tools"))
+                                    .ToolTipText(LOCTEXT("AdvancedDirectToolsHelp", "Optional direct entry points for debugging or expert operation. Normal use starts with Send to Assistant."))
+                                    .BodyContent()
+                                    [
+                                        SNew(SVerticalBox)
+                                        + SVerticalBox::Slot().AutoHeight()
+                                        [
+                                            SNew(STextBlock)
+                                            .Text(LOCTEXT("AdvancedDirectToolsDescription", "Use these controls only when you want to bypass conversational routing and choose an exact capability yourself."))
+                                            .ColorAndOpacity(FSlateColor::UseSubduedForeground())
+                                            .AutoWrapText(true)
+                                        ]
+                                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
+                                        [
+                                    SNew(SHorizontalBox)
                                     + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.0f, 0.0f, 12.0f, 0.0f)
                                     [
                                         SNew(STextBlock)
@@ -533,7 +790,7 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                             .Text(this, &SRenderMasterWorkspace::GetTargetMaterialSlotText)
                                         ]
                                     ]
-                                ]
+                                        ]
                                 + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
                                 [
                                     SNew(SHorizontalBox)
@@ -606,6 +863,36 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                     SNew(SButton)
                                     .HAlign(HAlign_Center)
                                     .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                    .Text(LOCTEXT("RunLevelProfilingAudit", "Run Profiling-First Level Audit"))
+                                    .ToolTipText(LOCTEXT("RunLevelProfilingAuditHelp", "During one fixed PIE/SIE workload, run the read-only static funnel, a 30 plus 120 frame baseline, a five-second Unreal Insights GPU trace, and up to two repeatable eight-capture Actor studies. Temporary runtime visibility is restored. Images are not used to claim performance."))
+                                    .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
+                                    .OnClicked(this, &SRenderMasterWorkspace::PrepareLevelProfilingAction)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SButton)
+                                    .HAlign(HAlign_Center)
+                                    .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                    .Text(LOCTEXT("RunShadowOptimization", "Test Best Shadow Optimization"))
+                                    .ToolTipText(LOCTEXT("RunShadowOptimizationHelp", "After a Profiling-First Level Audit finds a stable Actor candidate, automatically test Cast Shadow on versus off with two A/A controls and three counterbalanced pairs. Runtime state is restored. Only a measured win can produce an approval-gated formal change."))
+                                    .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
+                                    .OnClicked(this, &SRenderMasterWorkspace::PrepareShadowOptimizationAction)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SButton)
+                                    .HAlign(HAlign_Center)
+                                    .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
+                                    .Text(LOCTEXT("RunFullLevelAudit", "Run Full Level Audit"))
+                                    .ToolTipText(LOCTEXT("RunFullLevelAuditHelp", "Inspect every eligible native StaticMeshActor in the current Editor level, compute deterministic static-risk priorities, and request a constrained local-model review. Optional Cast Shadow or Max Draw Distance actions remain approval-gated, stale-state checked, Undo-backed, and unsaved."))
+                                    .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
+                                    .OnClicked(this, &SRenderMasterWorkspace::PrepareLevelAuditAction)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 6.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SButton)
+                                    .HAlign(HAlign_Center)
+                                    .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
                                     .Text(LOCTEXT("PrepareLightingRig", "Prepare Lighting Rig"))
                                     .ToolTipText(LOCTEXT("PrepareLightingRigHelp", "Select one bounded subject Actor, one perspective Camera/Cine Camera, and exactly three Movable Point/Spot/Rect Lights that share one non-EV intensity unit."))
                                     .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
@@ -655,10 +942,12 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                     SNew(SButton)
                                     .HAlign(HAlign_Center)
                                     .ButtonStyle(FAppStyle::Get(), TEXT("PrimaryButton"))
-                                    .Text(LOCTEXT("MeasureActorGpuImpact", "Measure Selected Actor GPU Impact"))
-                                    .ToolTipText(LOCTEXT("MeasureActorGpuImpactHelp", "During PIE or SIE, capture an Actor-visible baseline, temporarily hide exactly one selected level Actor only in the runtime world, warm up, capture the hidden variant, restore the Actor, and compare matched GPU scopes. The formal level is never changed or saved."))
+                                    .Text(LOCTEXT("MeasureActorGpuImpact", "Run Repeatable Selected Actor GPU Study"))
+                                    .ToolTipText(LOCTEXT("MeasureActorGpuImpactHelp", "During PIE or SIE, run two visible A/A control captures and three counterbalanced visible/hidden pairs in AB, BA, AB order. Every capture has a fixed warmup; the runtime Actor is restored on completion, cancellation, or failure. The formal level is never changed or saved."))
                                     .IsEnabled_Lambda([this]() { return CanPrepareAssistantAction(); })
                                     .OnClicked(this, &SRenderMasterWorkspace::PrepareActorGpuImpactAction)
+                                ]
+                                    ]
                                 ]
                             ]
                         ]
@@ -900,7 +1189,7 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                 + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
                                 [
                                     SNew(STextBlock)
-                                    .Text(LOCTEXT("CapabilityList", "CONNECTED\n✓ Live project and actor-selection context\n✓ Explicit material-slot targeting\n✓ Catalog-backed project material recommendation\n✓ CC0 Poly Haven search and verified local cache\n✓ Hash-bound approval for 5-asset PBR import\n✓ Automatic catalog and Chroma synchronization\n✓ Approval-gated material override with Ctrl+Z Undo\n✓ Approval-gated 1–32 Actor world/local Transform with grouped Ctrl+Z Undo\n✓ Approval-gated 1–16 Light compatible group properties with grouped Ctrl+Z Undo\n✓ Subject- and camera-aware Key/Fill/Rim rig with grouped Ctrl+Z Undo\n✓ Camera-view visual rig review with approval-gated intensity correction\n✓ Camera and Cine Camera Transform, lens, focus, and exposure compensation with Ctrl+Z Undo\n✓ Coordinated 2–16 Camera editing with grouped Ctrl+Z Undo\n✓ Evidence-backed StaticMeshActor performance review\n✓ Approval-gated shadow and cull-distance changes with grouped Ctrl+Z Undo\n✓ Recomputable PIE/SIE frame, thread, GPU, process-memory, and RHI texture-memory review\n✓ Unreal Insights GPU queue and scope trace review\n✓ Selected-Actor runtime-hidden A/B GPU impact experiment with automatic restoration\n✓ Schema-gated scene planning\n✓ Transient Unreal preview\n✓ Visual evaluation and bounded correction\n\nNOT CONNECTED YET\n○ Geometry-aware arrangement beyond the bounded three-point rig\n○ Direct per-draw/per-material/per-shader GPU attribution\n○ Packaged-build benchmark comparison\n○ Asset-level Nanite, LOD, mesh, material, or collision optimization"))
+                                    .Text(LOCTEXT("CapabilityList", "CONNECTED\n✓ Live project and actor-selection context\n✓ Explicit material-slot targeting\n✓ Catalog-backed project material recommendation\n✓ CC0 Poly Haven search and verified local cache\n✓ Hash-bound approval for 5-asset PBR import\n✓ Automatic catalog and Chroma synchronization\n✓ Approval-gated material override with Ctrl+Z Undo\n✓ Approval-gated 1–32 Actor world/local Transform with grouped Ctrl+Z Undo\n✓ Approval-gated 1–16 Light compatible group properties with grouped Ctrl+Z Undo\n✓ Subject- and camera-aware Key/Fill/Rim rig with grouped Ctrl+Z Undo\n✓ Camera-view visual rig review with approval-gated intensity correction\n✓ Camera and Cine Camera Transform, lens, focus, and exposure compensation with Ctrl+Z Undo\n✓ Coordinated 2–16 Camera editing with grouped Ctrl+Z Undo\n✓ Evidence-backed StaticMeshActor performance review\n✓ Approval-gated shadow and cull-distance changes with grouped Ctrl+Z Undo\n✓ Recomputable PIE/SIE frame, thread, GPU, process-memory, and RHI texture-memory review\n✓ Unreal Insights GPU queue and scope trace review\n✓ Repeatable selected-Actor AA + AB/BA/AB GPU study with automatic restoration\n✓ Profiling-first whole-level orchestration under one fixed PIE/SIE workload\n✓ Profiling-gated Cast Shadow A/B optimization with runtime restoration and approval-backed Undo\n✓ Post-apply whole-level verification with fixed retain/rollback guards\n✓ Schema-gated scene planning\n✓ Transient Unreal preview\n✓ Visual evaluation and bounded correction\n\nNOT CONNECTED YET\n○ Geometry-aware arrangement beyond the bounded three-point rig\n○ Direct per-draw/per-material/per-shader GPU attribution\n○ Packaged-build benchmark comparison\n○ Asset-level Nanite, LOD, mesh, material, or collision optimization"))
                                     .AutoWrapText(true)
                                     .ColorAndOpacity(FSlateColor::UseSubduedForeground())
                                 ]
@@ -1018,6 +1307,304 @@ TSharedRef<SWidget> SRenderMasterWorkspace::MakeMessage(
                 .AutoWrapText(true)
             ]
         ];
+}
+
+FReply SRenderMasterWorkspace::SendConversationMessage()
+{
+    if (!CanSendConversationMessage()) return FReply::Handled();
+    const FString Request =
+        AssistantPromptBox->GetText().ToString().TrimStartAndEnd();
+    FRenderMasterConversationContext Context;
+    FString Error;
+    if (!CaptureConversationContext(Context, Error))
+    {
+        AssistantReply = Error;
+        AddConversationMessage(TEXT("assistant"), Error);
+        return FReply::Handled();
+    }
+
+    const TArray<FRenderMasterConversationMessage> PriorHistory =
+        ConversationMessages;
+    LastRequest = Request;
+    LastAssistantAction = ELastAssistantAction::None;
+    AddConversationMessage(TEXT("user"), Request);
+    AssistantPromptBox->SetText(FText::GetEmpty());
+    AssistantReply = TEXT(
+        "I am reading the current Editor context and recent conversation, then deciding whether to answer, clarify, or route one bounded capability.");
+    if (!ConversationAssistant->StartTurn(
+            Request,
+            Context,
+            PriorHistory))
+    {
+        AssistantReply = ConversationAssistant->GetStateText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::ClearConversation()
+{
+    if (ConversationAssistant->IsThinking()) return FReply::Handled();
+    ConversationAssistant->ResetConversation();
+    ConversationMessages.Reset();
+    NextConversationMessageNumber = 1;
+    LastRequest.Reset();
+    LastAssistantAction = ELastAssistantAction::None;
+    AssistantReply = TEXT("A new local conversation is ready.");
+    if (AssistantPromptBox.IsValid())
+        AssistantPromptBox->SetText(FText::GetEmpty());
+    AddConversationMessage(
+        TEXT("assistant"),
+        TEXT("This is a new conversation. Ask about the current Unreal context, request an analysis, or describe a change you want to make."));
+    return FReply::Handled();
+}
+
+void SRenderMasterWorkspace::HandleConversationTurnCompleted(
+    const FRenderMasterConversationTurn& Turn)
+{
+    AssistantReply = Turn.AssistantMessage;
+    AddConversationMessage(TEXT("assistant"), Turn.AssistantMessage);
+    if (Turn.Outcome == TEXT("route"))
+    {
+        DispatchConversationIntent(Turn.Intent, Turn.ActionPrompt);
+    }
+}
+
+void SRenderMasterWorkspace::HandleConversationTurnFailed(const FString& Error)
+{
+    AssistantReply = Error;
+    AddConversationMessage(TEXT("assistant"), FString::Printf(
+        TEXT("I could not complete that local conversation turn: %s"),
+        *Error));
+}
+
+void SRenderMasterWorkspace::DispatchConversationIntent(
+    const FString& Intent,
+    const FString& ActionPrompt)
+{
+    if (!AssistantPromptBox.IsValid()) return;
+    AssistantPromptBox->SetText(FText::FromString(ActionPrompt));
+
+    if (Intent == TEXT("material_project")) PrepareAction();
+    else if (Intent == TEXT("material_external")) PrepareExternalAction();
+    else if (Intent == TEXT("transform")) PrepareTransformAction();
+    else if (Intent == TEXT("light")) PrepareLightAction();
+    else if (Intent == TEXT("lighting_rig")) PrepareLightingRigAction();
+    else if (Intent == TEXT("lighting_rig_review")) ReviewAppliedLightingRigAction();
+    else if (Intent == TEXT("camera")) PrepareCameraAction();
+    else if (Intent == TEXT("performance_selection")) PreparePerformanceAction();
+    else if (Intent == TEXT("level_audit")) PrepareLevelAuditAction();
+    else if (Intent == TEXT("runtime_performance"))
+        PrepareRuntimePerformanceAction();
+    else if (Intent == TEXT("gpu_scope")) PrepareInsightsGpuAction();
+    else if (Intent == TEXT("actor_gpu_impact")) PrepareActorGpuImpactAction();
+    else if (Intent == TEXT("level_profiling")) PrepareLevelProfilingAction();
+    else if (Intent == TEXT("shadow_optimization"))
+        PrepareShadowOptimizationAction();
+    else if (Intent == TEXT("shadow_verification"))
+        PrepareShadowVerificationAction();
+    else if (Intent == TEXT("render_evaluate"))
+    {
+        LastAssistantAction = ELastAssistantAction::None;
+        if (Controller->Start(ActionPrompt, 2))
+        {
+            AssistantReply = TEXT(
+                "The transient Render & Evaluate workflow is running. No formal level content is modified by this preview workflow.");
+        }
+        else
+        {
+            AssistantReply = Controller->GetDetailText().ToString();
+        }
+    }
+    else
+    {
+        AssistantReply = FString::Printf(
+            TEXT("The conversation router returned an unconnected intent: %s"),
+            *Intent);
+    }
+    AssistantPromptBox->SetText(FText::GetEmpty());
+}
+
+bool SRenderMasterWorkspace::CaptureConversationContext(
+    FRenderMasterConversationContext& OutContext,
+    FString& OutError) const
+{
+    if (GEditor == nullptr || GEditor->GetSelectedActors() == nullptr)
+    {
+        OutError = TEXT("The Unreal Editor context service is unavailable.");
+        return false;
+    }
+    UWorld* World = GEditor->GetEditorWorldContext().World();
+    if (World == nullptr || World->GetPackage() == nullptr)
+    {
+        OutError = TEXT("Open an editable Unreal level before starting a conversation.");
+        return false;
+    }
+
+    OutContext = FRenderMasterConversationContext();
+    OutContext.ProjectName = FApp::GetProjectName();
+    OutContext.LevelPath = World->GetPackage()->GetName();
+    if (GEditor->PlayWorld != nullptr)
+    {
+        OutContext.PlayMode = GEditor->bIsSimulatingInEditor
+            ? TEXT("sie")
+            : TEXT("pie");
+    }
+
+    int32 SelectionCount = 0;
+    for (FSelectionIterator Iterator(*GEditor->GetSelectedActors());
+         Iterator;
+         ++Iterator)
+    {
+        AActor* Actor = Cast<AActor>(*Iterator);
+        if (Actor == nullptr) continue;
+        ++SelectionCount;
+        if (OutContext.Selection.Num() >= 32) continue;
+
+        FRenderMasterConversationSelectionItem Item;
+        Item.ActorName = Actor->GetActorLabel();
+        Item.ActorPath = Actor->GetPathName();
+        Item.ActorClass = Actor->GetClass()->GetName();
+        if (Actor->IsA<ALight>()) Item.ActorKind = TEXT("light");
+        else if (Actor->IsA<ACameraActor>()) Item.ActorKind = TEXT("camera");
+        else if (Actor->FindComponentByClass<UStaticMeshComponent>() != nullptr)
+            Item.ActorKind = TEXT("static_mesh");
+        else Item.ActorKind = TEXT("other");
+        OutContext.Selection.Add(MoveTemp(Item));
+    }
+    OutContext.bSelectionTruncated = SelectionCount > 32;
+    OutContext.bLightingRigReviewReady =
+        LightingRigReviewAssistant.IsValid()
+        && LightingRigReviewAssistant->CanStart();
+    if (LevelProfilingAssistant.IsValid())
+    {
+        const ERenderMasterLevelProfilingState ProfileState =
+            LevelProfilingAssistant->GetState();
+        OutContext.bShadowOptimizationReady =
+            ProfileState == ERenderMasterLevelProfilingState::Complete
+            || ProfileState == ERenderMasterLevelProfilingState::Partial;
+    }
+    OutContext.bShadowVerificationReady =
+        ShadowVerificationAssistant.IsValid()
+        && ShadowVerificationAssistant->CanStartVerification();
+    if (MaterialAssistant->GetState()
+        == ERenderMasterMaterialAssistantState::Proposed)
+        OutContext.PendingActionIntent = TEXT("material_project");
+    else if (TransformAssistant->GetState()
+        == ERenderMasterTransformAssistantState::Proposed)
+        OutContext.PendingActionIntent = TEXT("transform");
+    else if (LightAssistant->GetState()
+        == ERenderMasterLightAssistantState::Proposed)
+        OutContext.PendingActionIntent = TEXT("light");
+    else if (LightingRigAssistant->GetState()
+        == ERenderMasterLightingRigAssistantState::Proposed)
+        OutContext.PendingActionIntent = TEXT("lighting_rig");
+    else if (LightingRigReviewAssistant->GetState()
+        == ERenderMasterLightingRigReviewState::Proposed)
+        OutContext.PendingActionIntent = TEXT("lighting_rig_review");
+    else if (CameraAssistant->GetState()
+        == ERenderMasterCameraAssistantState::Proposed)
+        OutContext.PendingActionIntent = TEXT("camera");
+    else if (CameraBatchAssistant->GetState()
+        == ERenderMasterCameraBatchAssistantState::Proposed)
+        OutContext.PendingActionIntent = TEXT("camera");
+    else if (PerformanceAssistant->GetState()
+        == ERenderMasterPerformanceAssistantState::Proposed)
+        OutContext.PendingActionIntent = TEXT("performance_selection");
+    else if (LevelAuditAssistant->GetState()
+        == ERenderMasterLevelAuditState::Proposed)
+        OutContext.PendingActionIntent = TEXT("level_audit");
+    else if (InsightsGpuAssistant->CanApplyShadowOptimization())
+        OutContext.PendingActionIntent = TEXT("shadow_optimization");
+    else if (ShadowVerificationAssistant->GetState()
+            == ERenderMasterShadowVerificationState::RetainRecommended
+        || ShadowVerificationAssistant->GetState()
+            == ERenderMasterShadowVerificationState::RollbackRecommended)
+        OutContext.PendingActionIntent = TEXT("shadow_verification");
+    return true;
+}
+
+void SRenderMasterWorkspace::AddConversationMessage(
+    const FString& Role,
+    const FString& Content)
+{
+    const FString CleanContent = Content.TrimStartAndEnd();
+    if (CleanContent.IsEmpty()) return;
+    FRenderMasterConversationMessage Message;
+    Message.MessageId = FString::Printf(
+        TEXT("message_%06d"),
+        NextConversationMessageNumber++);
+    Message.Role = Role;
+    Message.Content = CleanContent.Left(8000);
+    ConversationMessages.Add(MoveTemp(Message));
+    if (ConversationMessages.Num() > 100)
+        ConversationMessages.RemoveAt(0, ConversationMessages.Num() - 100);
+    RefreshConversationMessages();
+}
+
+void SRenderMasterWorkspace::RefreshConversationMessages()
+{
+    if (!ConversationMessagesBox.IsValid()) return;
+    ConversationMessagesBox->ClearChildren();
+    for (const FRenderMasterConversationMessage& Message : ConversationMessages)
+    {
+        const bool bUser = Message.Role == TEXT("user");
+        ConversationMessagesBox->AddSlot()
+        .AutoHeight()
+        .Padding(0.0f, 0.0f, 0.0f, 8.0f)
+        [
+            MakeMessage(
+                bUser ? LOCTEXT("ConversationUser", "YOU")
+                      : LOCTEXT("ConversationAssistant", "ASSISTANT"),
+                FText::FromString(Message.Content),
+                bUser ? FLinearColor(0.55f, 0.42f, 0.92f)
+                      : FLinearColor(0.16f, 0.58f, 0.95f))
+        ];
+    }
+    if (ConversationScrollBox.IsValid())
+        ConversationScrollBox->ScrollToEnd();
+}
+
+bool SRenderMasterWorkspace::CanSendConversationMessage() const
+{
+    if (!ConversationAssistant.IsValid()
+        || !ConversationAssistant->CanStart()
+        || !AssistantPromptBox.IsValid()
+        || AssistantPromptBox->GetText().ToString().TrimStartAndEnd().IsEmpty()
+        || !Controller.IsValid()
+        || Controller->IsRunning())
+    {
+        return false;
+    }
+    const bool bSpecializedToolBusy =
+        MaterialAssistant->GetState()
+            == ERenderMasterMaterialAssistantState::Searching
+        || MaterialAssistant->GetState()
+            == ERenderMasterMaterialAssistantState::Importing
+        || TransformAssistant->GetState()
+            == ERenderMasterTransformAssistantState::Planning
+        || LightAssistant->GetState()
+            == ERenderMasterLightAssistantState::Planning
+        || LightingRigAssistant->GetState()
+            == ERenderMasterLightingRigAssistantState::Planning
+        || LightingRigReviewAssistant->GetState()
+            == ERenderMasterLightingRigReviewState::Capturing
+        || LightingRigReviewAssistant->GetState()
+            == ERenderMasterLightingRigReviewState::Evaluating
+        || CameraAssistant->GetState()
+            == ERenderMasterCameraAssistantState::Planning
+        || CameraBatchAssistant->GetState()
+            == ERenderMasterCameraBatchAssistantState::Planning
+        || PerformanceAssistant->GetState()
+            == ERenderMasterPerformanceAssistantState::Planning
+        || LevelAuditAssistant->IsBusy()
+        || RuntimePerformanceAssistant->IsBusy()
+        || InsightsGpuAssistant->IsBusy()
+        || LevelProfilingAssistant->IsBusy()
+        || ShadowVerificationAssistant->GetState()
+            == ERenderMasterShadowVerificationState::Profiling
+        || ShadowVerificationAssistant->GetState()
+            == ERenderMasterShadowVerificationState::Analyzing;
+    return !bSpecializedToolBusy;
 }
 
 FReply SRenderMasterWorkspace::AnalyzeContext()
@@ -1409,6 +1996,48 @@ FReply SRenderMasterWorkspace::RejectCameraBatchAction()
     return FReply::Handled();
 }
 
+FReply SRenderMasterWorkspace::PrepareLevelAuditAction()
+{
+    const FString Prompt = AssistantPromptBox.IsValid()
+        ? AssistantPromptBox->GetText().ToString().TrimStartAndEnd()
+        : FString();
+    LastRequest = Prompt.IsEmpty()
+        ? TEXT("Audit this complete level and prioritize evidence-backed optimization work.")
+        : Prompt;
+    LastAssistantAction = ELastAssistantAction::LevelAudit;
+    if (LevelAuditAssistant->StartAudit(Prompt))
+    {
+        AssistantReply = TEXT("I am capturing every eligible native StaticMeshActor in the current level, computing deterministic static priorities, and preparing a constrained review. Static scores are not runtime measurements. No scene change has been applied.");
+    }
+    else
+    {
+        AssistantReply = LevelAuditAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::ApproveLevelAuditAction()
+{
+    LastAssistantAction = ELastAssistantAction::LevelAudit;
+    if (LevelAuditAssistant->ApplyActions())
+    {
+        AssistantReply = TEXT("The approved full-level audit actions were revalidated and applied as one grouped Editor transaction. The level was not saved automatically. Use Ctrl+Z once to undo the complete batch.");
+    }
+    else
+    {
+        AssistantReply = LevelAuditAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::RejectLevelAuditAction()
+{
+    LastAssistantAction = ELastAssistantAction::LevelAudit;
+    LevelAuditAssistant->Reject();
+    AssistantReply = TEXT("The full-level audit or its proposed settings were dismissed. No Editor scene change was applied.");
+    return FReply::Handled();
+}
+
 FReply SRenderMasterWorkspace::PreparePerformanceAction()
 {
     const FString Prompt = AssistantPromptBox->GetText().ToString().TrimStartAndEnd();
@@ -1529,14 +2158,213 @@ FReply SRenderMasterWorkspace::PrepareActorGpuImpactAction()
     }
     LastRequest = Prompt;
     LastAssistantAction = ELastAssistantAction::InsightsGpu;
-    if (InsightsGpuAssistant->StartActorImpactReview(Prompt, SelectedActor))
+    if (InsightsGpuAssistant->StartActorImpactStudy(Prompt, SelectedActor))
     {
-        AssistantReply = TEXT("I am capturing an Actor-visible baseline, then I will temporarily hide only the selected Actor in PIE/SIE, warm the renderer, capture the hidden variant, and restore the Actor before analysis. Keep the camera and workload unchanged. The formal level is never edited or saved.");
+        AssistantReply = TEXT("I am running two visible A/A controls followed by three counterbalanced AB/BA/AB visible-hidden pairs. Each of the eight traces has a fixed warmup. Keep the camera and workload unchanged for about one minute; the runtime Actor will be restored before review and on any failure. The formal level is never edited or saved.");
     }
     else
     {
         AssistantReply = InsightsGpuAssistant->GetSummaryText().ToString();
     }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::PrepareShadowOptimizationAction()
+{
+    LastAssistantAction = ELastAssistantAction::ShadowOptimization;
+    if (!LevelProfilingAssistant.IsValid() || !LevelAuditAssistant.IsValid())
+    {
+        AssistantReply = TEXT("The profiling evidence services are unavailable. Nothing has changed.");
+        return FReply::Handled();
+    }
+    const ERenderMasterLevelProfilingState ProfileState =
+        LevelProfilingAssistant->GetState();
+    if (ProfileState != ERenderMasterLevelProfilingState::Complete
+        && ProfileState != ERenderMasterLevelProfilingState::Partial)
+    {
+        AssistantReply = TEXT("Run Profiling-First Level Audit first. Shadow optimization requires a measured stable Actor candidate from the current level and workload.");
+        return FReply::Handled();
+    }
+    AStaticMeshActor* Candidate = nullptr;
+    FString CandidateName;
+    for (const FRenderMasterLevelProfilingActorFinding& Finding
+        : LevelProfilingAssistant->GetReport().ActorFindings)
+    {
+        if (Finding.Outcome != TEXT("stable_candidate")) continue;
+        AStaticMeshActor* Actor = LevelAuditAssistant->FindCapturedActorByPath(
+            Finding.ActorPath);
+        UStaticMeshComponent* Component = IsValid(Actor)
+            ? Actor->GetStaticMeshComponent()
+            : nullptr;
+        if (IsValid(Component) && Component->CastShadow)
+        {
+            Candidate = Actor;
+            CandidateName = Finding.ActorName;
+            break;
+        }
+    }
+    if (!IsValid(Candidate))
+    {
+        AssistantReply = TEXT("The latest profiling report has no stable candidate whose formal Static Mesh Component still has Cast Shadow enabled. No experiment was started.");
+        return FReply::Handled();
+    }
+    const FString Prompt = AssistantPromptBox.IsValid()
+        ? AssistantPromptBox->GetText().ToString().TrimStartAndEnd()
+        : FString();
+    LastRequest = Prompt.IsEmpty()
+        ? FString::Printf(
+            TEXT("Test whether disabling Cast Shadow for %s produces a repeatable GPU improvement."),
+            *CandidateName)
+        : Prompt;
+    if (InsightsGpuAssistant->StartActorShadowOptimizationStudy(
+            LastRequest, Candidate))
+    {
+        AssistantReply = FString::Printf(
+            TEXT("I selected %s from the latest stable profiling candidates. I am running two Cast-Shadow-on A/A controls and three counterbalanced on/off pairs. Each of the eight GPU traces has a fixed warmup. Keep the PIE/SIE camera and workload unchanged; runtime Cast Shadow will be restored before any decision."),
+            *CandidateName);
+    }
+    else
+    {
+        AssistantReply = InsightsGpuAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::ApproveShadowOptimizationAction()
+{
+    LastAssistantAction = ELastAssistantAction::ShadowOptimization;
+    if (InsightsGpuAssistant->ApplyShadowOptimizationProposal())
+    {
+        const FRenderMasterShadowOptimizationReport& ShadowReport =
+            InsightsGpuAssistant->GetShadowOptimizationReport();
+        AStaticMeshActor* Actor = LevelAuditAssistant.IsValid()
+            ? LevelAuditAssistant->FindCapturedActorByPath(
+                ShadowReport.ProposedAction.Target.ActorPath)
+            : nullptr;
+        UStaticMeshComponent* Component = IsValid(Actor)
+            ? Actor->GetStaticMeshComponent()
+            : nullptr;
+        const bool bVerificationArmed =
+            ShadowVerificationAssistant.IsValid()
+            && LevelProfilingAssistant.IsValid()
+            && ShadowVerificationAssistant->ArmAfterApply(
+                Actor,
+                Component,
+                ShadowReport.ProposedAction,
+                LevelProfilingAssistant->GetReportOutputPath(),
+                LevelProfilingAssistant->GetReport(),
+                InsightsGpuAssistant->GetReportOutputPath(),
+                ShadowReport);
+        AssistantReply = bVerificationArmed
+            ? TEXT("The measured Cast Shadow change was applied to the exact formal Actor as one unsaved Unreal Undo transaction. Before evidence is frozen. Restart the same representative PIE/SIE workload, then use Run Post-Apply Verification.")
+            : TEXT("The measured Cast Shadow change was applied and remains unsaved, but post-apply verification could not be armed safely. Use Ctrl+Z to restore the original shadow setting, then rerun the complete profiling and optimization chain.");
+    }
+    else
+    {
+        AssistantReply = InsightsGpuAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::PrepareShadowVerificationAction()
+{
+    LastAssistantAction = ELastAssistantAction::ShadowVerification;
+    const FString Prompt = AssistantPromptBox.IsValid()
+        ? AssistantPromptBox->GetText().ToString().TrimStartAndEnd()
+        : FString();
+    LastRequest = Prompt.IsEmpty()
+        ? TEXT("Repeat the complete fixed profiling workload after the approved Cast Shadow optimization.")
+        : Prompt;
+    if (ShadowVerificationAssistant->StartVerification(Prompt))
+    {
+        AssistantReply = TEXT(
+            "I started fresh whole-level post-apply verification. Keep the PIE/SIE camera, viewport, resolution, content state, and workload unchanged while the complete profiling chain repeats. No additional formal setting will be edited or saved.");
+    }
+    else
+    {
+        AssistantReply = ShadowVerificationAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::KeepShadowOptimizationAction()
+{
+    LastAssistantAction = ELastAssistantAction::ShadowVerification;
+    if (ShadowVerificationAssistant->KeepAppliedOptimization())
+    {
+        AssistantReply = ShadowVerificationAssistant->GetSummaryText().ToString();
+    }
+    else
+    {
+        AssistantReply = TEXT(
+            "The current formal target no longer matches the verified applied state. The keep decision was not recorded.");
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::RollbackShadowOptimizationAction()
+{
+    LastAssistantAction = ELastAssistantAction::ShadowVerification;
+    if (ShadowVerificationAssistant->RollbackAppliedOptimization())
+    {
+        AssistantReply = TEXT(
+            "The exact Cast Shadow setting was restored as one new Unreal transaction. The level was not saved. One Ctrl+Z reapplies the optimized false state.");
+    }
+    else
+    {
+        AssistantReply = ShadowVerificationAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::DismissShadowVerificationAction()
+{
+    LastAssistantAction = ELastAssistantAction::ShadowVerification;
+    const bool bWasBusy = ShadowVerificationAssistant->IsBusy();
+    ShadowVerificationAssistant->Dismiss();
+    AssistantReply = bWasBusy
+        ? TEXT("Post-apply verification was cancelled. Temporary runtime state was restored; the unsaved formal shadow change remains until you keep it, roll it back, or undo it manually.")
+        : TEXT("Post-apply verification was dismissed. Evidence artifacts remain local and the level was not saved.");
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::RejectShadowOptimizationAction()
+{
+    LastAssistantAction = ELastAssistantAction::ShadowOptimization;
+    InsightsGpuAssistant->RejectShadowOptimizationProposal();
+    AssistantReply = TEXT("The measured shadow proposal was rejected. Runtime state was already restored and no formal level property was changed.");
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::PrepareLevelProfilingAction()
+{
+    const FString Prompt = AssistantPromptBox.IsValid()
+        ? AssistantPromptBox->GetText().ToString().TrimStartAndEnd()
+        : FString();
+    LastRequest = Prompt.IsEmpty()
+        ? TEXT("Profile this complete level and identify measured rendering bottlenecks.")
+        : Prompt;
+    LastAssistantAction = ELastAssistantAction::LevelProfiling;
+    if (LevelProfilingAssistant->Start(Prompt))
+    {
+        AssistantReply = TEXT(
+            "I started one profiling-first audit against the active fixed PIE/SIE workload. I will run the static funnel, 120-frame baseline, five-second GPU trace, and up to two repeatable Actor studies. Keep the camera, resolution, and workload stable. No production level property will be changed or saved.");
+    }
+    else
+    {
+        AssistantReply = LevelProfilingAssistant->GetSummaryText().ToString();
+    }
+    return FReply::Handled();
+}
+
+FReply SRenderMasterWorkspace::DismissLevelProfilingAction()
+{
+    LastAssistantAction = ELastAssistantAction::LevelProfiling;
+    const bool bWasBusy = LevelProfilingAssistant->IsBusy();
+    LevelProfilingAssistant->Cancel();
+    AssistantReply = bWasBusy
+        ? TEXT("The profiling audit was cancelled. Temporary runtime state was restored, and no production level content was saved.")
+        : TEXT("The profiling report was dismissed. Its local evidence artifacts remain in the workflow folder.");
     return FReply::Handled();
 }
 
@@ -1546,7 +2374,11 @@ FReply SRenderMasterWorkspace::OpenInsightsGpuTraceAction()
     FString Error;
     if (InsightsGpuAssistant->OpenTraceInInsights(Error))
     {
-        AssistantReply = TEXT("The preserved trace is opening in Unreal Insights. Use its GPU tracks to inspect the same raw timeline behind the Assistant review.");
+        AssistantReply = InsightsGpuAssistant->IsShadowOptimizationStudy()
+            ? TEXT("The final Cast-Shadow-off trace is opening in Unreal Insights. All eight authoritative traces remain in the same workflow folder.")
+            : InsightsGpuAssistant->IsRepeatableActorImpactStudy()
+            ? TEXT("The final Actor-hidden study trace is opening in Unreal Insights. All eight authoritative traces remain in the same workflow folder.")
+            : TEXT("The preserved trace is opening in Unreal Insights. Use its GPU tracks to inspect the same raw timeline behind the Assistant review.");
     }
     else
     {
@@ -1561,7 +2393,11 @@ FReply SRenderMasterWorkspace::OpenInsightsGpuBaselineTraceAction()
     FString Error;
     if (InsightsGpuAssistant->OpenBaselineTraceInInsights(Error))
     {
-        AssistantReply = TEXT("The Actor-visible baseline is opening in Unreal Insights. Compare it with the preserved Actor-hidden trace; the Assistant report uses only scopes present in both Top-64 sets.");
+        AssistantReply = InsightsGpuAssistant->IsShadowOptimizationStudy()
+            ? TEXT("The first Cast-Shadow-on A/A control trace is opening in Unreal Insights. The decision uses only scopes present in all eight Top-64 sets.")
+            : InsightsGpuAssistant->IsRepeatableActorImpactStudy()
+            ? TEXT("The first Actor-visible A/A control trace is opening in Unreal Insights. The study aggregates only scopes present in all eight Top-64 sets.")
+            : TEXT("The Actor-visible baseline is opening in Unreal Insights. Compare it with the preserved Actor-hidden trace; the Assistant report uses only scopes present in both Top-64 sets.");
     }
     else
     {
@@ -1572,9 +2408,13 @@ FReply SRenderMasterWorkspace::OpenInsightsGpuBaselineTraceAction()
 
 FReply SRenderMasterWorkspace::DismissInsightsGpuAction()
 {
-    LastAssistantAction = ELastAssistantAction::InsightsGpu;
+    LastAssistantAction = InsightsGpuAssistant->IsShadowOptimizationStudy()
+        ? ELastAssistantAction::ShadowOptimization
+        : ELastAssistantAction::InsightsGpu;
     InsightsGpuAssistant->Dismiss();
-    AssistantReply = TEXT("The GPU scope review was dismissed. No Editor scene change was applied, and the .utrace artifact remains in the workflow folder.");
+    AssistantReply = InsightsGpuAssistant->IsShadowOptimizationStudy()
+        ? TEXT("The shadow optimization experiment was dismissed. Runtime state is restored, no formal change was applied, and completed traces remain in the workflow folder.")
+        : TEXT("The GPU scope review was dismissed. No Editor scene change was applied, and the .utrace artifact remains in the workflow folder.");
     return FReply::Handled();
 }
 
@@ -1587,6 +2427,7 @@ void SRenderMasterWorkspace::SetPage(int32 PageIndex)
 bool SRenderMasterWorkspace::CanPrepareAssistantAction() const
 {
     if (!Controller.IsValid()
+        || !ConversationAssistant.IsValid()
         || !MaterialAssistant.IsValid()
         || !TransformAssistant.IsValid()
         || !LightAssistant.IsValid()
@@ -1595,8 +2436,11 @@ bool SRenderMasterWorkspace::CanPrepareAssistantAction() const
         || !CameraAssistant.IsValid()
         || !CameraBatchAssistant.IsValid()
         || !PerformanceAssistant.IsValid()
+        || !LevelAuditAssistant.IsValid()
         || !RuntimePerformanceAssistant.IsValid()
-        || !InsightsGpuAssistant.IsValid())
+        || !InsightsGpuAssistant.IsValid()
+        || !LevelProfilingAssistant.IsValid()
+        || !ShadowVerificationAssistant.IsValid())
     {
         return false;
     }
@@ -1611,8 +2455,18 @@ bool SRenderMasterWorkspace::CanPrepareAssistantAction() const
         CameraBatchAssistant->GetState();
     const ERenderMasterPerformanceAssistantState PerformanceState =
         PerformanceAssistant->GetState();
+    const bool bLevelAuditPending = LevelAuditAssistant->IsBusy()
+        || LevelAuditAssistant->GetState() == ERenderMasterLevelAuditState::Proposed;
     const bool bRuntimePerformancePending = RuntimePerformanceAssistant->IsBusy();
     const bool bInsightsGpuPending = InsightsGpuAssistant->IsBusy();
+    const bool bLevelProfilingPending = LevelProfilingAssistant->IsBusy();
+    const ERenderMasterShadowVerificationState ShadowVerificationState =
+        ShadowVerificationAssistant->GetState();
+    const bool bShadowVerificationPending =
+        ShadowVerificationState != ERenderMasterShadowVerificationState::Ready
+        && ShadowVerificationState != ERenderMasterShadowVerificationState::Dismissed
+        && ShadowVerificationState != ERenderMasterShadowVerificationState::Retained
+        && ShadowVerificationState != ERenderMasterShadowVerificationState::RolledBack;
     const bool bMaterialPending = MaterialState == ERenderMasterMaterialAssistantState::Searching
         || MaterialState == ERenderMasterMaterialAssistantState::Importing
         || MaterialState == ERenderMasterMaterialAssistantState::Proposed;
@@ -1635,6 +2489,7 @@ bool SRenderMasterWorkspace::CanPrepareAssistantAction() const
         PerformanceState == ERenderMasterPerformanceAssistantState::Planning
         || PerformanceState == ERenderMasterPerformanceAssistantState::Proposed;
     return Controller->CanStart()
+        && ConversationAssistant->CanStart()
         && MaterialAssistant->CanStart()
         && TransformAssistant->CanStart()
         && LightAssistant->CanStart()
@@ -1642,8 +2497,10 @@ bool SRenderMasterWorkspace::CanPrepareAssistantAction() const
         && CameraAssistant->CanStart()
         && CameraBatchAssistant->CanStart()
         && PerformanceAssistant->CanStart()
+        && LevelAuditAssistant->CanStart()
         && RuntimePerformanceAssistant->CanStart()
         && InsightsGpuAssistant->CanStart()
+        && LevelProfilingAssistant->CanStart()
         && !bMaterialPending
         && !bTransformPending
         && !bLightPending
@@ -1652,8 +2509,11 @@ bool SRenderMasterWorkspace::CanPrepareAssistantAction() const
         && !bCameraPending
         && !bCameraBatchPending
         && !bPerformancePending
+        && !bLevelAuditPending
         && !bRuntimePerformancePending
-        && !bInsightsGpuPending;
+        && !bInsightsGpuPending
+        && !bLevelProfilingPending
+        && !bShadowVerificationPending;
 }
 
 FText SRenderMasterWorkspace::GetProjectContext() const
@@ -1699,7 +2559,35 @@ FText SRenderMasterWorkspace::GetSelectionContext() const
 
 FText SRenderMasterWorkspace::GetAssistantReply() const
 {
-    if (LastAssistantAction == ELastAssistantAction::InsightsGpu
+    if (ConversationAssistant.IsValid() && ConversationAssistant->IsThinking())
+        return ConversationAssistant->GetStateText();
+    if (LastAssistantAction == ELastAssistantAction::ShadowVerification
+        && ShadowVerificationAssistant.IsValid())
+    {
+        const ERenderMasterShadowVerificationState State =
+            ShadowVerificationAssistant->GetState();
+        if (State != ERenderMasterShadowVerificationState::Ready
+            && State != ERenderMasterShadowVerificationState::Dismissed)
+        {
+            return ShadowVerificationAssistant->GetSummaryText();
+        }
+    }
+    if (LastAssistantAction == ELastAssistantAction::LevelProfiling
+        && LevelProfilingAssistant.IsValid())
+    {
+        const ERenderMasterLevelProfilingState State =
+            LevelProfilingAssistant->GetState();
+        if (LevelProfilingAssistant->IsBusy()
+            || State == ERenderMasterLevelProfilingState::Complete
+            || State == ERenderMasterLevelProfilingState::Partial
+            || State == ERenderMasterLevelProfilingState::Failed
+            || State == ERenderMasterLevelProfilingState::Cancelled)
+        {
+            return LevelProfilingAssistant->GetSummaryText();
+        }
+    }
+    if ((LastAssistantAction == ELastAssistantAction::InsightsGpu
+            || LastAssistantAction == ELastAssistantAction::ShadowOptimization)
         && InsightsGpuAssistant.IsValid())
     {
         const ERenderMasterInsightsGpuState State = InsightsGpuAssistant->GetState();
@@ -1722,6 +2610,19 @@ FText SRenderMasterWorkspace::GetAssistantReply() const
             || State == ERenderMasterRuntimePerformanceState::Failed)
         {
             return RuntimePerformanceAssistant->GetSummaryText();
+        }
+    }
+    if (LastAssistantAction == ELastAssistantAction::LevelAudit
+        && LevelAuditAssistant.IsValid())
+    {
+        const ERenderMasterLevelAuditState State = LevelAuditAssistant->GetState();
+        if (LevelAuditAssistant->IsBusy()
+            || State == ERenderMasterLevelAuditState::Proposed
+            || State == ERenderMasterLevelAuditState::ReviewOnly
+            || State == ERenderMasterLevelAuditState::Unresolved
+            || State == ERenderMasterLevelAuditState::Failed)
+        {
+            return LevelAuditAssistant->GetSummaryText();
         }
     }
     if (LastAssistantAction == ELastAssistantAction::Performance
@@ -2106,6 +3007,105 @@ EVisibility SRenderMasterWorkspace::GetCameraBatchRejectVisibility() const
         : EVisibility::Collapsed;
 }
 
+EVisibility SRenderMasterWorkspace::GetLevelProfilingVisibility() const
+{
+    if (!LevelProfilingAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterLevelProfilingState State =
+        LevelProfilingAssistant->GetState();
+    return State == ERenderMasterLevelProfilingState::Ready
+        || State == ERenderMasterLevelProfilingState::Cancelled
+        ? EVisibility::Collapsed
+        : EVisibility::Visible;
+}
+
+EVisibility SRenderMasterWorkspace::GetLevelProfilingDismissVisibility() const
+{
+    return LevelProfilingAssistant.IsValid()
+        && LevelProfilingAssistant->GetState()
+            != ERenderMasterLevelProfilingState::Ready
+        && LevelProfilingAssistant->GetState()
+            != ERenderMasterLevelProfilingState::Cancelled
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetShadowVerificationVisibility() const
+{
+    if (!ShadowVerificationAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterShadowVerificationState State =
+        ShadowVerificationAssistant->GetState();
+    return State == ERenderMasterShadowVerificationState::Ready
+        || State == ERenderMasterShadowVerificationState::Dismissed
+        ? EVisibility::Collapsed
+        : EVisibility::Visible;
+}
+
+EVisibility SRenderMasterWorkspace::GetShadowVerificationStartVisibility() const
+{
+    return ShadowVerificationAssistant.IsValid()
+        && ShadowVerificationAssistant->GetState()
+            == ERenderMasterShadowVerificationState::Armed
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetShadowVerificationKeepVisibility() const
+{
+    return ShadowVerificationAssistant.IsValid()
+        && ShadowVerificationAssistant->CanKeepAppliedOptimization()
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetShadowVerificationRollbackVisibility() const
+{
+    return ShadowVerificationAssistant.IsValid()
+        && ShadowVerificationAssistant->CanRollbackAppliedOptimization()
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetShadowVerificationDismissVisibility() const
+{
+    if (!ShadowVerificationAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterShadowVerificationState State =
+        ShadowVerificationAssistant->GetState();
+    return State == ERenderMasterShadowVerificationState::Ready
+        || State == ERenderMasterShadowVerificationState::Dismissed
+        ? EVisibility::Collapsed
+        : EVisibility::Visible;
+}
+
+EVisibility SRenderMasterWorkspace::GetLevelAuditVisibility() const
+{
+    if (!LevelAuditAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterLevelAuditState State = LevelAuditAssistant->GetState();
+    return State == ERenderMasterLevelAuditState::Ready
+        || State == ERenderMasterLevelAuditState::Rejected
+        ? EVisibility::Collapsed
+        : EVisibility::Visible;
+}
+
+EVisibility SRenderMasterWorkspace::GetLevelAuditApplyVisibility() const
+{
+    return LevelAuditAssistant.IsValid() && LevelAuditAssistant->CanApply()
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetLevelAuditRejectVisibility() const
+{
+    if (!LevelAuditAssistant.IsValid()) return EVisibility::Collapsed;
+    const ERenderMasterLevelAuditState State = LevelAuditAssistant->GetState();
+    return State == ERenderMasterLevelAuditState::Analyzing
+        || State == ERenderMasterLevelAuditState::Proposed
+        || State == ERenderMasterLevelAuditState::ReviewOnly
+        || State == ERenderMasterLevelAuditState::Unresolved
+        || State == ERenderMasterLevelAuditState::Failed
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
 EVisibility SRenderMasterWorkspace::GetPerformanceProposalVisibility() const
 {
     if (!PerformanceAssistant.IsValid()) return EVisibility::Collapsed;
@@ -2195,6 +3195,22 @@ EVisibility SRenderMasterWorkspace::GetInsightsGpuDismissVisibility() const
             != ERenderMasterInsightsGpuState::Ready
         && InsightsGpuAssistant->GetState()
             != ERenderMasterInsightsGpuState::Dismissed
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetShadowOptimizationApplyVisibility() const
+{
+    return InsightsGpuAssistant.IsValid()
+        && InsightsGpuAssistant->CanApplyShadowOptimization()
+        ? EVisibility::Visible
+        : EVisibility::Collapsed;
+}
+
+EVisibility SRenderMasterWorkspace::GetShadowOptimizationRejectVisibility() const
+{
+    return InsightsGpuAssistant.IsValid()
+        && InsightsGpuAssistant->CanRejectShadowOptimization()
         ? EVisibility::Visible
         : EVisibility::Collapsed;
 }

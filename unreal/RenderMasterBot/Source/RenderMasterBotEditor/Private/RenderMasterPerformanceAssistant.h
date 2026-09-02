@@ -4,6 +4,7 @@
 #include "Containers/Ticker.h"
 
 class AStaticMeshActor;
+class FJsonObject;
 class UStaticMeshComponent;
 class FRenderMasterWorkflowController;
 
@@ -76,6 +77,30 @@ bool RenderMasterCapturePerformanceEvidence(
 bool RenderMasterPerformanceSnapshotsMatch(
     const FRenderMasterPerformanceSnapshot& A,
     const FRenderMasterPerformanceSnapshot& B);
+
+bool RenderMasterPerformanceEvidenceMatches(
+    const FRenderMasterPerformanceEvidence& A,
+    const FRenderMasterPerformanceEvidence& B);
+
+TSharedRef<FJsonObject> RenderMasterPerformanceEvidenceJson(
+    const FRenderMasterPerformanceEvidence& Evidence,
+    const FString& ProjectName,
+    const FString& LevelPath);
+
+bool RenderMasterParsePerformanceEvidenceJson(
+    const TSharedPtr<FJsonObject>& Json,
+    const FString& ProjectName,
+    const FString& LevelPath,
+    FRenderMasterPerformanceEvidence& OutEvidence,
+    FString& OutError);
+
+bool RenderMasterParsePerformanceActionJson(
+    const TSharedPtr<FJsonObject>& Json,
+    const FString& ProjectName,
+    const FString& LevelPath,
+    const FRenderMasterPerformanceEvidence& Expected,
+    FRenderMasterPerformanceAction& OutAction,
+    FString& OutError);
 
 bool RenderMasterParsePerformanceProposalFile(
     const FString& Filename,

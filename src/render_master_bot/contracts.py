@@ -23,6 +23,7 @@ from render_master_bot.models import (
     UnitFloat,
     Vector3,
 )
+from render_master_bot.serialization import canonical_sha256
 
 
 ShortText = Annotated[str, Field(min_length=1, max_length=240)]
@@ -2019,6 +2020,403 @@ class AssistantPerformanceProposal(StrictModel):
         return self
 
 
+class UnrealLevelAuditContext(StrictModel):
+    """Complete static performance evidence for one Editor level."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    audit_id: Identifier
+    captured_at_utc: datetime
+    project_name: ShortText
+    level_path: Annotated[str, Field(min_length=1, max_length=500)]
+    static_mesh_actor_count: Annotated[int, Field(ge=1, le=100_000)]
+    excluded_actor_count: Annotated[int, Field(ge=0, le=100_000)]
+    actors: list[UnrealStaticMeshPerformanceContext] = Field(
+        min_length=1, max_length=4096
+    )
+
+    @model_validator(mode="after")
+    def actors_cover_the_auditable_level(self) -> "UnrealLevelAuditContext":
+        if self.static_mesh_actor_count != len(self.actors) + self.excluded_actor_count:
+            raise ValueError(
+                "level audit Actor counts must equal captured plus excluded Actors"
+            )
+        paths = [actor.actor_path for actor in self.actors]
+        if len(paths) != len(set(paths)):
+            raise ValueError("level audit cannot repeat an Actor path")
+        guids = [
+            actor.actor_guid for actor in self.actors if actor.actor_guid is not None
+        ]
+        if len(guids) != len(set(guids)):
+            raise ValueError("level audit cannot repeat an Actor GUID")
+        if any(actor.project_name != self.project_name for actor in self.actors):
+            raise ValueError("level audit Actors must belong to the captured project")
+        if any(actor.level_path != self.level_path for actor in self.actors):
+            raise ValueError("level audit Actors must belong to the captured level")
+        return self
+
+
+class LevelAuditStatistics(StrictModel):
+    """Host-computed whole-level counts; none are model-authored."""
+
+    captured_actor_count: Annotated[int, Field(ge=1, le=4096)]
+    excluded_actor_count: Annotated[int, Field(ge=0, le=100_000)]
+    total_lod0_triangles: Annotated[int, Field(ge=0, le=10**15)]
+    total_material_slots: Annotated[int, Field(ge=0, le=10**9)]
+    actors_without_nanite_count: Annotated[int, Field(ge=0, le=4096)]
+    single_lod_actor_count: Annotated[int, Field(ge=0, le=4096)]
+    ticking_component_count: Annotated[int, Field(ge=0, le=4096)]
+    shadow_casting_actor_count: Annotated[int, Field(ge=0, le=4096)]
+    unbounded_draw_distance_count: Annotated[int, Field(ge=0, le=4096)]
+    query_and_physics_collision_count: Annotated[int, Field(ge=0, le=4096)]
+    high_priority_actor_count: Annotated[int, Field(ge=0, le=4096)]
+
+
+class LevelAuditActorAssessment(StrictModel):
+    """Transparent deterministic priority signal for one captured Actor."""
+
+    assessment_id: Identifier
+    actor_path: Annotated[str, Field(min_length=1, max_length=1000)]
+    risk_score: Annotated[int, Field(ge=0, le=100)]
+    risk_band: Literal["low", "medium", "high", "critical"]
+    evidence_fields: list[PerformanceEvidenceField] = Field(
+        default_factory=list, max_length=10
+    )
+    reasons: list[ShortText] = Field(default_factory=list, max_length=10)
+    recommended_next_test: Literal[
+        "none", "selected_mesh_review", "repeatable_actor_gpu_study"
+    ]
+
+    @model_validator(mode="after")
+    def evidence_is_unique(self) -> "LevelAuditActorAssessment":
+        if len(self.evidence_fields) != len(set(self.evidence_fields)):
+            raise ValueError("level audit assessment evidence fields must be unique")
+        return self
+
+
+def _level_audit_risk_components(
+    actor: UnrealStaticMeshPerformanceContext,
+) -> tuple[int, list[PerformanceEvidenceField], list[str]]:
+    score = 0
+    evidence: list[PerformanceEvidenceField] = []
+    reasons: list[str] = []
+
+    def add(
+        points: int,
+        fields: tuple[PerformanceEvidenceField, ...],
+        reason: str,
+    ) -> None:
+        nonlocal score
+        score += points
+        for field in fields:
+            if field not in evidence:
+                evidence.append(field)
+        reasons.append(reason)
+
+    if actor.lod0_triangles >= 2_000_000:
+        add(30, ("lod0_triangles",), "LOD0 contains at least 2,000,000 triangles.")
+    elif actor.lod0_triangles >= 500_000:
+        add(20, ("lod0_triangles",), "LOD0 contains at least 500,000 triangles.")
+    elif actor.lod0_triangles >= 100_000:
+        add(10, ("lod0_triangles",), "LOD0 contains at least 100,000 triangles.")
+
+    if not actor.nanite_enabled and actor.lod0_triangles >= 500_000:
+        add(
+            25,
+            ("nanite_enabled", "lod0_triangles"),
+            "A dense mesh is captured without Nanite enabled.",
+        )
+    elif not actor.nanite_enabled and actor.lod0_triangles >= 100_000:
+        add(
+            15,
+            ("nanite_enabled", "lod0_triangles"),
+            "A high-triangle mesh is captured without Nanite enabled.",
+        )
+
+    if actor.lod_count == 1 and actor.lod0_triangles >= 100_000:
+        add(
+            20,
+            ("lod_count", "lod0_triangles"),
+            "The high-triangle mesh has only one captured LOD.",
+        )
+    elif actor.lod_count == 1:
+        add(5, ("lod_count",), "The mesh has only one captured LOD.")
+
+    if actor.material_slot_count >= 8:
+        add(
+            12,
+            ("material_slot_count",),
+            "The mesh exposes at least eight material slots.",
+        )
+    elif actor.material_slot_count >= 4:
+        add(
+            6,
+            ("material_slot_count",),
+            "The mesh exposes at least four material slots.",
+        )
+
+    if actor.component_tick_enabled:
+        add(
+            15,
+            ("component_tick_enabled",),
+            "The StaticMeshComponent has Tick enabled.",
+        )
+    if actor.collision_mode == "query_and_physics":
+        add(
+            5,
+            ("collision_mode",),
+            "The component participates in query and physics collision.",
+        )
+    if actor.performance.cast_shadow and actor.bounds_radius_cm >= 5_000:
+        add(
+            10,
+            ("cast_shadow", "bounds_radius_cm"),
+            "A very large captured bounds radius also casts shadows.",
+        )
+    if (
+        actor.performance.max_draw_distance_cm == 0
+        and actor.bounds_radius_cm <= 500
+    ):
+        add(
+            5,
+            ("max_draw_distance_cm", "bounds_radius_cm"),
+            "A compact Actor has no component draw-distance limit.",
+        )
+    return min(score, 100), evidence, reasons
+
+
+def build_level_audit_assessments(
+    context: UnrealLevelAuditContext,
+) -> list[LevelAuditActorAssessment]:
+    provisional: list[tuple[UnrealStaticMeshPerformanceContext, int, list, list]] = []
+    for actor in context.actors:
+        score, evidence, reasons = _level_audit_risk_components(actor)
+        provisional.append((actor, score, evidence, reasons))
+    provisional.sort(key=lambda item: (-item[1], item[0].actor_path.casefold()))
+
+    assessments: list[LevelAuditActorAssessment] = []
+    for index, (actor, score, evidence, reasons) in enumerate(provisional):
+        band = (
+            "critical"
+            if score >= 75
+            else "high"
+            if score >= 50
+            else "medium"
+            if score >= 25
+            else "low"
+        )
+        next_test = (
+            "repeatable_actor_gpu_study"
+            if score >= 50
+            else "selected_mesh_review"
+            if score >= 25
+            else "none"
+        )
+        assessments.append(
+            LevelAuditActorAssessment(
+                assessment_id=f"audit_actor_{index:04d}",
+                actor_path=actor.actor_path,
+                risk_score=score,
+                risk_band=band,
+                evidence_fields=evidence,
+                reasons=reasons,
+                recommended_next_test=next_test,
+            )
+        )
+    return assessments
+
+
+def build_level_audit_statistics(
+    context: UnrealLevelAuditContext,
+) -> LevelAuditStatistics:
+    scores = [_level_audit_risk_components(actor)[0] for actor in context.actors]
+    return LevelAuditStatistics(
+        captured_actor_count=len(context.actors),
+        excluded_actor_count=context.excluded_actor_count,
+        total_lod0_triangles=sum(actor.lod0_triangles for actor in context.actors),
+        total_material_slots=sum(
+            actor.material_slot_count for actor in context.actors
+        ),
+        actors_without_nanite_count=sum(
+            not actor.nanite_enabled for actor in context.actors
+        ),
+        single_lod_actor_count=sum(actor.lod_count == 1 for actor in context.actors),
+        ticking_component_count=sum(
+            actor.component_tick_enabled for actor in context.actors
+        ),
+        shadow_casting_actor_count=sum(
+            actor.performance.cast_shadow for actor in context.actors
+        ),
+        unbounded_draw_distance_count=sum(
+            actor.performance.max_draw_distance_cm == 0 for actor in context.actors
+        ),
+        query_and_physics_collision_count=sum(
+            actor.collision_mode == "query_and_physics" for actor in context.actors
+        ),
+        high_priority_actor_count=sum(score >= 50 for score in scores),
+    )
+
+
+class LevelAuditFindingIntent(StrictModel):
+    severity: Literal["info", "warning", "critical"]
+    category: Literal[
+        "level_overview",
+        "geometry",
+        "materials",
+        "nanite",
+        "collision",
+        "tick",
+        "shadows",
+        "culling",
+        "measurement",
+    ]
+    evidence_assessment_ids: list[Identifier] = Field(min_length=1, max_length=12)
+    observation: LongText
+    recommendation: LongText
+
+    @model_validator(mode="after")
+    def assessment_ids_are_unique(self) -> "LevelAuditFindingIntent":
+        if len(self.evidence_assessment_ids) != len(
+            set(self.evidence_assessment_ids)
+        ):
+            raise ValueError("level audit finding assessment IDs must be unique")
+        return self
+
+
+class LevelAuditActorEditIntent(StrictModel):
+    assessment_id: Identifier
+    cast_shadow: bool | None = None
+    max_draw_distance_cm: Annotated[
+        float, Field(ge=0, le=1_000_000, allow_inf_nan=False)
+    ] | None = None
+    rationale: LongText
+
+    @model_validator(mode="after")
+    def includes_one_edit(self) -> "LevelAuditActorEditIntent":
+        if self.cast_shadow is None and self.max_draw_distance_cm is None:
+            raise ValueError("level audit action must include at least one edit")
+        if self.max_draw_distance_cm is not None and 0 < self.max_draw_distance_cm < 500:
+            raise ValueError("non-zero max draw distance must be at least 500 cm")
+        return self
+
+
+class LevelAuditReviewIntent(StrictModel):
+    schema_version: Literal["0.1"] = "0.1"
+    outcome: Literal["proposed", "review_only", "unresolved"]
+    summary: LongText
+    primary_assessment_id: Identifier | None = None
+    findings: list[LevelAuditFindingIntent] = Field(default_factory=list, max_length=64)
+    actions: list[LevelAuditActorEditIntent] = Field(default_factory=list, max_length=32)
+    missing_capabilities: list[ShortText] = Field(default_factory=list, max_length=16)
+
+    @model_validator(mode="after")
+    def outcome_is_consistent(self) -> "LevelAuditReviewIntent":
+        action_ids = [action.assessment_id for action in self.actions]
+        if len(action_ids) != len(set(action_ids)):
+            raise ValueError("level audit intent cannot repeat an action assessment ID")
+        if self.outcome == "proposed":
+            if not self.actions or self.missing_capabilities:
+                raise ValueError("proposed level audits require actions and no gaps")
+        elif self.outcome == "review_only":
+            if self.actions or self.missing_capabilities:
+                raise ValueError("review-only level audits cannot contain actions or gaps")
+        elif (
+            self.primary_assessment_id is not None
+            or self.findings
+            or self.actions
+            or not self.missing_capabilities
+        ):
+            raise ValueError("unresolved level audits contain only capability gaps")
+        return self
+
+
+class LevelAuditActorAction(PerformanceActorAction):
+    assessment_id: Identifier
+
+
+class AssistantLevelAuditReport(StrictModel):
+    """Whole-level static audit with optional approval-gated safe actions."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    audit_id: Identifier
+    status: Literal["proposed", "review_only", "unresolved"]
+    request: LongText
+    context: UnrealLevelAuditContext
+    context_sha256: Sha256
+    statistics: LevelAuditStatistics
+    assessments: list[LevelAuditActorAssessment] = Field(
+        min_length=1, max_length=4096
+    )
+    analyzed_by: ModelIdentity
+    summary: LongText
+    primary_assessment_id: Identifier | None = None
+    findings: list[LevelAuditFindingIntent] = Field(default_factory=list, max_length=64)
+    actions: list[LevelAuditActorAction] = Field(default_factory=list, max_length=32)
+    missing_capabilities: list[ShortText] = Field(default_factory=list, max_length=16)
+    modifies_editor_scene: bool
+    auto_save: Literal[False] = False
+    undo_supported: Literal[True] = True
+
+    @model_validator(mode="after")
+    def report_is_grounded(self) -> "AssistantLevelAuditReport":
+        expected_hash = hashlib.sha256(
+            self.context.model_dump_json().encode("utf-8")
+        ).hexdigest()
+        if self.context_sha256 != expected_hash:
+            raise ValueError("level audit context hash is invalid")
+        if self.statistics != build_level_audit_statistics(self.context):
+            raise ValueError("level audit statistics are not recomputable")
+        expected_assessments = build_level_audit_assessments(self.context)
+        if self.assessments != expected_assessments:
+            raise ValueError("level audit assessments are not recomputable")
+        assessments_by_id = {
+            item.assessment_id: item for item in self.assessments
+        }
+        known_ids = set(assessments_by_id)
+        if (
+            self.primary_assessment_id is not None
+            and self.primary_assessment_id not in known_ids
+        ):
+            raise ValueError("primary level audit assessment is unavailable")
+        cited_ids = {
+            assessment_id
+            for finding in self.findings
+            for assessment_id in finding.evidence_assessment_ids
+        }
+        if not cited_ids.issubset(known_ids):
+            raise ValueError("level audit findings cite unavailable assessments")
+        context_by_path = {actor.actor_path: actor for actor in self.context.actors}
+        action_ids = [action.assessment_id for action in self.actions]
+        if len(action_ids) != len(set(action_ids)):
+            raise ValueError("level audit actions repeat an assessment")
+        for action in self.actions:
+            assessment = assessments_by_id.get(action.assessment_id)
+            if assessment is None or action.target.actor_path != assessment.actor_path:
+                raise ValueError("level audit action target does not match its assessment")
+            if action.target != context_by_path.get(action.target.actor_path):
+                raise ValueError("level audit action target does not match captured context")
+            if not action.changes:
+                raise ValueError("level audit actions must contain an observable change")
+        if self.status == "proposed":
+            if (
+                not self.actions
+                or self.missing_capabilities
+                or not self.modifies_editor_scene
+            ):
+                raise ValueError("proposed level audits require safe executable actions")
+        elif self.status == "review_only":
+            if self.actions or self.missing_capabilities or self.modifies_editor_scene:
+                raise ValueError("review-only level audits cannot modify the scene")
+        elif (
+            self.primary_assessment_id is not None
+            or self.findings
+            or self.actions
+            or not self.missing_capabilities
+            or self.modifies_editor_scene
+        ):
+            raise ValueError("unresolved level audit reports contain only gaps")
+        return self
+
+
 RuntimeTimingComponent = Literal[
     "frame_time",
     "game_thread",
@@ -2732,6 +3130,1779 @@ class AssistantActorGpuImpactReport(StrictModel):
         return self
 
 
+class ActorGpuImpactStudyTrial(StrictModel):
+    """One counterbalanced visible/hidden pair with chronological order preserved."""
+
+    trial_id: Identifier
+    order: Literal["visible_then_hidden", "hidden_then_visible"]
+    visible: UnrealInsightsGpuCapture
+    hidden: UnrealInsightsGpuCapture
+
+    @model_validator(mode="after")
+    def captures_are_distinct(self) -> "ActorGpuImpactStudyTrial":
+        if self.visible.capture_id == self.hidden.capture_id:
+            raise ValueError("Actor GPU study trial captures must be distinct")
+        return self
+
+
+class UnrealActorGpuImpactStudyCaptureSet(StrictModel):
+    """Eight host-owned captures for A/A noise and AB/BA/AB Actor trials."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    study_id: Identifier
+    created_at_utc: datetime
+    method: Literal["temporary_runtime_actor_hidden_counterbalanced"]
+    target: ActorGpuImpactTarget
+    requested_capture_duration_seconds: Annotated[float, Field(ge=1.0, le=30.0)]
+    warmup_seconds: Annotated[float, Field(ge=0.1, le=10.0)]
+    schedule: Literal["AA_AB_BA_AB"]
+    noise_control_visible: list[UnrealInsightsGpuCapture] = Field(
+        min_length=2, max_length=2
+    )
+    trials: list[ActorGpuImpactStudyTrial] = Field(min_length=3, max_length=3)
+    sequence_capture_ids: list[Identifier] = Field(min_length=8, max_length=8)
+    trial_count: Literal[3] = 3
+    repeatability: Literal["counterbalanced_three_trial"] = (
+        "counterbalanced_three_trial"
+    )
+    runtime_state_restored: Literal[True] = True
+    measurement_notes: list[ShortText] = Field(min_length=1, max_length=16)
+
+    @model_validator(mode="after")
+    def study_schedule_is_consistent(self) -> "UnrealActorGpuImpactStudyCaptureSet":
+        expected_trial_ids = ["trial_001", "trial_002", "trial_003"]
+        expected_orders = [
+            "visible_then_hidden",
+            "hidden_then_visible",
+            "visible_then_hidden",
+        ]
+        if [trial.trial_id for trial in self.trials] != expected_trial_ids:
+            raise ValueError("Actor GPU study requires trial_001 through trial_003")
+        if [trial.order for trial in self.trials] != expected_orders:
+            raise ValueError("Actor GPU study trial order must be AB, BA, AB")
+
+        chronological = [
+            *self.noise_control_visible,
+            self.trials[0].visible,
+            self.trials[0].hidden,
+            self.trials[1].hidden,
+            self.trials[1].visible,
+            self.trials[2].visible,
+            self.trials[2].hidden,
+        ]
+        expected_sequence = [capture.capture_id for capture in chronological]
+        if self.sequence_capture_ids != expected_sequence:
+            raise ValueError("Actor GPU study capture sequence must match AA_AB_BA_AB")
+        if len(expected_sequence) != len(set(expected_sequence)):
+            raise ValueError("Actor GPU study capture IDs must be unique")
+        trace_names = [capture.trace_file_name.casefold() for capture in chronological]
+        if len(trace_names) != len(set(trace_names)):
+            raise ValueError("Actor GPU study trace filenames must be unique")
+        timestamps = [capture.captured_at_utc for capture in chronological]
+        if timestamps != sorted(timestamps):
+            raise ValueError("Actor GPU study captures must preserve chronological time")
+
+        reference = chronological[0]
+        stable_fields = (
+            "project_name",
+            "world_path",
+            "capture_mode",
+            "viewport_width_px",
+            "viewport_height_px",
+            "gpu_name",
+            "channels",
+        )
+        for capture in chronological:
+            if any(
+                getattr(capture, field) != getattr(reference, field)
+                for field in stable_fields
+            ):
+                raise ValueError("Actor GPU study capture environments must match")
+            if not math.isclose(
+                capture.requested_duration_seconds,
+                self.requested_capture_duration_seconds,
+                abs_tol=0.001,
+            ):
+                raise ValueError("Actor GPU study requested durations must match")
+        return self
+
+
+class ActorGpuImpactStudyTrialMeasurement(StrictModel):
+    """Recomputable paired rate change for one queue-local scope and trial."""
+
+    trial_id: Identifier
+    order: Literal["visible_then_hidden", "hidden_then_visible"]
+    visible_scope_id: Identifier
+    hidden_scope_id: Identifier
+    visible_total_ms_per_second: NonNegativeFiniteFloat
+    hidden_total_ms_per_second: NonNegativeFiniteFloat
+    baseline_minus_hidden_ms_per_second: FiniteFloat
+
+    @model_validator(mode="after")
+    def paired_delta_is_recomputable(self) -> "ActorGpuImpactStudyTrialMeasurement":
+        expected = (
+            self.visible_total_ms_per_second - self.hidden_total_ms_per_second
+        )
+        if not math.isclose(
+            self.baseline_minus_hidden_ms_per_second, expected, abs_tol=0.001
+        ):
+            raise ValueError("Actor GPU study trial delta is not recomputable")
+        return self
+
+
+class ActorGpuImpactStudyAggregate(StrictModel):
+    """Host-computed noise and three-trial statistics for one common scope."""
+
+    aggregate_id: Identifier
+    queue_name: ShortText
+    scope_name: ShortText
+    control_scope_ids: list[Identifier] = Field(min_length=2, max_length=2)
+    control_first_total_ms_per_second: NonNegativeFiniteFloat
+    control_second_total_ms_per_second: NonNegativeFiniteFloat
+    control_noise_abs_ms_per_second: NonNegativeFiniteFloat
+    trial_measurements: list[ActorGpuImpactStudyTrialMeasurement] = Field(
+        min_length=3, max_length=3
+    )
+    median_visible_total_ms_per_second: NonNegativeFiniteFloat
+    median_hidden_total_ms_per_second: NonNegativeFiniteFloat
+    median_baseline_minus_hidden_ms_per_second: FiniteFloat
+    delta_mad_ms_per_second: NonNegativeFiniteFloat
+    relative_reduction_percent: Annotated[
+        float, Field(ge=-1_000_000.0, le=100.0, allow_inf_nan=False)
+    ]
+    decreased_vote_count: Annotated[int, Field(ge=0, le=3)]
+    increased_vote_count: Annotated[int, Field(ge=0, le=3)]
+    unchanged_vote_count: Annotated[int, Field(ge=0, le=3)]
+    dominant_direction_when_hidden: Literal[
+        "decreased", "increased", "unchanged", "mixed"
+    ]
+    signal_excess_over_control_noise_ms_per_second: FiniteFloat
+    classification: Literal[
+        "stable_candidate", "noise_limited", "inconsistent_direction"
+    ]
+
+    @model_validator(mode="after")
+    def aggregate_is_recomputable(self) -> "ActorGpuImpactStudyAggregate":
+        expected_trial_ids = ["trial_001", "trial_002", "trial_003"]
+        if [item.trial_id for item in self.trial_measurements] != expected_trial_ids:
+            raise ValueError("Actor GPU study aggregate requires all three trials")
+        deltas = sorted(
+            item.baseline_minus_hidden_ms_per_second
+            for item in self.trial_measurements
+        )
+        visible_rates = sorted(
+            item.visible_total_ms_per_second for item in self.trial_measurements
+        )
+        hidden_rates = sorted(
+            item.hidden_total_ms_per_second for item in self.trial_measurements
+        )
+        median_delta = deltas[1]
+        median_visible = visible_rates[1]
+        median_hidden = hidden_rates[1]
+        mad = sorted(abs(value - median_delta) for value in deltas)[1]
+        noise = abs(
+            self.control_first_total_ms_per_second
+            - self.control_second_total_ms_per_second
+        )
+        if not all(
+            (
+                math.isclose(
+                    self.control_noise_abs_ms_per_second, noise, abs_tol=0.001
+                ),
+                math.isclose(
+                    self.median_visible_total_ms_per_second,
+                    median_visible,
+                    abs_tol=0.001,
+                ),
+                math.isclose(
+                    self.median_hidden_total_ms_per_second,
+                    median_hidden,
+                    abs_tol=0.001,
+                ),
+                math.isclose(
+                    self.median_baseline_minus_hidden_ms_per_second,
+                    median_delta,
+                    abs_tol=0.001,
+                ),
+                math.isclose(self.delta_mad_ms_per_second, mad, abs_tol=0.001),
+                math.isclose(
+                    self.relative_reduction_percent,
+                    median_delta / median_visible * 100.0,
+                    abs_tol=0.001,
+                ),
+                math.isclose(
+                    self.signal_excess_over_control_noise_ms_per_second,
+                    abs(median_delta) - noise,
+                    abs_tol=0.001,
+                ),
+            )
+        ):
+            raise ValueError("Actor GPU study aggregate statistics are not recomputable")
+
+        epsilon = 0.001
+        decreased = sum(value > epsilon for value in deltas)
+        increased = sum(value < -epsilon for value in deltas)
+        unchanged = 3 - decreased - increased
+        if (
+            self.decreased_vote_count,
+            self.increased_vote_count,
+            self.unchanged_vote_count,
+        ) != (decreased, increased, unchanged):
+            raise ValueError("Actor GPU study direction votes are not recomputable")
+        dominant = (
+            "decreased"
+            if decreased >= 2
+            else "increased"
+            if increased >= 2
+            else "unchanged"
+            if unchanged >= 2
+            else "mixed"
+        )
+        classification = (
+            "stable_candidate"
+            if dominant in {"decreased", "increased"}
+            and abs(median_delta) > noise + epsilon
+            else "noise_limited"
+            if abs(median_delta) <= noise + epsilon
+            else "inconsistent_direction"
+        )
+        if self.dominant_direction_when_hidden != dominant:
+            raise ValueError("Actor GPU study dominant direction is not recomputable")
+        if self.classification != classification:
+            raise ValueError("Actor GPU study classification is not recomputable")
+        return self
+
+
+def build_actor_gpu_impact_study_aggregates(
+    capture_set: UnrealActorGpuImpactStudyCaptureSet,
+) -> list[ActorGpuImpactStudyAggregate]:
+    """Deterministically intersect all eight captures and compute study statistics."""
+
+    chronological = [
+        *capture_set.noise_control_visible,
+        capture_set.trials[0].visible,
+        capture_set.trials[0].hidden,
+        capture_set.trials[1].hidden,
+        capture_set.trials[1].visible,
+        capture_set.trials[2].visible,
+        capture_set.trials[2].hidden,
+    ]
+
+    def scope_map(
+        capture: UnrealInsightsGpuCapture,
+    ) -> dict[tuple[str, str], tuple[InsightsGpuScope, str, float]]:
+        queue_names = {queue.queue_id: queue.display_name for queue in capture.queues}
+        return {
+            (scope.queue_id, scope.name): (
+                scope,
+                queue_names[scope.queue_id],
+                scope.total_inclusive_ms / capture.captured_duration_seconds,
+            )
+            for scope in capture.scopes
+        }
+
+    maps = [scope_map(capture) for capture in chronological]
+    common_keys = set(maps[0])
+    for mapping in maps[1:]:
+        common_keys &= set(mapping)
+
+    provisional: list[ActorGpuImpactStudyAggregate] = []
+    for queue_id, scope_name in sorted(common_keys):
+        entries = [mapping[(queue_id, scope_name)] for mapping in maps]
+        queue_names = {entry[1] for entry in entries}
+        if len(queue_names) != 1:
+            continue
+        control_first, control_second = entries[0], entries[1]
+        trial_entries = [
+            (capture_set.trials[0], entries[2], entries[3]),
+            (capture_set.trials[1], entries[5], entries[4]),
+            (capture_set.trials[2], entries[6], entries[7]),
+        ]
+        measurements = [
+            ActorGpuImpactStudyTrialMeasurement(
+                trial_id=trial.trial_id,
+                order=trial.order,
+                visible_scope_id=visible[0].scope_id,
+                hidden_scope_id=hidden[0].scope_id,
+                visible_total_ms_per_second=visible[2],
+                hidden_total_ms_per_second=hidden[2],
+                baseline_minus_hidden_ms_per_second=visible[2] - hidden[2],
+            )
+            for trial, visible, hidden in trial_entries
+        ]
+        deltas = sorted(
+            item.baseline_minus_hidden_ms_per_second for item in measurements
+        )
+        visible_rates = sorted(
+            item.visible_total_ms_per_second for item in measurements
+        )
+        hidden_rates = sorted(
+            item.hidden_total_ms_per_second for item in measurements
+        )
+        median_delta = deltas[1]
+        median_visible = visible_rates[1]
+        if median_visible <= 0.0:
+            continue
+        median_hidden = hidden_rates[1]
+        mad = sorted(abs(value - median_delta) for value in deltas)[1]
+        noise = abs(control_first[2] - control_second[2])
+        epsilon = 0.001
+        decreased = sum(value > epsilon for value in deltas)
+        increased = sum(value < -epsilon for value in deltas)
+        unchanged = 3 - decreased - increased
+        dominant = (
+            "decreased"
+            if decreased >= 2
+            else "increased"
+            if increased >= 2
+            else "unchanged"
+            if unchanged >= 2
+            else "mixed"
+        )
+        classification = (
+            "stable_candidate"
+            if dominant in {"decreased", "increased"}
+            and abs(median_delta) > noise + epsilon
+            else "noise_limited"
+            if abs(median_delta) <= noise + epsilon
+            else "inconsistent_direction"
+        )
+        provisional.append(
+            ActorGpuImpactStudyAggregate(
+                aggregate_id="aggregate_pending",
+                queue_name=entries[0][1],
+                scope_name=scope_name,
+                control_scope_ids=[
+                    control_first[0].scope_id,
+                    control_second[0].scope_id,
+                ],
+                control_first_total_ms_per_second=control_first[2],
+                control_second_total_ms_per_second=control_second[2],
+                control_noise_abs_ms_per_second=noise,
+                trial_measurements=measurements,
+                median_visible_total_ms_per_second=median_visible,
+                median_hidden_total_ms_per_second=median_hidden,
+                median_baseline_minus_hidden_ms_per_second=median_delta,
+                delta_mad_ms_per_second=mad,
+                relative_reduction_percent=median_delta / median_visible * 100.0,
+                decreased_vote_count=decreased,
+                increased_vote_count=increased,
+                unchanged_vote_count=unchanged,
+                dominant_direction_when_hidden=dominant,
+                signal_excess_over_control_noise_ms_per_second=(
+                    abs(median_delta) - noise
+                ),
+                classification=classification,
+            )
+        )
+    provisional.sort(
+        key=lambda item: (
+            -abs(item.median_baseline_minus_hidden_ms_per_second),
+            item.queue_name.casefold(),
+            item.scope_name.casefold(),
+        )
+    )
+    return [
+        item.model_copy(update={"aggregate_id": f"aggregate_{index:03d}"})
+        for index, item in enumerate(provisional[:64])
+    ]
+
+
+class ActorGpuImpactStudyFindingIntent(StrictModel):
+    severity: Literal["info", "warning", "critical"]
+    category: Literal[
+        "stable_candidate",
+        "noise_limited",
+        "inconsistent_direction",
+        "measurement_risk",
+        "next_experiment",
+    ]
+    evidence_aggregate_ids: list[Identifier] = Field(min_length=1, max_length=12)
+    observation: LongText
+    recommendation: LongText
+
+    @model_validator(mode="after")
+    def aggregate_ids_are_unique(self) -> "ActorGpuImpactStudyFindingIntent":
+        if len(self.evidence_aggregate_ids) != len(
+            set(self.evidence_aggregate_ids)
+        ):
+            raise ValueError("Actor GPU study finding aggregate IDs must be unique")
+        return self
+
+
+class ActorGpuImpactStudyReviewIntent(StrictModel):
+    schema_version: Literal["0.1"] = "0.1"
+    outcome: Literal["review_complete", "unresolved"]
+    summary: LongText
+    primary_aggregate_id: Identifier | None = None
+    findings: list[ActorGpuImpactStudyFindingIntent] = Field(
+        default_factory=list, max_length=16
+    )
+    missing_capabilities: list[ShortText] = Field(default_factory=list, max_length=16)
+
+    @model_validator(mode="after")
+    def outcome_is_consistent(self) -> "ActorGpuImpactStudyReviewIntent":
+        if self.outcome == "review_complete" and self.missing_capabilities:
+            raise ValueError("complete Actor GPU studies cannot contain capability gaps")
+        if self.outcome == "unresolved" and (
+            self.primary_aggregate_id is not None
+            or self.findings
+            or not self.missing_capabilities
+        ):
+            raise ValueError("unresolved Actor GPU studies contain only capability gaps")
+        return self
+
+
+class AssistantActorGpuImpactStudyReport(StrictModel):
+    """Read-only model review with deterministic statistics over eight captures."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    report_id: Identifier
+    status: Literal["review_complete", "unresolved"]
+    request: LongText
+    capture_set: UnrealActorGpuImpactStudyCaptureSet
+    capture_set_sha256: Sha256
+    capture_set_file_sha256: Sha256
+    analyzed_by: ModelIdentity
+    aggregates: list[ActorGpuImpactStudyAggregate] = Field(
+        default_factory=list, max_length=64
+    )
+    summary: LongText
+    primary_aggregate_id: Identifier | None = None
+    findings: list[ActorGpuImpactStudyFindingIntent] = Field(
+        default_factory=list, max_length=16
+    )
+    missing_capabilities: list[ShortText] = Field(default_factory=list, max_length=16)
+    modifies_editor_scene: Literal[False] = False
+
+    @model_validator(mode="after")
+    def report_is_grounded(self) -> "AssistantActorGpuImpactStudyReport":
+        expected_sha256 = hashlib.sha256(
+            self.capture_set.model_dump_json().encode("utf-8")
+        ).hexdigest()
+        if self.capture_set_sha256 != expected_sha256:
+            raise ValueError("Actor GPU study hash does not match its capture set")
+        expected_aggregates = build_actor_gpu_impact_study_aggregates(
+            self.capture_set
+        )
+        if self.aggregates != expected_aggregates:
+            raise ValueError("Actor GPU study aggregates do not match raw captures")
+        known_ids = {item.aggregate_id for item in self.aggregates}
+        cited_ids = {
+            aggregate_id
+            for finding in self.findings
+            for aggregate_id in finding.evidence_aggregate_ids
+        }
+        if (
+            self.primary_aggregate_id is not None
+            and self.primary_aggregate_id not in known_ids
+        ):
+            raise ValueError("primary Actor GPU study aggregate is unavailable")
+        if not cited_ids.issubset(known_ids):
+            raise ValueError("Actor GPU study findings cite unavailable aggregates")
+        aggregate_classifications = {
+            item.aggregate_id: item.classification for item in self.aggregates
+        }
+        for finding in self.findings:
+            if finding.category not in {
+                "stable_candidate",
+                "noise_limited",
+                "inconsistent_direction",
+            }:
+                continue
+            cited_classifications = {
+                aggregate_classifications[aggregate_id]
+                for aggregate_id in finding.evidence_aggregate_ids
+            }
+            if finding.category not in cited_classifications:
+                raise ValueError(
+                    "Actor GPU study finding category contradicts its cited "
+                    "aggregate classification"
+                )
+        if self.status == "review_complete" and (
+            self.missing_capabilities or not self.aggregates
+        ):
+            raise ValueError("complete Actor GPU studies require measured aggregates")
+        if self.status == "unresolved" and (
+            self.primary_aggregate_id is not None
+            or self.findings
+            or not self.missing_capabilities
+        ):
+            raise ValueError("unresolved Actor GPU study reports contain only gaps")
+        return self
+
+
+class ShadowOptimizationTrial(StrictModel):
+    """One counterbalanced baseline/candidate pair for Cast Shadow."""
+
+    trial_id: Identifier
+    order: Literal["baseline_then_candidate", "candidate_then_baseline"]
+    baseline: UnrealInsightsGpuCapture
+    candidate: UnrealInsightsGpuCapture
+
+    @model_validator(mode="after")
+    def order_matches_capture_time(self) -> "ShadowOptimizationTrial":
+        if self.baseline.capture_id == self.candidate.capture_id:
+            raise ValueError("shadow optimization trial captures must be distinct")
+        baseline_first = self.baseline.captured_at_utc < self.candidate.captured_at_utc
+        if baseline_first != (self.order == "baseline_then_candidate"):
+            raise ValueError("shadow optimization trial order contradicts capture time")
+        return self
+
+
+class UnrealShadowOptimizationCaptureSet(StrictModel):
+    """Eight traces for one temporary Cast Shadow true/false experiment."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    experiment_id: Identifier
+    created_at_utc: datetime
+    request: LongText
+    target: UnrealStaticMeshPerformanceContext
+    runtime_actor_path: Annotated[str, Field(min_length=1, max_length=1000)]
+    candidate_cast_shadow: Literal[False] = False
+    noise_control_baseline: list[UnrealInsightsGpuCapture] = Field(
+        min_length=2, max_length=2
+    )
+    trials: list[ShadowOptimizationTrial] = Field(min_length=3, max_length=3)
+    requested_capture_duration_seconds: Annotated[
+        float, Field(ge=5.0, le=5.0, allow_inf_nan=False)
+    ] = 5.0
+    warmup_seconds_per_capture: Annotated[
+        float, Field(ge=1.0, le=1.0, allow_inf_nan=False)
+    ] = 1.0
+    schedule: Literal["AA_AB_BA_AB"] = "AA_AB_BA_AB"
+    runtime_state_restored: Literal[True] = True
+    modifies_editor_scene: Literal[False] = False
+
+    @model_validator(mode="after")
+    def capture_set_is_controlled(self) -> "UnrealShadowOptimizationCaptureSet":
+        if not self.target.performance.cast_shadow:
+            raise ValueError("shadow optimization requires Cast Shadow enabled at baseline")
+        expected_trials = [
+            ("trial_001", "baseline_then_candidate"),
+            ("trial_002", "candidate_then_baseline"),
+            ("trial_003", "baseline_then_candidate"),
+        ]
+        if [(item.trial_id, item.order) for item in self.trials] != expected_trials:
+            raise ValueError("shadow optimization requires the AA_AB_BA_AB schedule")
+        chronological = [
+            *self.noise_control_baseline,
+            self.trials[0].baseline,
+            self.trials[0].candidate,
+            self.trials[1].candidate,
+            self.trials[1].baseline,
+            self.trials[2].baseline,
+            self.trials[2].candidate,
+        ]
+        capture_ids = [capture.capture_id for capture in chronological]
+        trace_names = [capture.trace_file_name for capture in chronological]
+        if len(capture_ids) != len(set(capture_ids)):
+            raise ValueError("shadow optimization capture IDs must be unique")
+        if len(trace_names) != len(set(trace_names)):
+            raise ValueError("shadow optimization trace filenames must be unique")
+        timestamps = [capture.captured_at_utc for capture in chronological]
+        if timestamps != sorted(timestamps):
+            raise ValueError("shadow optimization captures must preserve chronological time")
+        reference = chronological[0]
+        stable_fields = (
+            "project_name",
+            "world_path",
+            "capture_mode",
+            "viewport_width_px",
+            "viewport_height_px",
+            "gpu_name",
+            "channels",
+        )
+        for capture in chronological:
+            if any(
+                getattr(capture, field) != getattr(reference, field)
+                for field in stable_fields
+            ):
+                raise ValueError("shadow optimization captures require one fixed workload")
+            if not math.isclose(
+                capture.requested_duration_seconds,
+                self.requested_capture_duration_seconds,
+                abs_tol=0.001,
+            ):
+                raise ValueError("shadow optimization capture durations must match")
+        if self.target.project_name != reference.project_name:
+            raise ValueError("shadow optimization target and traces must share a project")
+        return self
+
+
+class ShadowOptimizationTrialMeasurement(StrictModel):
+    trial_id: Identifier
+    order: Literal["baseline_then_candidate", "candidate_then_baseline"]
+    baseline_scope_id: Identifier
+    candidate_scope_id: Identifier
+    baseline_total_ms_per_second: NonNegativeFiniteFloat
+    candidate_total_ms_per_second: NonNegativeFiniteFloat
+    baseline_minus_candidate_ms_per_second: FiniteFloat
+
+    @model_validator(mode="after")
+    def delta_is_recomputable(self) -> "ShadowOptimizationTrialMeasurement":
+        expected = (
+            self.baseline_total_ms_per_second
+            - self.candidate_total_ms_per_second
+        )
+        if not math.isclose(
+            self.baseline_minus_candidate_ms_per_second,
+            expected,
+            abs_tol=0.001,
+        ):
+            raise ValueError("shadow optimization trial delta is not recomputable")
+        return self
+
+
+class ShadowOptimizationAggregate(StrictModel):
+    aggregate_id: Identifier
+    queue_name: ShortText
+    scope_name: ShortText
+    control_scope_ids: list[Identifier] = Field(min_length=2, max_length=2)
+    control_first_total_ms_per_second: NonNegativeFiniteFloat
+    control_second_total_ms_per_second: NonNegativeFiniteFloat
+    control_noise_abs_ms_per_second: NonNegativeFiniteFloat
+    trial_measurements: list[ShadowOptimizationTrialMeasurement] = Field(
+        min_length=3, max_length=3
+    )
+    median_baseline_total_ms_per_second: NonNegativeFiniteFloat
+    median_candidate_total_ms_per_second: NonNegativeFiniteFloat
+    median_baseline_minus_candidate_ms_per_second: FiniteFloat
+    delta_mad_ms_per_second: NonNegativeFiniteFloat
+    relative_reduction_percent: Annotated[
+        float, Field(ge=-1_000_000.0, le=100.0, allow_inf_nan=False)
+    ]
+    decreased_vote_count: Annotated[int, Field(ge=0, le=3)]
+    increased_vote_count: Annotated[int, Field(ge=0, le=3)]
+    unchanged_vote_count: Annotated[int, Field(ge=0, le=3)]
+    dominant_direction_when_disabled: Literal[
+        "decreased", "increased", "unchanged", "mixed"
+    ]
+    signal_excess_over_control_noise_ms_per_second: FiniteFloat
+    classification: Literal[
+        "stable_candidate", "noise_limited", "inconsistent_direction"
+    ]
+
+    @model_validator(mode="after")
+    def aggregate_is_recomputable(self) -> "ShadowOptimizationAggregate":
+        if [item.trial_id for item in self.trial_measurements] != [
+            "trial_001",
+            "trial_002",
+            "trial_003",
+        ]:
+            raise ValueError("shadow optimization aggregate requires all three trials")
+        deltas = sorted(
+            item.baseline_minus_candidate_ms_per_second
+            for item in self.trial_measurements
+        )
+        baseline_rates = sorted(
+            item.baseline_total_ms_per_second for item in self.trial_measurements
+        )
+        candidate_rates = sorted(
+            item.candidate_total_ms_per_second for item in self.trial_measurements
+        )
+        median_delta = deltas[1]
+        median_baseline = baseline_rates[1]
+        median_candidate = candidate_rates[1]
+        mad = sorted(abs(value - median_delta) for value in deltas)[1]
+        noise = abs(
+            self.control_first_total_ms_per_second
+            - self.control_second_total_ms_per_second
+        )
+        if not all(
+            (
+                math.isclose(self.control_noise_abs_ms_per_second, noise, abs_tol=0.001),
+                math.isclose(
+                    self.median_baseline_total_ms_per_second,
+                    median_baseline,
+                    abs_tol=0.001,
+                ),
+                math.isclose(
+                    self.median_candidate_total_ms_per_second,
+                    median_candidate,
+                    abs_tol=0.001,
+                ),
+                math.isclose(
+                    self.median_baseline_minus_candidate_ms_per_second,
+                    median_delta,
+                    abs_tol=0.001,
+                ),
+                math.isclose(self.delta_mad_ms_per_second, mad, abs_tol=0.001),
+                math.isclose(
+                    self.relative_reduction_percent,
+                    median_delta / median_baseline * 100.0,
+                    abs_tol=0.001,
+                ),
+                math.isclose(
+                    self.signal_excess_over_control_noise_ms_per_second,
+                    abs(median_delta) - noise,
+                    abs_tol=0.001,
+                ),
+            )
+        ):
+            raise ValueError("shadow optimization aggregate is not recomputable")
+        epsilon = 0.001
+        decreased = sum(value > epsilon for value in deltas)
+        increased = sum(value < -epsilon for value in deltas)
+        unchanged = 3 - decreased - increased
+        dominant = (
+            "decreased"
+            if decreased >= 2
+            else "increased"
+            if increased >= 2
+            else "unchanged"
+            if unchanged >= 2
+            else "mixed"
+        )
+        classification = (
+            "stable_candidate"
+            if dominant in {"decreased", "increased"}
+            and abs(median_delta) > noise + epsilon
+            else "noise_limited"
+            if abs(median_delta) <= noise + epsilon
+            else "inconsistent_direction"
+        )
+        if (
+            self.decreased_vote_count,
+            self.increased_vote_count,
+            self.unchanged_vote_count,
+        ) != (decreased, increased, unchanged):
+            raise ValueError("shadow optimization votes are not recomputable")
+        if self.dominant_direction_when_disabled != dominant:
+            raise ValueError("shadow optimization direction is not recomputable")
+        if self.classification != classification:
+            raise ValueError("shadow optimization classification is not recomputable")
+        return self
+
+
+def build_shadow_optimization_aggregates(
+    capture_set: UnrealShadowOptimizationCaptureSet,
+) -> list[ShadowOptimizationAggregate]:
+    """Intersect all eight traces and compute deterministic shadow deltas."""
+
+    chronological = [
+        *capture_set.noise_control_baseline,
+        capture_set.trials[0].baseline,
+        capture_set.trials[0].candidate,
+        capture_set.trials[1].candidate,
+        capture_set.trials[1].baseline,
+        capture_set.trials[2].baseline,
+        capture_set.trials[2].candidate,
+    ]
+
+    def scope_map(
+        capture: UnrealInsightsGpuCapture,
+    ) -> dict[tuple[str, str], tuple[InsightsGpuScope, str, float]]:
+        queue_names = {queue.queue_id: queue.display_name for queue in capture.queues}
+        return {
+            (scope.queue_id, scope.name): (
+                scope,
+                queue_names[scope.queue_id],
+                scope.total_inclusive_ms / capture.captured_duration_seconds,
+            )
+            for scope in capture.scopes
+        }
+
+    maps = [scope_map(capture) for capture in chronological]
+    common_keys = set(maps[0])
+    for mapping in maps[1:]:
+        common_keys &= set(mapping)
+    provisional: list[ShadowOptimizationAggregate] = []
+    for queue_id, scope_name in sorted(common_keys):
+        entries = [mapping[(queue_id, scope_name)] for mapping in maps]
+        queue_names = {entry[1] for entry in entries}
+        if len(queue_names) != 1:
+            continue
+        control_first, control_second = entries[0], entries[1]
+        trial_entries = [
+            (capture_set.trials[0], entries[2], entries[3]),
+            (capture_set.trials[1], entries[5], entries[4]),
+            (capture_set.trials[2], entries[6], entries[7]),
+        ]
+        measurements = [
+            ShadowOptimizationTrialMeasurement(
+                trial_id=trial.trial_id,
+                order=trial.order,
+                baseline_scope_id=baseline[0].scope_id,
+                candidate_scope_id=candidate[0].scope_id,
+                baseline_total_ms_per_second=baseline[2],
+                candidate_total_ms_per_second=candidate[2],
+                baseline_minus_candidate_ms_per_second=baseline[2] - candidate[2],
+            )
+            for trial, baseline, candidate in trial_entries
+        ]
+        deltas = sorted(
+            item.baseline_minus_candidate_ms_per_second for item in measurements
+        )
+        baseline_rates = sorted(
+            item.baseline_total_ms_per_second for item in measurements
+        )
+        candidate_rates = sorted(
+            item.candidate_total_ms_per_second for item in measurements
+        )
+        median_delta = deltas[1]
+        median_baseline = baseline_rates[1]
+        if median_baseline <= 0.0:
+            continue
+        median_candidate = candidate_rates[1]
+        mad = sorted(abs(value - median_delta) for value in deltas)[1]
+        noise = abs(control_first[2] - control_second[2])
+        epsilon = 0.001
+        decreased = sum(value > epsilon for value in deltas)
+        increased = sum(value < -epsilon for value in deltas)
+        unchanged = 3 - decreased - increased
+        dominant = (
+            "decreased"
+            if decreased >= 2
+            else "increased"
+            if increased >= 2
+            else "unchanged"
+            if unchanged >= 2
+            else "mixed"
+        )
+        classification = (
+            "stable_candidate"
+            if dominant in {"decreased", "increased"}
+            and abs(median_delta) > noise + epsilon
+            else "noise_limited"
+            if abs(median_delta) <= noise + epsilon
+            else "inconsistent_direction"
+        )
+        provisional.append(
+            ShadowOptimizationAggregate(
+                aggregate_id="aggregate_pending",
+                queue_name=entries[0][1],
+                scope_name=scope_name,
+                control_scope_ids=[control_first[0].scope_id, control_second[0].scope_id],
+                control_first_total_ms_per_second=control_first[2],
+                control_second_total_ms_per_second=control_second[2],
+                control_noise_abs_ms_per_second=noise,
+                trial_measurements=measurements,
+                median_baseline_total_ms_per_second=median_baseline,
+                median_candidate_total_ms_per_second=median_candidate,
+                median_baseline_minus_candidate_ms_per_second=median_delta,
+                delta_mad_ms_per_second=mad,
+                relative_reduction_percent=median_delta / median_baseline * 100.0,
+                decreased_vote_count=decreased,
+                increased_vote_count=increased,
+                unchanged_vote_count=unchanged,
+                dominant_direction_when_disabled=dominant,
+                signal_excess_over_control_noise_ms_per_second=abs(median_delta) - noise,
+                classification=classification,
+            )
+        )
+    provisional.sort(
+        key=lambda item: (
+            -abs(item.median_baseline_minus_candidate_ms_per_second),
+            item.queue_name.casefold(),
+            item.scope_name.casefold(),
+        )
+    )
+    return [
+        item.model_copy(update={"aggregate_id": f"aggregate_{index:03d}"})
+        for index, item in enumerate(provisional[:64])
+    ]
+
+
+class ShadowOptimizationDecisionThresholds(StrictModel):
+    minimum_signal_excess_ms_per_second: Literal[1.0] = 1.0
+    minimum_relative_reduction_percent: Literal[1.0] = 1.0
+    maximum_mad_to_median_ratio: Literal[1.0] = 1.0
+    minimum_decreased_votes: Literal[2] = 2
+
+
+def shadow_optimization_qualifying_aggregates(
+    aggregates: list[ShadowOptimizationAggregate],
+    thresholds: ShadowOptimizationDecisionThresholds,
+) -> list[ShadowOptimizationAggregate]:
+    return [
+        item
+        for item in aggregates
+        if item.classification == "stable_candidate"
+        and item.dominant_direction_when_disabled == "decreased"
+        and item.signal_excess_over_control_noise_ms_per_second
+        >= thresholds.minimum_signal_excess_ms_per_second
+        and item.relative_reduction_percent
+        >= thresholds.minimum_relative_reduction_percent
+        and item.decreased_vote_count >= thresholds.minimum_decreased_votes
+        and item.delta_mad_ms_per_second
+        <= abs(item.median_baseline_minus_candidate_ms_per_second)
+        * thresholds.maximum_mad_to_median_ratio
+    ]
+
+
+class AssistantShadowOptimizationReport(StrictModel):
+    """Deterministic decision and optional approval-gated Cast Shadow action."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    report_id: Identifier
+    status: Literal["proposed", "rejected", "unresolved"]
+    decision: Literal["propose_apply", "reject", "unresolved"]
+    capture_set: UnrealShadowOptimizationCaptureSet
+    capture_set_sha256: Sha256
+    capture_set_file_sha256: Sha256
+    analysis_method: Literal["deterministic_host"] = "deterministic_host"
+    thresholds: ShadowOptimizationDecisionThresholds = Field(
+        default_factory=ShadowOptimizationDecisionThresholds
+    )
+    aggregates: list[ShadowOptimizationAggregate] = Field(
+        default_factory=list, max_length=64
+    )
+    primary_aggregate_id: Identifier | None = None
+    summary: LongText
+    proposed_action: PerformanceActorAction | None = None
+    rejection_reasons: list[ShortText] = Field(default_factory=list, max_length=8)
+    runtime_state_restored: Literal[True] = True
+    modifies_editor_scene: Literal[False] = False
+    approval_required: bool
+    auto_save: Literal[False] = False
+    undo_supported: Literal[True] = True
+    visual_evidence_role: Literal["operator_regression_review"] = (
+        "operator_regression_review"
+    )
+
+    @model_validator(mode="after")
+    def report_is_recomputable(self) -> "AssistantShadowOptimizationReport":
+        expected_hash = hashlib.sha256(
+            self.capture_set.model_dump_json().encode("utf-8")
+        ).hexdigest()
+        if self.capture_set_sha256 != expected_hash:
+            raise ValueError("shadow optimization capture-set hash is invalid")
+        expected_aggregates = build_shadow_optimization_aggregates(self.capture_set)
+        if self.aggregates != expected_aggregates:
+            raise ValueError("shadow optimization aggregates do not match raw captures")
+        qualifying = shadow_optimization_qualifying_aggregates(
+            expected_aggregates, self.thresholds
+        )
+        expected_status = (
+            "unresolved"
+            if not expected_aggregates
+            else "proposed"
+            if qualifying
+            else "rejected"
+        )
+        expected_decision = {
+            "unresolved": "unresolved",
+            "proposed": "propose_apply",
+            "rejected": "reject",
+        }[expected_status]
+        if self.status != expected_status or self.decision != expected_decision:
+            raise ValueError("shadow optimization decision is not recomputable")
+        expected_primary = qualifying[0].aggregate_id if qualifying else None
+        if self.primary_aggregate_id != expected_primary:
+            raise ValueError("shadow optimization primary aggregate is invalid")
+        if self.approval_required != (expected_status == "proposed"):
+            raise ValueError("shadow optimization approval gate is invalid")
+        if expected_status == "proposed":
+            if self.proposed_action is None or self.rejection_reasons:
+                raise ValueError("proposed shadow optimization requires one action")
+            expected_after = self.capture_set.target.performance.model_copy(
+                update={"cast_shadow": False}
+            )
+            if (
+                self.proposed_action.target != self.capture_set.target
+                or self.proposed_action.before != self.capture_set.target.performance
+                or self.proposed_action.after != expected_after
+                or [change.property for change in self.proposed_action.changes]
+                != ["cast_shadow"]
+            ):
+                raise ValueError("shadow optimization action is not evidence-bound")
+        elif self.proposed_action is not None:
+            raise ValueError("rejected shadow optimization cannot contain an action")
+        if expected_status != "proposed" and not self.rejection_reasons:
+            raise ValueError("non-proposed shadow optimization needs explicit reasons")
+        return self
+
+
+class LevelProfilingActorAttempt(StrictModel):
+    """One deterministically selected static candidate and its measured outcome."""
+
+    assessment_id: Identifier
+    actor_path: Annotated[str, Field(min_length=1, max_length=1000)]
+    actor_name: ShortText
+    outcome: Literal["measured", "skipped"]
+    study_report: AssistantActorGpuImpactStudyReport | None = None
+    skip_reason: ShortText | None = None
+
+    @model_validator(mode="after")
+    def outcome_matches_payload(self) -> "LevelProfilingActorAttempt":
+        if self.outcome == "measured":
+            if self.study_report is None or self.skip_reason is not None:
+                raise ValueError("measured profiling attempts require only a study report")
+        elif self.study_report is not None or self.skip_reason is None:
+            raise ValueError("skipped profiling attempts require only a skip reason")
+        return self
+
+
+class UnrealLevelProfilingRun(StrictModel):
+    """Complete profiling-first evidence bundle for one whole-level run."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    profiling_run_id: Identifier
+    created_at_utc: datetime
+    request: LongText
+    max_actor_studies: Literal[2] = 2
+    measurement_priority: Literal["profiling_first"] = "profiling_first"
+    visual_evidence_role: Literal["auxiliary_regression_guard"] = (
+        "auxiliary_regression_guard"
+    )
+    level_audit_report: AssistantLevelAuditReport
+    runtime_performance_report: AssistantRuntimePerformanceReport
+    gpu_scope_report: AssistantInsightsGpuReport
+    actor_attempts: list[LevelProfilingActorAttempt] = Field(max_length=2)
+    runtime_state_restored: Literal[True] = True
+    modifies_editor_scene: Literal[False] = False
+
+    @model_validator(mode="after")
+    def evidence_bundle_is_consistent(self) -> "UnrealLevelProfilingRun":
+        audit = self.level_audit_report
+        runtime = self.runtime_performance_report.capture
+        gpu = self.gpu_scope_report.capture
+        if audit.status != "review_only" or audit.actions or audit.modifies_editor_scene:
+            raise ValueError("profiling runs require a read-only whole-level audit")
+        if runtime.sample_count != 120 or runtime.warmup_frames != 30:
+            raise ValueError("profiling runs require the fixed 30 plus 120 frame capture")
+        if not math.isclose(gpu.requested_duration_seconds, 5.0, abs_tol=0.001):
+            raise ValueError("profiling runs require a five-second GPU scope trace")
+        if (
+            runtime.project_name != gpu.project_name
+            or runtime.world_path != gpu.world_path
+            or runtime.capture_mode != gpu.capture_mode
+            or runtime.viewport_width_px != gpu.viewport_width_px
+            or runtime.viewport_height_px != gpu.viewport_height_px
+            or runtime.gpu_name != gpu.gpu_name
+        ):
+            raise ValueError("runtime and GPU captures must describe one fixed PIE/SIE workload")
+        if audit.context.project_name != runtime.project_name:
+            raise ValueError("static and runtime profiling evidence must share one project")
+
+        eligible = [
+            assessment
+            for assessment in audit.assessments
+            if assessment.recommended_next_test == "repeatable_actor_gpu_study"
+        ][: self.max_actor_studies]
+        expected_ids = [assessment.assessment_id for assessment in eligible]
+        if [attempt.assessment_id for attempt in self.actor_attempts] != expected_ids:
+            raise ValueError("Actor attempts must follow the deterministic Top-N audit order")
+
+        actors_by_path = {actor.actor_path: actor for actor in audit.context.actors}
+        assessments_by_id = {
+            assessment.assessment_id: assessment for assessment in audit.assessments
+        }
+        for attempt in self.actor_attempts:
+            assessment = assessments_by_id[attempt.assessment_id]
+            actor = actors_by_path.get(assessment.actor_path)
+            if (
+                actor is None
+                or attempt.actor_path != assessment.actor_path
+                or attempt.actor_name != actor.actor_name
+            ):
+                raise ValueError("profiling Actor attempt does not match static audit evidence")
+            if attempt.outcome == "skipped":
+                continue
+            assert attempt.study_report is not None
+            report = attempt.study_report
+            capture_set = report.capture_set
+            if report.modifies_editor_scene or not capture_set.runtime_state_restored:
+                raise ValueError("Actor GPU studies must be read-only and restore runtime state")
+            if capture_set.target.editor_actor_path != attempt.actor_path:
+                raise ValueError("Actor GPU study target does not match its audit candidate")
+            captures = [
+                *capture_set.noise_control_visible,
+                *[
+                    capture
+                    for trial in capture_set.trials
+                    for capture in (trial.visible, trial.hidden)
+                ],
+            ]
+            if len(captures) != 8:
+                raise ValueError("profiling Actor studies must preserve all eight captures")
+            for capture in captures:
+                if (
+                    capture.project_name != runtime.project_name
+                    or capture.world_path != runtime.world_path
+                    or capture.capture_mode != runtime.capture_mode
+                    or capture.viewport_width_px != runtime.viewport_width_px
+                    or capture.viewport_height_px != runtime.viewport_height_px
+                    or capture.gpu_name != runtime.gpu_name
+                    or not math.isclose(
+                        capture.requested_duration_seconds, 5.0, abs_tol=0.001
+                    )
+                ):
+                    raise ValueError(
+                        "Actor GPU study captures must match the fixed profiling workload"
+                    )
+        return self
+
+
+class LevelProfilingActorFinding(StrictModel):
+    """Deterministic strongest-scope result for one attempted Actor study."""
+
+    assessment_id: Identifier
+    actor_path: Annotated[str, Field(min_length=1, max_length=1000)]
+    actor_name: ShortText
+    static_risk_score: Annotated[int, Field(ge=0, le=100)]
+    static_risk_band: Literal["high", "critical"]
+    outcome: Literal[
+        "stable_candidate", "noise_limited", "inconsistent_direction", "unresolved", "skipped"
+    ]
+    primary_aggregate_id: Identifier | None = None
+    scope_name: ShortText | None = None
+    median_delta_ms_per_second: FiniteFloat | None = None
+    control_noise_ms_per_second: NonNegativeFiniteFloat | None = None
+    signal_excess_ms_per_second: FiniteFloat | None = None
+    relative_reduction_percent: FiniteFloat | None = None
+    conclusion: LongText
+
+
+class AssistantLevelProfilingReport(StrictModel):
+    """Deterministic analysis of one complete profiling-first evidence bundle."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    report_id: Identifier
+    status: Literal["complete", "partial"]
+    run: UnrealLevelProfilingRun
+    run_sha256: Sha256
+    level_audit_id: Identifier
+    runtime_capture_id: Identifier
+    gpu_capture_id: Identifier
+    actor_study_ids: list[Identifier] = Field(max_length=2)
+    summary: LongText
+    primary_bottleneck: RuntimeBottleneck
+    frame_p95_ms: NonNegativeFiniteFloat
+    frame_budget_miss_fraction: UnitFloat
+    gpu_p95_ms: NonNegativeFiniteFloat | None = None
+    primary_gpu_scope_id: Identifier
+    primary_gpu_scope_name: ShortText
+    primary_gpu_scope_ms_per_second: NonNegativeFiniteFloat
+    measured_actor_count: Annotated[int, Field(ge=0, le=2)]
+    skipped_actor_count: Annotated[int, Field(ge=0, le=2)]
+    stable_actor_candidate_count: Annotated[int, Field(ge=0, le=2)]
+    actor_findings: list[LevelProfilingActorFinding] = Field(max_length=2)
+    limitations: list[ShortText] = Field(min_length=1, max_length=16)
+    runtime_state_restored: Literal[True] = True
+    modifies_editor_scene: Literal[False] = False
+
+    @model_validator(mode="after")
+    def report_matches_run(self) -> "AssistantLevelProfilingReport":
+        expected_sha256 = hashlib.sha256(
+            self.run.model_dump_json().encode("utf-8")
+        ).hexdigest()
+        if self.run_sha256 != expected_sha256:
+            raise ValueError("level profiling report run hash is invalid")
+        if self.level_audit_id != self.run.level_audit_report.audit_id:
+            raise ValueError("level profiling report audit ID is invalid")
+        if self.runtime_capture_id != self.run.runtime_performance_report.capture.capture_id:
+            raise ValueError("level profiling report runtime capture ID is invalid")
+        if self.gpu_capture_id != self.run.gpu_scope_report.capture.capture_id:
+            raise ValueError("level profiling report GPU capture ID is invalid")
+        expected_studies = [
+            attempt.study_report.capture_set.study_id
+            for attempt in self.run.actor_attempts
+            if attempt.study_report is not None
+        ]
+        if self.actor_study_ids != expected_studies:
+            raise ValueError("level profiling report Actor study IDs are invalid")
+        runtime_capture = self.run.runtime_performance_report.capture
+        gpu_capture = self.run.gpu_scope_report.capture
+        primary_scope = gpu_capture.scopes[0]
+        expected_gpu_p95 = (
+            runtime_capture.gpu.p95_ms if runtime_capture.gpu.available else None
+        )
+        if (
+            self.primary_bottleneck
+            != self.run.runtime_performance_report.primary_bottleneck
+            or not math.isclose(
+                self.frame_p95_ms, runtime_capture.frame_time.p95_ms, abs_tol=0.001
+            )
+            or self.gpu_p95_ms != expected_gpu_p95
+            or self.primary_gpu_scope_id != primary_scope.scope_id
+            or self.primary_gpu_scope_name != primary_scope.name
+            or not math.isclose(
+                self.primary_gpu_scope_ms_per_second,
+                primary_scope.total_inclusive_ms
+                / gpu_capture.captured_duration_seconds,
+                abs_tol=0.001,
+            )
+        ):
+            raise ValueError("level profiling summary metrics do not match raw captures")
+        if len(self.actor_findings) != len(self.run.actor_attempts):
+            raise ValueError("level profiling report must account for every Actor attempt")
+        if self.measured_actor_count + self.skipped_actor_count != len(
+            self.run.actor_attempts
+        ):
+            raise ValueError("level profiling Actor counts are invalid")
+        if self.stable_actor_candidate_count != sum(
+            finding.outcome == "stable_candidate" for finding in self.actor_findings
+        ):
+            raise ValueError("stable Actor candidate count is invalid")
+        assessments = {
+            item.assessment_id: item
+            for item in self.run.level_audit_report.assessments
+        }
+        for attempt, finding in zip(
+            self.run.actor_attempts, self.actor_findings, strict=True
+        ):
+            assessment = assessments[attempt.assessment_id]
+            if (
+                finding.assessment_id != attempt.assessment_id
+                or finding.actor_path != attempt.actor_path
+                or finding.actor_name != attempt.actor_name
+                or finding.static_risk_score != assessment.risk_score
+                or finding.static_risk_band != assessment.risk_band
+            ):
+                raise ValueError("level profiling Actor finding identity is invalid")
+            if attempt.outcome == "skipped":
+                if finding.outcome != "skipped" or any(
+                    value is not None
+                    for value in (
+                        finding.primary_aggregate_id,
+                        finding.scope_name,
+                        finding.median_delta_ms_per_second,
+                        finding.control_noise_ms_per_second,
+                        finding.signal_excess_ms_per_second,
+                        finding.relative_reduction_percent,
+                    )
+                ):
+                    raise ValueError("skipped profiling finding contains measured evidence")
+                continue
+            assert attempt.study_report is not None
+            if attempt.study_report.status == "unresolved":
+                if finding.outcome != "unresolved" or finding.primary_aggregate_id is not None:
+                    raise ValueError("unresolved profiling finding is invalid")
+                continue
+            primary = attempt.study_report.aggregates[0]
+            if (
+                finding.outcome != primary.classification
+                or finding.primary_aggregate_id != primary.aggregate_id
+                or finding.scope_name != primary.scope_name
+                or finding.median_delta_ms_per_second is None
+                or not math.isclose(
+                    finding.median_delta_ms_per_second,
+                    primary.median_baseline_minus_hidden_ms_per_second,
+                    abs_tol=0.001,
+                )
+                or finding.control_noise_ms_per_second is None
+                or not math.isclose(
+                    finding.control_noise_ms_per_second,
+                    primary.control_noise_abs_ms_per_second,
+                    abs_tol=0.001,
+                )
+                or finding.signal_excess_ms_per_second is None
+                or not math.isclose(
+                    finding.signal_excess_ms_per_second,
+                    primary.signal_excess_over_control_noise_ms_per_second,
+                    abs_tol=0.001,
+                )
+                or finding.relative_reduction_percent is None
+                or not math.isclose(
+                    finding.relative_reduction_percent,
+                    primary.relative_reduction_percent,
+                    abs_tol=0.001,
+                )
+            ):
+                raise ValueError("level profiling Actor finding does not match its study")
+        expected_status = (
+            "partial"
+            if self.skipped_actor_count
+            or self.run.runtime_performance_report.status == "unresolved"
+            or self.run.gpu_scope_report.status == "unresolved"
+            or any(
+                attempt.study_report is not None
+                and attempt.study_report.status == "unresolved"
+                for attempt in self.run.actor_attempts
+            )
+            else "complete"
+        )
+        if self.status != expected_status:
+            raise ValueError("level profiling status does not match evidence completeness")
+        return self
+
+
+class ShadowOptimizationVerificationThresholds(StrictModel):
+    """Fixed whole-level regression guards after one approved shadow edit."""
+
+    maximum_frame_p95_regression_ms: Literal[0.5] = 0.5
+    maximum_frame_p95_regression_percent: Literal[2.0] = 2.0
+    maximum_gpu_p95_regression_ms: Literal[0.5] = 0.5
+    maximum_gpu_p95_regression_percent: Literal[2.0] = 2.0
+    maximum_frame_budget_miss_increase_fraction: Literal[0.02] = 0.02
+    maximum_target_scope_regression_ms_per_second: Literal[1.0] = 1.0
+    maximum_target_scope_regression_percent: Literal[2.0] = 2.0
+
+
+class ShadowOptimizationVerificationMetrics(StrictModel):
+    """Host-recomputed before/after metrics for the fixed workload."""
+
+    baseline_frame_p95_ms: NonNegativeFiniteFloat
+    candidate_frame_p95_ms: NonNegativeFiniteFloat
+    frame_p95_delta_ms: FiniteFloat
+    frame_p95_delta_percent: FiniteFloat | None = None
+    baseline_frame_budget_miss_fraction: UnitFloat
+    candidate_frame_budget_miss_fraction: UnitFloat
+    frame_budget_miss_delta_fraction: FiniteFloat
+    baseline_gpu_p95_ms: NonNegativeFiniteFloat | None = None
+    candidate_gpu_p95_ms: NonNegativeFiniteFloat | None = None
+    gpu_p95_delta_ms: FiniteFloat | None = None
+    gpu_p95_delta_percent: FiniteFloat | None = None
+    target_scope_queue_name: ShortText
+    target_scope_name: ShortText
+    baseline_target_scope_ms_per_second: NonNegativeFiniteFloat | None = None
+    candidate_target_scope_ms_per_second: NonNegativeFiniteFloat | None = None
+    target_scope_delta_ms_per_second: FiniteFloat | None = None
+    target_scope_delta_percent: FiniteFloat | None = None
+
+
+def _verification_percent_delta(
+    baseline: float,
+    candidate: float,
+) -> float | None:
+    if math.isclose(baseline, 0.0, abs_tol=0.001):
+        return None
+    return (candidate - baseline) / baseline * 100.0
+
+
+def _verification_scope_rate(
+    report: AssistantLevelProfilingReport,
+    queue_name: str,
+    scope_name: str,
+) -> float | None:
+    capture = report.run.gpu_scope_report.capture
+    queue_names = {queue.queue_id: queue.display_name for queue in capture.queues}
+    for scope in capture.scopes:
+        if (
+            queue_names.get(scope.queue_id) == queue_name
+            and scope.name == scope_name
+        ):
+            return scope.total_inclusive_ms / capture.captured_duration_seconds
+    return None
+
+
+def build_shadow_optimization_verification_metrics(
+    shadow_report: AssistantShadowOptimizationReport,
+    baseline_report: AssistantLevelProfilingReport,
+    candidate_report: AssistantLevelProfilingReport,
+) -> ShadowOptimizationVerificationMetrics:
+    """Recompute all whole-level comparison values from embedded raw reports."""
+
+    primary = next(
+        (
+            aggregate
+            for aggregate in shadow_report.aggregates
+            if aggregate.aggregate_id == shadow_report.primary_aggregate_id
+        ),
+        None,
+    )
+    if primary is None:
+        queue_name = "unavailable"
+        scope_name = "unavailable"
+        baseline_scope = None
+        candidate_scope = None
+    else:
+        queue_name = primary.queue_name
+        scope_name = primary.scope_name
+        baseline_scope = _verification_scope_rate(
+            baseline_report, queue_name, scope_name
+        )
+        candidate_scope = _verification_scope_rate(
+            candidate_report, queue_name, scope_name
+        )
+    comparable_scope = baseline_scope is not None and candidate_scope is not None
+    baseline_gpu = baseline_report.gpu_p95_ms
+    candidate_gpu = candidate_report.gpu_p95_ms
+    comparable_gpu = baseline_gpu is not None and candidate_gpu is not None
+    return ShadowOptimizationVerificationMetrics(
+        baseline_frame_p95_ms=baseline_report.frame_p95_ms,
+        candidate_frame_p95_ms=candidate_report.frame_p95_ms,
+        frame_p95_delta_ms=(
+            candidate_report.frame_p95_ms - baseline_report.frame_p95_ms
+        ),
+        frame_p95_delta_percent=_verification_percent_delta(
+            baseline_report.frame_p95_ms, candidate_report.frame_p95_ms
+        ),
+        baseline_frame_budget_miss_fraction=(
+            baseline_report.frame_budget_miss_fraction
+        ),
+        candidate_frame_budget_miss_fraction=(
+            candidate_report.frame_budget_miss_fraction
+        ),
+        frame_budget_miss_delta_fraction=(
+            candidate_report.frame_budget_miss_fraction
+            - baseline_report.frame_budget_miss_fraction
+        ),
+        baseline_gpu_p95_ms=baseline_gpu if comparable_gpu else None,
+        candidate_gpu_p95_ms=candidate_gpu if comparable_gpu else None,
+        gpu_p95_delta_ms=(
+            candidate_gpu - baseline_gpu if comparable_gpu else None
+        ),
+        gpu_p95_delta_percent=(
+            _verification_percent_delta(baseline_gpu, candidate_gpu)
+            if comparable_gpu
+            else None
+        ),
+        target_scope_queue_name=queue_name,
+        target_scope_name=scope_name,
+        baseline_target_scope_ms_per_second=(
+            baseline_scope if comparable_scope else None
+        ),
+        candidate_target_scope_ms_per_second=(
+            candidate_scope if comparable_scope else None
+        ),
+        target_scope_delta_ms_per_second=(
+            candidate_scope - baseline_scope if comparable_scope else None
+        ),
+        target_scope_delta_percent=(
+            _verification_percent_delta(baseline_scope, candidate_scope)
+            if comparable_scope
+            else None
+        ),
+    )
+
+
+def shadow_optimization_verification_workload_matches(
+    shadow_report: AssistantShadowOptimizationReport,
+    baseline_report: AssistantLevelProfilingReport,
+    candidate_report: AssistantLevelProfilingReport,
+) -> bool:
+    """Require the original experiment and both full runs to share one workload."""
+
+    baseline_runtime = baseline_report.run.runtime_performance_report.capture
+    candidate_runtime = candidate_report.run.runtime_performance_report.capture
+    baseline_gpu = baseline_report.run.gpu_scope_report.capture
+    candidate_gpu = candidate_report.run.gpu_scope_report.capture
+    shadow_capture = shadow_report.capture_set.noise_control_baseline[0]
+    runtime_identity = (
+        baseline_runtime.project_name,
+        baseline_runtime.world_path,
+        baseline_runtime.capture_mode,
+        baseline_runtime.viewport_width_px,
+        baseline_runtime.viewport_height_px,
+        baseline_runtime.gpu_name,
+    )
+    candidate_identity = (
+        candidate_runtime.project_name,
+        candidate_runtime.world_path,
+        candidate_runtime.capture_mode,
+        candidate_runtime.viewport_width_px,
+        candidate_runtime.viewport_height_px,
+        candidate_runtime.gpu_name,
+    )
+    shadow_identity = (
+        shadow_capture.project_name,
+        shadow_capture.world_path,
+        shadow_capture.capture_mode,
+        shadow_capture.viewport_width_px,
+        shadow_capture.viewport_height_px,
+        shadow_capture.gpu_name,
+    )
+    return all(
+        (
+            runtime_identity == candidate_identity == shadow_identity,
+            baseline_report.run.level_audit_report.context.level_path
+            == candidate_report.run.level_audit_report.context.level_path,
+            baseline_runtime.target_fps == candidate_runtime.target_fps,
+            math.isclose(
+                baseline_runtime.target_frame_ms,
+                candidate_runtime.target_frame_ms,
+                abs_tol=0.001,
+            ),
+            baseline_runtime.warmup_frames == candidate_runtime.warmup_frames == 30,
+            baseline_runtime.sample_count == candidate_runtime.sample_count == 120,
+            baseline_gpu.channels == candidate_gpu.channels == shadow_capture.channels,
+            math.isclose(
+                baseline_gpu.requested_duration_seconds,
+                candidate_gpu.requested_duration_seconds,
+                abs_tol=0.001,
+            ),
+            math.isclose(
+                baseline_gpu.requested_duration_seconds,
+                shadow_capture.requested_duration_seconds,
+                abs_tol=0.001,
+            ),
+        )
+    )
+
+
+def shadow_optimization_verification_target_matches(
+    shadow_report: AssistantShadowOptimizationReport,
+    baseline_report: AssistantLevelProfilingReport,
+    candidate_report: AssistantLevelProfilingReport,
+) -> bool:
+    """Prove the whole-level runs bracket the exact approved true-to-false edit."""
+
+    action = shadow_report.proposed_action
+    if (
+        shadow_report.status != "proposed"
+        or shadow_report.decision != "propose_apply"
+        or action is None
+        or action.before.cast_shadow is not True
+        or action.after.cast_shadow is not False
+        or action.before.max_draw_distance_cm != action.after.max_draw_distance_cm
+        or [change.property for change in action.changes] != ["cast_shadow"]
+    ):
+        return False
+    target_path = action.target.actor_path
+    baseline_actor = next(
+        (
+            actor
+            for actor in baseline_report.run.level_audit_report.context.actors
+            if actor.actor_path == target_path
+        ),
+        None,
+    )
+    candidate_actor = next(
+        (
+            actor
+            for actor in candidate_report.run.level_audit_report.context.actors
+            if actor.actor_path == target_path
+        ),
+        None,
+    )
+    expected_candidate = action.target.model_copy(update={"performance": action.after})
+    baseline_was_stable = any(
+        finding.actor_path == target_path and finding.outcome == "stable_candidate"
+        for finding in baseline_report.actor_findings
+    )
+    return (
+        baseline_actor == action.target
+        and candidate_actor == expected_candidate
+        and baseline_was_stable
+    )
+
+
+def shadow_optimization_verification_sources_are_distinct(
+    baseline_report: AssistantLevelProfilingReport,
+    candidate_report: AssistantLevelProfilingReport,
+    baseline_file_sha256: str,
+    candidate_file_sha256: str,
+) -> bool:
+    """Reject a copied Before report masquerading as a post-apply recapture."""
+
+    baseline = baseline_report.run
+    candidate = candidate_report.run
+    return all(
+        (
+            baseline_file_sha256 != candidate_file_sha256,
+            baseline_report.report_id != candidate_report.report_id,
+            baseline.profiling_run_id != candidate.profiling_run_id,
+            baseline.level_audit_report.audit_id
+            != candidate.level_audit_report.audit_id,
+            baseline.runtime_performance_report.capture.capture_id
+            != candidate.runtime_performance_report.capture.capture_id,
+            baseline.gpu_scope_report.capture.capture_id
+            != candidate.gpu_scope_report.capture.capture_id,
+            baseline.gpu_scope_report.capture.trace_sha256
+            != candidate.gpu_scope_report.capture.trace_sha256,
+        )
+    )
+
+
+def _verification_regressed(
+    baseline: float,
+    candidate: float,
+    absolute_limit: float,
+    relative_limit_percent: float,
+) -> bool:
+    return candidate - baseline > max(
+        absolute_limit,
+        baseline * relative_limit_percent / 100.0,
+    ) + 0.001
+
+
+def build_shadow_optimization_verification_decision(
+    *,
+    metrics: ShadowOptimizationVerificationMetrics,
+    thresholds: ShadowOptimizationVerificationThresholds,
+    workload_matches: bool,
+    target_transition_matches: bool,
+    sources_are_distinct: bool,
+) -> tuple[Literal["retain", "rollback", "unresolved"], list[str]]:
+    """Apply the fixed whole-level guardrails to one recomputed comparison."""
+
+    unresolved: list[str] = []
+    if not sources_are_distinct:
+        unresolved.append(
+            "The post-apply run does not contain fresh, distinct profiling evidence."
+        )
+    if not workload_matches:
+        unresolved.append(
+            "Before, shadow A/B, and post-apply captures do not describe one fixed workload."
+        )
+    if not target_transition_matches:
+        unresolved.append(
+            "Whole-level evidence does not bracket the exact approved Cast Shadow true-to-false target transition."
+        )
+    if unresolved:
+        return "unresolved", unresolved
+
+    regressions: list[str] = []
+    if _verification_regressed(
+        metrics.baseline_frame_p95_ms,
+        metrics.candidate_frame_p95_ms,
+        thresholds.maximum_frame_p95_regression_ms,
+        thresholds.maximum_frame_p95_regression_percent,
+    ):
+        regressions.append(
+            f"Frame p95 regressed by {metrics.frame_p95_delta_ms:.3f} ms "
+            "beyond the fixed absolute/relative guard."
+        )
+    if (
+        metrics.frame_budget_miss_delta_fraction
+        > thresholds.maximum_frame_budget_miss_increase_fraction + 0.0001
+    ):
+        regressions.append(
+            "Frame-budget misses increased by "
+            f"{metrics.frame_budget_miss_delta_fraction * 100.0:.2f} percentage points."
+        )
+    if (
+        metrics.baseline_gpu_p95_ms is not None
+        and metrics.candidate_gpu_p95_ms is not None
+        and _verification_regressed(
+            metrics.baseline_gpu_p95_ms,
+            metrics.candidate_gpu_p95_ms,
+            thresholds.maximum_gpu_p95_regression_ms,
+            thresholds.maximum_gpu_p95_regression_percent,
+        )
+    ):
+        assert metrics.gpu_p95_delta_ms is not None
+        regressions.append(
+            f"GPU p95 regressed by {metrics.gpu_p95_delta_ms:.3f} ms "
+            "beyond the fixed absolute/relative guard."
+        )
+    if (
+        metrics.baseline_target_scope_ms_per_second is not None
+        and metrics.candidate_target_scope_ms_per_second is not None
+        and _verification_regressed(
+            metrics.baseline_target_scope_ms_per_second,
+            metrics.candidate_target_scope_ms_per_second,
+            thresholds.maximum_target_scope_regression_ms_per_second,
+            thresholds.maximum_target_scope_regression_percent,
+        )
+    ):
+        assert metrics.target_scope_delta_ms_per_second is not None
+        regressions.append(
+            f"The qualified GPU scope regressed by {metrics.target_scope_delta_ms_per_second:.3f} ms/s "
+            "beyond the fixed absolute/relative guard."
+        )
+    if regressions:
+        return "rollback", regressions
+
+    reasons = [
+        "No fixed whole-level regression guard was exceeded; the original controlled A/B result remains the candidate-specific performance evidence."
+    ]
+    if metrics.gpu_p95_delta_ms is None:
+        reasons.append(
+            "GPU p95 was unavailable in at least one runtime capture, so it was not used as a retain guard."
+        )
+    if metrics.target_scope_delta_ms_per_second is None:
+        reasons.append(
+            "The qualified shadow scope was not present in both whole-level Top-64 traces, so it was not used as a retain guard."
+        )
+    return "retain", reasons
+
+
+class AssistantShadowOptimizationVerificationReport(StrictModel):
+    """Recomputable post-apply retain/rollback recommendation."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    report_id: Identifier
+    status: Literal["complete", "unresolved"]
+    decision: Literal["retain", "rollback", "unresolved"]
+    shadow_optimization_report: AssistantShadowOptimizationReport
+    shadow_optimization_report_sha256: Sha256
+    shadow_optimization_report_file_sha256: Sha256
+    baseline_level_profiling_report: AssistantLevelProfilingReport
+    baseline_level_profiling_report_sha256: Sha256
+    baseline_level_profiling_report_file_sha256: Sha256
+    candidate_level_profiling_report: AssistantLevelProfilingReport
+    candidate_level_profiling_report_sha256: Sha256
+    candidate_level_profiling_report_file_sha256: Sha256
+    analysis_method: Literal["deterministic_host"] = "deterministic_host"
+    thresholds: ShadowOptimizationVerificationThresholds = Field(
+        default_factory=ShadowOptimizationVerificationThresholds
+    )
+    workload_matches: bool
+    target_transition_matches: bool
+    sources_are_distinct: bool
+    metrics: ShadowOptimizationVerificationMetrics
+    summary: LongText
+    decision_reasons: list[ShortText] = Field(min_length=1, max_length=8)
+    formal_change_applied: Literal[True] = True
+    modifies_editor_scene: Literal[False] = False
+    retaining_requires_action: Literal[False] = False
+    rollback_requires_approval: Literal[True] = True
+    rollback_undo_supported: Literal[True] = True
+    auto_save: Literal[False] = False
+    visual_evidence_role: Literal["operator_regression_review"] = (
+        "operator_regression_review"
+    )
+
+    @model_validator(mode="after")
+    def verification_is_recomputable(self) -> "AssistantShadowOptimizationVerificationReport":
+        source_pairs = (
+            (
+                self.shadow_optimization_report,
+                self.shadow_optimization_report_sha256,
+            ),
+            (
+                self.baseline_level_profiling_report,
+                self.baseline_level_profiling_report_sha256,
+            ),
+            (
+                self.candidate_level_profiling_report,
+                self.candidate_level_profiling_report_sha256,
+            ),
+        )
+        if any(
+            hashlib.sha256(source.model_dump_json().encode("utf-8")).hexdigest()
+            != observed_hash
+            for source, observed_hash in source_pairs
+        ):
+            raise ValueError("shadow verification source report hash is invalid")
+        expected_workload = shadow_optimization_verification_workload_matches(
+            self.shadow_optimization_report,
+            self.baseline_level_profiling_report,
+            self.candidate_level_profiling_report,
+        )
+        expected_target = shadow_optimization_verification_target_matches(
+            self.shadow_optimization_report,
+            self.baseline_level_profiling_report,
+            self.candidate_level_profiling_report,
+        )
+        expected_distinct = shadow_optimization_verification_sources_are_distinct(
+            self.baseline_level_profiling_report,
+            self.candidate_level_profiling_report,
+            self.baseline_level_profiling_report_file_sha256,
+            self.candidate_level_profiling_report_file_sha256,
+        )
+        expected_metrics = build_shadow_optimization_verification_metrics(
+            self.shadow_optimization_report,
+            self.baseline_level_profiling_report,
+            self.candidate_level_profiling_report,
+        )
+        expected_decision, expected_reasons = (
+            build_shadow_optimization_verification_decision(
+                metrics=expected_metrics,
+                thresholds=self.thresholds,
+                workload_matches=expected_workload,
+                target_transition_matches=expected_target,
+                sources_are_distinct=expected_distinct,
+            )
+        )
+        expected_status = "unresolved" if expected_decision == "unresolved" else "complete"
+        if (
+            self.workload_matches != expected_workload
+            or self.target_transition_matches != expected_target
+            or self.sources_are_distinct != expected_distinct
+            or self.metrics != expected_metrics
+            or self.decision != expected_decision
+            or self.status != expected_status
+            or self.decision_reasons != expected_reasons
+        ):
+            raise ValueError("shadow verification decision is not recomputable")
+        return self
+
+
 class RenderSpecPatch(StrictModel):
     """Auditable proposal to modify an existing RenderSpec."""
 
@@ -3162,6 +5333,7 @@ class RenderWorkflowManifest(StrictModel):
         "max_iterations_reached",
         "correction_cycle_detected",
         "image_quality_regressed",
+        "reference_quality_rejected",
         "stage_failed",
     ] | None = None
     prompt: LongText
@@ -3207,6 +5379,7 @@ class RenderWorkflowManifest(StrictModel):
             "max_iterations_reached",
             "correction_cycle_detected",
             "image_quality_regressed",
+            "reference_quality_rejected",
         }:
             raise ValueError("stopped workflow has an invalid stop reason")
         numbers = [iteration.iteration for iteration in self.iterations]
@@ -3301,6 +5474,947 @@ class RunManifest(StrictModel):
         return self
 
 
+TrainingText = Annotated[str, Field(min_length=1, max_length=500_000)]
+NonNegativeInt = Annotated[int, Field(ge=0)]
+
+
+class TrainingMessage(StrictModel):
+    """One ordered chat message preserved for supervised fine-tuning."""
+
+    role: Literal["system", "user", "assistant"]
+    content: TrainingText
+
+
+class TrainingArtifactReference(StrictModel):
+    """Portable, hash-pinned evidence used to derive a training example."""
+
+    role: Identifier
+    path: RelativeArtifactPath
+    sha256: Sha256
+
+
+class TrainingSourceSkip(StrictModel):
+    """A discovered workflow excluded by a deterministic quality rule."""
+
+    manifest_path: RelativeArtifactPath
+    reason: Literal[
+        "invalid_manifest",
+        "nonpassing_workflow",
+        "missing_artifact",
+        "hash_mismatch",
+        "invalid_artifact",
+        "duplicate_example",
+        "campaign_not_eligible",
+    ]
+    detail: LongText
+
+
+class TrainingExample(StrictModel):
+    """Traceable SFT example derived from one validated RenderMasterBot workflow."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    example_id: Identifier
+    task_type: Literal["render_spec_planning"]
+    source_group_id: Identifier
+    source_manifest_path: RelativeArtifactPath
+    source_manifest_sha256: Sha256
+    source_artifacts: list[TrainingArtifactReference] = Field(min_length=3, max_length=16)
+    messages: list[TrainingMessage] = Field(min_length=3, max_length=3)
+    response_contract: Literal["render-spec"]
+    response_sha256: Sha256
+    example_sha256: Sha256
+
+    @model_validator(mode="after")
+    def training_example_is_consistent(self) -> "TrainingExample":
+        if [message.role for message in self.messages] != [
+            "system",
+            "user",
+            "assistant",
+        ]:
+            raise ValueError("training messages must be ordered system, user, assistant")
+        artifact_keys = [(item.role, item.path) for item in self.source_artifacts]
+        if len(artifact_keys) != len(set(artifact_keys)):
+            raise ValueError("training source artifacts must be unique")
+        try:
+            response = RenderSpec.model_validate_json(self.messages[-1].content)
+        except ValueError as exc:
+            raise ValueError("assistant message is not a valid RenderSpec") from exc
+        if canonical_sha256(response) != self.response_sha256:
+            raise ValueError("training response_sha256 does not match the assistant message")
+        payload = self.model_dump(mode="json", exclude={"example_sha256"})
+        if canonical_sha256(payload) != self.example_sha256:
+            raise ValueError("training example_sha256 does not match the example payload")
+        return self
+
+
+class TrainingDatasetSplit(StrictModel):
+    """One workflow-grouped JSONL partition of a training dataset."""
+
+    name: Literal["train", "validation", "test"]
+    jsonl_path: RelativeArtifactPath
+    sha256: Sha256
+    example_count: NonNegativeInt
+    example_ids: list[Identifier] = Field(default_factory=list, max_length=1_000_000)
+    source_group_ids: list[Identifier] = Field(default_factory=list, max_length=1_000_000)
+    task_counts: dict[Identifier, NonNegativeInt] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def split_counts_are_consistent(self) -> "TrainingDatasetSplit":
+        if self.example_count != len(self.example_ids):
+            raise ValueError("split example_count does not match example_ids")
+        if len(self.example_ids) != len(set(self.example_ids)):
+            raise ValueError("split example IDs must be unique")
+        if len(self.source_group_ids) != len(set(self.source_group_ids)):
+            raise ValueError("split source group IDs must be unique")
+        if sum(self.task_counts.values()) != self.example_count:
+            raise ValueError("split task_counts do not sum to example_count")
+        return self
+
+
+class TrainingDatasetManifest(StrictModel):
+    """Deterministic identity and provenance for a private local SFT dataset."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    builder_version: Literal["0.1", "0.2"] = "0.1"
+    dataset_id: Identifier
+    split_strategy: Literal["group_sha256_v1"] = "group_sha256_v1"
+    split_group_key: Literal["source_group_id"] = "source_group_id"
+    split_seed: ShortText
+    validation_group_fraction: UnitFloat = 0.1
+    test_group_fraction: UnitFloat = 0.1
+    campaign_run_path: RelativeArtifactPath | None = None
+    campaign_run_sha256: Sha256 | None = None
+    discovered_source_manifest_count: NonNegativeInt
+    accepted_source_manifests: list[TrainingArtifactReference] = Field(
+        default_factory=list,
+        max_length=1_000_000,
+    )
+    skipped_sources: list[TrainingSourceSkip] = Field(
+        default_factory=list,
+        max_length=1_000_000,
+    )
+    total_example_count: NonNegativeInt
+    task_counts: dict[Identifier, NonNegativeInt] = Field(default_factory=dict)
+    splits: list[TrainingDatasetSplit] = Field(min_length=3, max_length=3)
+    dataset_sha256: Sha256
+
+    @model_validator(mode="after")
+    def dataset_manifest_is_consistent(self) -> "TrainingDatasetManifest":
+        if (self.campaign_run_path is None) != (self.campaign_run_sha256 is None):
+            raise ValueError("campaign run path and hash must be supplied together")
+        if [split.name for split in self.splits] != ["train", "validation", "test"]:
+            raise ValueError("dataset splits must be ordered train, validation, test")
+        if self.discovered_source_manifest_count != (
+            len(self.accepted_source_manifests) + len(self.skipped_sources)
+        ):
+            raise ValueError("source manifest counts are inconsistent")
+        if self.total_example_count != sum(split.example_count for split in self.splits):
+            raise ValueError("dataset example count does not match splits")
+        if sum(self.task_counts.values()) != self.total_example_count:
+            raise ValueError("dataset task_counts do not sum to total_example_count")
+        payload = self.model_dump(
+            mode="json",
+            exclude={"dataset_sha256"},
+            exclude_none=True,
+        )
+        if canonical_sha256(payload) != self.dataset_sha256:
+            raise ValueError("dataset_sha256 does not match the manifest payload")
+        return self
+
+
+class TrainingReadinessThresholds(StrictModel):
+    qlora_smoke_train: NonNegativeInt = 20
+    qlora_smoke_validation: NonNegativeInt = 2
+    qlora_smoke_test: NonNegativeInt = 2
+    product_train: NonNegativeInt = 500
+    product_validation: NonNegativeInt = 50
+    product_test: NonNegativeInt = 50
+
+
+class TrainingDatasetAuditReport(StrictModel):
+    """Integrity and readiness result for one generated training dataset."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    dataset_id: Identifier
+    manifest_sha256: Sha256
+    dataset_sha256: Sha256
+    integrity_status: Literal["passed", "failed"]
+    split_counts: dict[Literal["train", "validation", "test"], NonNegativeInt]
+    valid_example_count: NonNegativeInt
+    invalid_example_count: NonNegativeInt
+    file_hash_error_count: NonNegativeInt
+    manifest_membership_error_count: NonNegativeInt
+    duplicate_example_count: NonNegativeInt
+    cross_split_example_overlap_count: NonNegativeInt
+    cross_split_group_overlap_count: NonNegativeInt
+    thresholds: TrainingReadinessThresholds = Field(default_factory=TrainingReadinessThresholds)
+    qlora_smoke_ready: bool
+    product_finetune_ready: bool
+    readiness_reasons: list[ShortText] = Field(default_factory=list, max_length=16)
+    issues: list[LongText] = Field(default_factory=list, max_length=256)
+
+    @model_validator(mode="after")
+    def audit_status_is_consistent(self) -> "TrainingDatasetAuditReport":
+        integrity_errors = (
+            self.invalid_example_count
+            + self.file_hash_error_count
+            + self.manifest_membership_error_count
+            + self.duplicate_example_count
+            + self.cross_split_example_overlap_count
+            + self.cross_split_group_overlap_count
+        )
+        if (self.integrity_status == "passed") != (integrity_errors == 0):
+            raise ValueError("audit integrity_status does not match integrity errors")
+        split_counts = self.split_counts
+        smoke_ready = self.integrity_status == "passed" and (
+            split_counts.get("train", 0) >= self.thresholds.qlora_smoke_train
+            and split_counts.get("validation", 0)
+            >= self.thresholds.qlora_smoke_validation
+            and split_counts.get("test", 0) >= self.thresholds.qlora_smoke_test
+        )
+        product_ready = self.integrity_status == "passed" and (
+            split_counts.get("train", 0) >= self.thresholds.product_train
+            and split_counts.get("validation", 0) >= self.thresholds.product_validation
+            and split_counts.get("test", 0) >= self.thresholds.product_test
+        )
+        if self.qlora_smoke_ready != smoke_ready:
+            raise ValueError("qlora_smoke_ready does not match thresholds")
+        if self.product_finetune_ready != product_ready:
+            raise ValueError("product_finetune_ready does not match thresholds")
+        return self
+
+
+TrainingCampaignCategory = Literal[
+    "single_asset",
+    "material_assignment",
+    "multi_asset_composition",
+    "camera_view",
+    "lighting",
+]
+TrainingCampaignViewAxis = Literal[
+    "auto-product",
+    "from-positive-x",
+    "from-negative-x",
+    "from-positive-y",
+    "from-negative-y",
+    "from-positive-z",
+    "from-negative-z",
+]
+
+
+class TrainingCampaignExpectation(StrictModel):
+    """Host-owned success conditions for one automated corpus case."""
+
+    required_scene_asset_ids: list[Identifier] = Field(min_length=1, max_length=16)
+    required_material_asset_ids: list[Identifier] = Field(default_factory=list, max_length=16)
+    forbidden_asset_ids: list[Identifier] = Field(default_factory=list, max_length=32)
+    minimum_object_count: Annotated[int, Field(ge=1, le=32)] = 1
+    maximum_object_count: Annotated[int, Field(ge=1, le=32)] = 1
+    minimum_material_assignment_count: Annotated[int, Field(ge=0, le=64)] = 0
+    maximum_material_assignment_count: Annotated[int, Field(ge=0, le=64)] = 0
+    require_visual_pass: bool = True
+
+    @model_validator(mode="after")
+    def expectation_is_consistent(self) -> "TrainingCampaignExpectation":
+        for label, values in (
+            ("required scene assets", self.required_scene_asset_ids),
+            ("required material assets", self.required_material_asset_ids),
+            ("forbidden assets", self.forbidden_asset_ids),
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError(f"campaign {label} must be unique")
+        required = set(self.required_scene_asset_ids) | set(
+            self.required_material_asset_ids
+        )
+        if required & set(self.forbidden_asset_ids):
+            raise ValueError("campaign required and forbidden assets cannot overlap")
+        if self.minimum_object_count > self.maximum_object_count:
+            raise ValueError("campaign minimum object count exceeds maximum")
+        if self.minimum_material_assignment_count > self.maximum_material_assignment_count:
+            raise ValueError("campaign minimum material assignment count exceeds maximum")
+        if self.required_material_asset_ids and self.minimum_material_assignment_count < 1:
+            raise ValueError("required materials require at least one material assignment")
+        return self
+
+
+class TrainingCampaignCase(StrictModel):
+    """One pre-authored graphics request and its deterministic acceptance boundary."""
+
+    case_id: Identifier
+    category: TrainingCampaignCategory
+    prompt: LongText
+    expectation: TrainingCampaignExpectation
+    view_axis: TrainingCampaignViewAxis = "auto-product"
+    margin_fraction: Annotated[float, Field(ge=0, lt=0.45, allow_inf_nan=False)] = 0.02
+    retrieve_assets: Annotated[int, Field(ge=1, le=50)] = 8
+    retrieve_materials: Annotated[int, Field(ge=0, le=50)] = 5
+    max_iterations: Annotated[int, Field(ge=1, le=5)] = 3
+    timeout_seconds: Annotated[int, Field(ge=60, le=3600)] = 600
+
+
+class TrainingCampaignSuite(StrictModel):
+    """Frozen request suite used for corpus collection and base-model evaluation."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    suite_id: Identifier
+    description: LongText
+    project_name: ShortText
+    project_descriptor_sha256: Sha256
+    asset_catalog_sha256: Sha256
+    split_seed: ShortText = "renderbot-stage0-v1"
+    validation_group_fraction: UnitFloat = 0.1
+    test_group_fraction: UnitFloat = 0.1
+    cases: list[TrainingCampaignCase] = Field(min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def suite_cases_are_unique(self) -> "TrainingCampaignSuite":
+        case_ids = [case.case_id for case in self.cases]
+        if len(case_ids) != len(set(case_ids)):
+            raise ValueError("training campaign case IDs must be unique")
+        prompts = [case.prompt.strip().casefold() for case in self.cases]
+        if len(prompts) != len(set(prompts)):
+            raise ValueError("training campaign prompts must be unique")
+        if self.validation_group_fraction + self.test_group_fraction >= 1:
+            raise ValueError("campaign split fractions must leave room for training")
+        return self
+
+
+class TrainingReferenceCase(StrictModel):
+    """One non-model-authored RenderSpec proposed as trusted planner supervision."""
+
+    case_id: Identifier
+    authoring_source: Literal["human_authored", "deterministic_compiler"]
+    rationale: LongText
+    retrieved_asset_ids: list[Identifier] = Field(min_length=1, max_length=50)
+    render_spec: RenderSpec
+    render_spec_sha256: Sha256
+
+    @model_validator(mode="after")
+    def reference_case_is_consistent(self) -> "TrainingReferenceCase":
+        if len(self.retrieved_asset_ids) != len(set(self.retrieved_asset_ids)):
+            raise ValueError("reference retrieved asset IDs must be unique")
+        if self.render_spec.notes:
+            raise ValueError("reference RenderSpecs must keep rationale outside notes")
+        if canonical_sha256(self.render_spec) != self.render_spec_sha256:
+            raise ValueError("reference RenderSpec SHA-256 does not match its payload")
+        return self
+
+
+class TrainingReferenceSuite(StrictModel):
+    """Hash-bound Golden Reference inputs for a frozen training campaign suite."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    reference_suite_id: Identifier
+    campaign_suite_id: Identifier
+    campaign_suite_sha256: Sha256
+    authoring_policy: Literal["non_model_reference_v1"] = "non_model_reference_v1"
+    cases: list[TrainingReferenceCase] = Field(min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def reference_cases_are_unique(self) -> "TrainingReferenceSuite":
+        case_ids = [case.case_id for case in self.cases]
+        if len(case_ids) != len(set(case_ids)):
+            raise ValueError("training reference case IDs must be unique")
+        return self
+
+
+class TrainingReferenceCaseValidation(StrictModel):
+    """Recomputable static readiness result for one Golden Reference case."""
+
+    case_id: Identifier
+    status: Literal["ready", "rejected"]
+    render_spec_sha256: Sha256
+    preflight_verdict: Literal["pass", "needs_review", "fail"]
+    observed_scene_asset_ids: list[Identifier] = Field(default_factory=list, max_length=64)
+    observed_material_asset_ids: list[Identifier] = Field(default_factory=list, max_length=64)
+    observed_object_count: NonNegativeInt
+    issue_codes: list[Identifier] = Field(default_factory=list, max_length=32)
+    issues: list[LongText] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="after")
+    def validation_status_is_consistent(self) -> "TrainingReferenceCaseValidation":
+        if len(self.issue_codes) != len(self.issues):
+            raise ValueError("reference validation issue codes and details must align")
+        if len(self.issue_codes) != len(set(self.issue_codes)):
+            raise ValueError("reference validation issue codes must be unique")
+        if self.status != ("ready" if not self.issues else "rejected"):
+            raise ValueError("reference validation status does not match its issues")
+        for values in (
+            self.observed_scene_asset_ids,
+            self.observed_material_asset_ids,
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError("reference validation asset IDs must be unique")
+        return self
+
+
+class TrainingReferenceValidationReport(StrictModel):
+    """Frozen static trust report produced before any Golden Reference is rendered."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    reference_suite_id: Identifier
+    reference_suite_sha256: Sha256
+    campaign_suite_id: Identifier
+    campaign_suite_sha256: Sha256
+    project_descriptor_sha256: Sha256
+    asset_catalog_sha256: Sha256
+    integrity_status: Literal["passed", "failed"]
+    total_campaign_case_count: NonNegativeInt
+    reference_case_count: NonNegativeInt
+    ready_case_count: NonNegativeInt
+    rejected_case_count: NonNegativeInt
+    missing_case_ids: list[Identifier] = Field(default_factory=list, max_length=256)
+    full_coverage: bool
+    ready_to_run: bool
+    case_results: list[TrainingReferenceCaseValidation] = Field(
+        min_length=1,
+        max_length=256,
+    )
+    report_sha256: Sha256
+
+    @model_validator(mode="after")
+    def validation_report_is_consistent(self) -> "TrainingReferenceValidationReport":
+        ready = sum(result.status == "ready" for result in self.case_results)
+        rejected = len(self.case_results) - ready
+        if (
+            self.reference_case_count,
+            self.ready_case_count,
+            self.rejected_case_count,
+        ) != (len(self.case_results), ready, rejected):
+            raise ValueError("reference validation aggregate counts are inconsistent")
+        passed = rejected == 0
+        if (self.integrity_status == "passed") != passed:
+            raise ValueError("reference validation integrity status is inconsistent")
+        if self.ready_to_run != passed:
+            raise ValueError("ready_to_run must match reference validation integrity")
+        if self.full_coverage != (
+            not self.missing_case_ids
+            and self.reference_case_count == self.total_campaign_case_count
+        ):
+            raise ValueError("reference validation coverage fields are inconsistent")
+        payload = self.model_dump(mode="json", exclude={"report_sha256"})
+        if canonical_sha256(payload) != self.report_sha256:
+            raise ValueError("reference validation report SHA-256 is invalid")
+        return self
+
+
+class TrainingCampaignAttempt(StrictModel):
+    """One isolated end-to-end workflow attempt for a campaign case."""
+
+    attempt: Annotated[int, Field(ge=1, le=3)]
+    workflow_id: Identifier
+    workflow_directory: RelativeArtifactPath
+    started_at: datetime
+    finished_at: datetime
+    duration_seconds: NonNegativeFiniteFloat
+    outcome: Literal["succeeded", "stopped", "failed", "interrupted"]
+    stop_reason: ShortText | None = None
+    workflow_manifest_path: RelativeArtifactPath | None = None
+    workflow_manifest_sha256: Sha256 | None = None
+    visual_verdict: Literal["pass", "needs_review", "fail"] | None = None
+    observed_scene_asset_ids: list[Identifier] = Field(default_factory=list, max_length=64)
+    observed_material_asset_ids: list[Identifier] = Field(default_factory=list, max_length=64)
+    observed_object_count: NonNegativeInt = 0
+    expectation_passed: bool
+    expectation_failures: list[ShortText] = Field(default_factory=list, max_length=16)
+    training_eligible: bool
+    error: LongText | None = None
+
+    @model_validator(mode="after")
+    def attempt_is_consistent(self) -> "TrainingCampaignAttempt":
+        if self.finished_at < self.started_at:
+            raise ValueError("campaign attempt finished before it started")
+        if (self.workflow_manifest_path is None) != (
+            self.workflow_manifest_sha256 is None
+        ):
+            raise ValueError("campaign workflow manifest path and hash require each other")
+        if self.outcome == "succeeded" and self.workflow_manifest_path is None:
+            raise ValueError("successful campaign attempts require a workflow manifest")
+        if self.workflow_manifest_path is None and self.error is None:
+            raise ValueError("manifest-free campaign attempts require an error")
+        if self.expectation_passed != (not self.expectation_failures):
+            raise ValueError("campaign expectation result does not match failures")
+        eligible = (
+            self.outcome == "succeeded"
+            and self.expectation_passed
+            and self.visual_verdict == "pass"
+        )
+        if self.training_eligible != eligible:
+            raise ValueError("campaign training eligibility is inconsistent")
+        for values in (
+            self.observed_scene_asset_ids,
+            self.observed_material_asset_ids,
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError("campaign observed asset IDs must be unique")
+        return self
+
+
+class TrainingCampaignCaseResult(StrictModel):
+    """Terminal state and bounded attempts for one selected campaign case."""
+
+    case_id: Identifier
+    category: TrainingCampaignCategory
+    status: Literal["succeeded", "stopped", "failed", "interrupted"]
+    attempts: list[TrainingCampaignAttempt] = Field(min_length=1, max_length=3)
+    training_eligible: bool
+
+    @model_validator(mode="after")
+    def case_result_is_consistent(self) -> "TrainingCampaignCaseResult":
+        numbers = [attempt.attempt for attempt in self.attempts]
+        if numbers != list(range(1, len(numbers) + 1)):
+            raise ValueError("campaign attempts must be contiguous and one-based")
+        if self.status != self.attempts[-1].outcome:
+            raise ValueError("campaign case status must match its latest attempt")
+        if self.training_eligible != self.attempts[-1].training_eligible:
+            raise ValueError("campaign case eligibility must match its latest attempt")
+        return self
+
+
+class TrainingCampaignRun(StrictModel):
+    """Resumable campaign state with immutable workflow attempt evidence."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    campaign_id: Identifier
+    suite_id: Identifier
+    suite_sha256: Sha256
+    project_name: ShortText
+    project_descriptor_sha256: Sha256
+    asset_catalog_sha256: Sha256
+    reference_suite_sha256: Sha256 | None = None
+    planner: ModelIdentity
+    evaluator: ModelIdentity
+    status: Literal["planned", "running", "completed", "cancelled", "failed"]
+    selected_case_ids: list[Identifier] = Field(min_length=1, max_length=256)
+    max_attempts_per_case: Annotated[int, Field(ge=1, le=3)] = 2
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    active_case_id: Identifier | None = None
+    active_attempt: Annotated[int, Field(ge=1, le=3)] | None = None
+    active_started_at: datetime | None = None
+    case_results: list[TrainingCampaignCaseResult] = Field(
+        default_factory=list,
+        max_length=256,
+    )
+    errors: list[LongText] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="after")
+    def campaign_run_is_consistent(self) -> "TrainingCampaignRun":
+        if self.reference_suite_sha256 is not None and self.planner.provider not in {
+            "human",
+            "local",
+        }:
+            raise ValueError("reference campaigns require a human or local planner identity")
+        if len(self.selected_case_ids) != len(set(self.selected_case_ids)):
+            raise ValueError("campaign selected case IDs must be unique")
+        result_ids = [result.case_id for result in self.case_results]
+        if len(result_ids) != len(set(result_ids)):
+            raise ValueError("campaign case results must be unique")
+        if any(case_id not in self.selected_case_ids for case_id in result_ids):
+            raise ValueError("campaign result references an unselected case")
+        expected_order = [case_id for case_id in self.selected_case_ids if case_id in result_ids]
+        if result_ids != expected_order:
+            raise ValueError("campaign case results must preserve selected case order")
+        active_values = (
+            self.active_case_id,
+            self.active_attempt,
+            self.active_started_at,
+        )
+        if any(value is None for value in active_values) != all(
+            value is None for value in active_values
+        ):
+            raise ValueError("campaign active case fields must be supplied together")
+        if self.active_case_id is not None:
+            if self.status != "running":
+                raise ValueError("only running campaigns can have an active case")
+            if self.active_case_id not in self.selected_case_ids:
+                raise ValueError("campaign active case was not selected")
+        if self.status == "planned":
+            if self.started_at is not None or self.finished_at is not None:
+                raise ValueError("planned campaigns cannot have lifecycle timestamps")
+        elif self.status == "running":
+            if self.started_at is None or self.finished_at is not None:
+                raise ValueError("running campaigns require only started_at")
+        else:
+            if self.started_at is None or self.finished_at is None:
+                raise ValueError("terminal campaigns require start and finish timestamps")
+            if self.active_case_id is not None:
+                raise ValueError("terminal campaigns cannot have an active case")
+        if self.finished_at is not None and self.finished_at < self.started_at:
+            raise ValueError("campaign finished before it started")
+        if self.status == "completed" and result_ids != self.selected_case_ids:
+            raise ValueError("completed campaigns require every selected case result")
+        return self
+
+
+class TrainingBaselineCaseOutcome(StrictModel):
+    case_id: Identifier
+    category: TrainingCampaignCategory
+    status: Literal["succeeded", "stopped", "failed", "interrupted"]
+    attempt_count: Annotated[int, Field(ge=1, le=3)]
+    expectation_passed: bool
+    visual_passed: bool
+    training_eligible: bool
+    primary_failure_reason: Literal[
+        "none",
+        "workflow_failed",
+        "workflow_stopped",
+        "workflow_interrupted",
+        "expectation_failed",
+        "visual_not_passed",
+        "black_or_blank_preview",
+        "invalid_correction_patch",
+        "unsupported_exposure_correction",
+        "ollama_empty_content",
+        "dimensionless_asset_selected",
+        "correction_unresolved",
+        "max_iterations_reached",
+        "reference_quality_rejected",
+    ]
+
+    @model_validator(mode="after")
+    def baseline_outcome_is_consistent(self) -> "TrainingBaselineCaseOutcome":
+        if self.training_eligible != (self.primary_failure_reason == "none"):
+            raise ValueError("baseline failure reason does not match eligibility")
+        return self
+
+
+class TrainingBaselineCategoryMetrics(StrictModel):
+    category: TrainingCampaignCategory
+    case_count: NonNegativeInt
+    workflow_succeeded_count: NonNegativeInt
+    expectation_passed_count: NonNegativeInt
+    training_eligible_count: NonNegativeInt
+
+    @model_validator(mode="after")
+    def category_counts_are_bounded(self) -> "TrainingBaselineCategoryMetrics":
+        if any(
+            value > self.case_count
+            for value in (
+                self.workflow_succeeded_count,
+                self.expectation_passed_count,
+                self.training_eligible_count,
+            )
+        ):
+            raise ValueError("baseline category counts exceed case_count")
+        return self
+
+
+class TrainingBaselineReport(StrictModel):
+    """Frozen base-model performance record produced before adapter training."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    report_id: Identifier
+    frozen: Literal[True] = True
+    campaign_id: Identifier
+    suite_id: Identifier
+    campaign_run_sha256: Sha256
+    planner: ModelIdentity
+    evaluator: ModelIdentity
+    case_outcomes: list[TrainingBaselineCaseOutcome] = Field(min_length=1, max_length=256)
+    category_metrics: list[TrainingBaselineCategoryMetrics] = Field(
+        min_length=1,
+        max_length=16,
+    )
+    total_case_count: NonNegativeInt
+    workflow_succeeded_count: NonNegativeInt
+    expectation_passed_count: NonNegativeInt
+    training_eligible_count: NonNegativeInt
+    workflow_success_rate: UnitFloat
+    expectation_pass_rate: UnitFloat
+    training_eligibility_rate: UnitFloat
+    failure_reason_counts: dict[Identifier, NonNegativeInt] = Field(default_factory=dict)
+    report_sha256: Sha256
+
+    @model_validator(mode="after")
+    def baseline_report_is_consistent(self) -> "TrainingBaselineReport":
+        total = len(self.case_outcomes)
+        succeeded = sum(outcome.status == "succeeded" for outcome in self.case_outcomes)
+        expected = sum(outcome.expectation_passed for outcome in self.case_outcomes)
+        eligible = sum(outcome.training_eligible for outcome in self.case_outcomes)
+        if (
+            self.total_case_count,
+            self.workflow_succeeded_count,
+            self.expectation_passed_count,
+            self.training_eligible_count,
+        ) != (total, succeeded, expected, eligible):
+            raise ValueError("baseline aggregate counts do not match case outcomes")
+        for actual, expected_rate in (
+            (self.workflow_success_rate, succeeded / total),
+            (self.expectation_pass_rate, expected / total),
+            (self.training_eligibility_rate, eligible / total),
+        ):
+            if not math.isclose(actual, expected_rate, rel_tol=0, abs_tol=1e-12):
+                raise ValueError("baseline rate does not match case outcomes")
+        categories = [metric.category for metric in self.category_metrics]
+        if len(categories) != len(set(categories)):
+            raise ValueError("baseline category metrics must be unique")
+        for metric in self.category_metrics:
+            matching = [
+                outcome
+                for outcome in self.case_outcomes
+                if outcome.category == metric.category
+            ]
+            if (
+                metric.case_count,
+                metric.workflow_succeeded_count,
+                metric.expectation_passed_count,
+                metric.training_eligible_count,
+            ) != (
+                len(matching),
+                sum(outcome.status == "succeeded" for outcome in matching),
+                sum(outcome.expectation_passed for outcome in matching),
+                sum(outcome.training_eligible for outcome in matching),
+            ):
+                raise ValueError("baseline category metrics do not match outcomes")
+        failure_counts = {
+            reason: count
+            for reason, count in self.failure_reason_counts.items()
+            if count
+        }
+        expected_failures: dict[str, int] = {}
+        for outcome in self.case_outcomes:
+            if outcome.primary_failure_reason != "none":
+                expected_failures[outcome.primary_failure_reason] = (
+                    expected_failures.get(outcome.primary_failure_reason, 0) + 1
+                )
+        if failure_counts != expected_failures:
+            raise ValueError("baseline failure counts do not match outcomes")
+        payload = self.model_dump(mode="json", exclude={"report_sha256"})
+        if canonical_sha256(payload) != self.report_sha256:
+            raise ValueError("baseline report_sha256 does not match report payload")
+        return self
+
+
+ConversationIntentName = Literal[
+    "answer_question",
+    "inspect_context",
+    "material_project",
+    "material_external",
+    "transform",
+    "light",
+    "lighting_rig",
+    "lighting_rig_review",
+    "camera",
+    "performance_selection",
+    "level_audit",
+    "runtime_performance",
+    "gpu_scope",
+    "actor_gpu_impact",
+    "level_profiling",
+    "shadow_optimization",
+    "shadow_verification",
+    "render_evaluate",
+    "clarify",
+    "unsupported",
+]
+
+ConversationActionIntentName = Literal[
+    "material_project",
+    "material_external",
+    "transform",
+    "light",
+    "lighting_rig",
+    "lighting_rig_review",
+    "camera",
+    "performance_selection",
+    "level_audit",
+    "runtime_performance",
+    "gpu_scope",
+    "actor_gpu_impact",
+    "level_profiling",
+    "shadow_optimization",
+    "shadow_verification",
+    "render_evaluate",
+]
+
+ConversationRequiredContext = Literal[
+    "actor_selection",
+    "static_mesh_selection",
+    "light_selection",
+    "camera_selection",
+    "lighting_rig_selection",
+    "active_pie_or_sie",
+    "applied_lighting_rig",
+    "completed_level_profile",
+    "applied_shadow_optimization",
+    "pending_action_decision",
+    "more_specific_request",
+]
+
+
+class ConversationSelectionItem(StrictModel):
+    """One live Unreal Actor exposed to the conversational router."""
+
+    actor_name: ShortText
+    actor_path: Annotated[str, Field(min_length=1, max_length=1000)]
+    actor_class: ShortText
+    actor_kind: Literal["static_mesh", "light", "camera", "other"]
+
+
+class UnrealConversationContext(StrictModel):
+    """Bounded read-only Editor context for one conversational turn."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    project_name: ShortText
+    level_path: Annotated[str, Field(min_length=1, max_length=1000)]
+    play_mode: Literal["editor", "pie", "sie"] = "editor"
+    selection: list[ConversationSelectionItem] = Field(default_factory=list, max_length=32)
+    selection_truncated: bool = False
+    lighting_rig_review_ready: bool = False
+    shadow_optimization_ready: bool = False
+    shadow_verification_ready: bool = False
+    pending_action_intent: ConversationActionIntentName | None = None
+
+    @model_validator(mode="after")
+    def selection_is_unique(self) -> "UnrealConversationContext":
+        paths = [item.actor_path for item in self.selection]
+        if len(paths) != len(set(paths)):
+            raise ValueError("conversation context cannot repeat an Actor path")
+        if self.selection_truncated and len(self.selection) != 32:
+            raise ValueError("truncated conversation selection must preserve the first 32 Actors")
+        return self
+
+
+class AssistantConversationMessage(StrictModel):
+    """A durable user or assistant message in one local Editor session."""
+
+    message_id: Identifier
+    role: Literal["user", "assistant"]
+    content: Annotated[str, Field(min_length=1, max_length=8000)]
+
+
+class AssistantConversationRequest(StrictModel):
+    """Complete bounded input for one local-model conversation turn."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    conversation_id: Identifier
+    turn_id: Identifier
+    request: Annotated[str, Field(min_length=1, max_length=8000)]
+    context: UnrealConversationContext
+    history: list[AssistantConversationMessage] = Field(
+        default_factory=list,
+        max_length=24,
+    )
+
+    @model_validator(mode="after")
+    def history_is_ordered_and_does_not_duplicate_request(
+        self,
+    ) -> "AssistantConversationRequest":
+        ids = [message.message_id for message in self.history]
+        if len(ids) != len(set(ids)):
+            raise ValueError("conversation history message IDs must be unique")
+        if self.history and self.history[-1].role == "user":
+            if self.history[-1].content.strip() == self.request.strip():
+                raise ValueError("current request must not be duplicated in history")
+        return self
+
+
+class ConversationRouteIntent(StrictModel):
+    """Model-generated decision before host-side context enforcement."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    outcome: Literal["respond", "clarify", "route"]
+    intent: ConversationIntentName
+    assistant_message: Annotated[str, Field(min_length=1, max_length=4000)]
+    action_prompt: Annotated[str, Field(min_length=1, max_length=8000)] | None
+    clarification_question: Annotated[
+        str,
+        Field(min_length=1, max_length=1000),
+    ] | None
+    required_context: list[ConversationRequiredContext] = Field(max_length=10)
+
+    @model_validator(mode="after")
+    def outcome_matches_payload(self) -> "ConversationRouteIntent":
+        if len(self.required_context) != len(set(self.required_context)):
+            raise ValueError("required conversation context values must be unique")
+        action_intents = {
+            "material_project",
+            "material_external",
+            "transform",
+            "light",
+            "lighting_rig",
+            "lighting_rig_review",
+            "camera",
+            "performance_selection",
+            "level_audit",
+            "runtime_performance",
+            "gpu_scope",
+            "actor_gpu_impact",
+            "level_profiling",
+            "shadow_optimization",
+            "shadow_verification",
+            "render_evaluate",
+        }
+        if self.outcome == "route":
+            if self.intent not in action_intents:
+                raise ValueError("route outcomes require a registered action intent")
+            if self.action_prompt is None:
+                raise ValueError("route outcomes require action_prompt")
+            if self.clarification_question is not None or self.required_context:
+                raise ValueError("route outcomes cannot request more context")
+        elif self.outcome == "clarify":
+            if self.intent in {"answer_question", "inspect_context", "unsupported"}:
+                raise ValueError(
+                    "clarify outcomes require clarify or a registered action intent"
+                )
+            if self.clarification_question is None or not self.required_context:
+                raise ValueError(
+                    "clarify outcomes require a question and required_context"
+                )
+            if self.action_prompt is not None:
+                raise ValueError("clarify outcomes cannot include action_prompt")
+        else:
+            if self.intent not in {"answer_question", "inspect_context", "unsupported"}:
+                raise ValueError("respond outcomes require a non-executable intent")
+            if self.action_prompt is not None or self.clarification_question is not None:
+                raise ValueError("respond outcomes cannot include an action or question")
+            if self.required_context:
+                raise ValueError("respond outcomes cannot request more context")
+        return self
+
+
+class AssistantConversationTurn(StrictModel):
+    """Auditable host-validated result returned to the Unreal Editor panel."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    conversation_id: Identifier
+    turn_id: Identifier
+    request: Annotated[str, Field(min_length=1, max_length=8000)]
+    outcome: Literal["respond", "clarify", "route"]
+    intent: ConversationIntentName
+    assistant_message: Annotated[str, Field(min_length=1, max_length=4000)]
+    action_prompt: Annotated[str, Field(min_length=1, max_length=8000)] | None = None
+    clarification_question: Annotated[
+        str,
+        Field(min_length=1, max_length=1000),
+    ] | None = None
+    required_context: list[ConversationRequiredContext] = Field(
+        default_factory=list,
+        max_length=10,
+    )
+    context_sha256: Sha256
+    model: ShortText
+    attempt_count: Literal[1, 2]
+    recovery_reason: LongText | None = None
+
+    @model_validator(mode="after")
+    def turn_payload_is_a_valid_route(self) -> "AssistantConversationTurn":
+        ConversationRouteIntent.model_validate({
+            "outcome": self.outcome,
+            "intent": self.intent,
+            "assistant_message": self.assistant_message,
+            "action_prompt": self.action_prompt,
+            "clarification_question": self.clarification_question,
+            "required_context": self.required_context,
+        })
+        if self.attempt_count == 1 and self.recovery_reason is not None:
+            raise ValueError("first-attempt conversation turns cannot have recovery_reason")
+        if self.attempt_count == 2 and self.recovery_reason is None:
+            raise ValueError("recovered conversation turns require recovery_reason")
+        return self
+
+
 CONTRACT_MODELS = {
     "render-spec": RenderSpec,
     "technique-card": TechniqueCard,
@@ -3325,12 +6439,24 @@ CONTRACT_MODELS = {
     "assistant-camera-batch-proposal": AssistantCameraBatchProposal,
     "unreal-performance-selection-context": UnrealPerformanceSelectionContext,
     "assistant-performance-proposal": AssistantPerformanceProposal,
+    "unreal-level-audit-context": UnrealLevelAuditContext,
+    "assistant-level-audit-report": AssistantLevelAuditReport,
     "unreal-runtime-performance-capture": UnrealRuntimePerformanceCapture,
     "assistant-runtime-performance-report": AssistantRuntimePerformanceReport,
     "unreal-insights-gpu-capture": UnrealInsightsGpuCapture,
     "assistant-insights-gpu-report": AssistantInsightsGpuReport,
     "unreal-actor-gpu-impact-experiment": UnrealActorGpuImpactExperiment,
     "assistant-actor-gpu-impact-report": AssistantActorGpuImpactReport,
+    "unreal-actor-gpu-impact-study-capture-set": UnrealActorGpuImpactStudyCaptureSet,
+    "assistant-actor-gpu-impact-study-report": AssistantActorGpuImpactStudyReport,
+    "unreal-shadow-optimization-capture-set": UnrealShadowOptimizationCaptureSet,
+    "assistant-shadow-optimization-report": AssistantShadowOptimizationReport,
+    "assistant-shadow-optimization-verification-report": AssistantShadowOptimizationVerificationReport,
+    "unreal-level-profiling-run": UnrealLevelProfilingRun,
+    "assistant-level-profiling-report": AssistantLevelProfilingReport,
+    "unreal-conversation-context": UnrealConversationContext,
+    "assistant-conversation-request": AssistantConversationRequest,
+    "assistant-conversation-turn": AssistantConversationTurn,
     "render-spec-patch": RenderSpecPatch,
     "correction-decision": CorrectionDecision,
     "evaluation-report": EvaluationReport,
@@ -3339,4 +6465,12 @@ CONTRACT_MODELS = {
     "render-workflow-manifest": RenderWorkflowManifest,
     "capability-manifest": CapabilityManifest,
     "run-manifest": RunManifest,
+    "training-example": TrainingExample,
+    "training-dataset-manifest": TrainingDatasetManifest,
+    "training-dataset-audit-report": TrainingDatasetAuditReport,
+    "training-campaign-suite": TrainingCampaignSuite,
+    "training-reference-suite": TrainingReferenceSuite,
+    "training-reference-validation-report": TrainingReferenceValidationReport,
+    "training-campaign-run": TrainingCampaignRun,
+    "training-baseline-report": TrainingBaselineReport,
 }

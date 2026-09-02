@@ -6,16 +6,41 @@ weights, start a network service, or add runtime code to a packaged game.
 
 ## Workspace model
 
-The default **Assistant** page is the product entry point. It reads the live
-project name, current level, and selected actors directly from the Editor. The
-operator can inspect that context, prepare a bounded action, review its scope,
-and explicitly approve or reject it. Context inspection and proposal generation
-do not modify the Editor scene.
+The default **Assistant** page is the conversational product entry point. It
+keeps a local user/assistant message timeline and reads the live project name,
+current level, PIE/SIE mode, selected actors, and relevant completed-workflow
+state directly from the Editor. **Send to Assistant** produces exactly one
+strict result: a read-only answer, one clarifying question, or a route to one
+registered bounded capability. The operator then reviews any action scope and
+explicitly approves or rejects it. Context inspection, conversation routing,
+and proposal generation do not modify the Editor scene.
+
+Capability-specific entry buttons are collapsed under **Advanced Direct
+Tools**. They remain useful for debugging and expert operation but are not the
+normal interaction model. **New Conversation** clears only the in-memory
+timeline and generates a fresh local conversation ID. It does not delete run
+artifacts or modify the project.
+
+Conversation remains available while a stable Action Card waits for approval,
+so the operator can ask a follow-up question. The router will not start a
+second action until the current card is approved or rejected. Active planning,
+capture, import, render, and profiling processes still serialize model turns.
 
 The connected direct Editor actions are material selection, one-to-32-Actor
 world/local Transform editing, compatible one-to-16-Light group property
 editing, camera-relative three-point-light coordination, and one-Camera
 property editing.
+
+**Run Full Level Audit** additionally inspects every eligible native
+StaticMeshActor in the current Editor level without requiring a selection. It
+computes deterministic static priorities, sends only the Top 64 to the local
+model, and may return approval-gated Cast Shadow or Max Draw Distance actions.
+
+**Run Profiling-First Level Audit** requires an active fixed PIE/SIE workload and
+automatically binds that static funnel to runtime samples, a GPU trace, and up
+to two repeatable Actor studies. It is read-only and uses profiler evidence,
+not rendered images, to describe performance.
+
 Material selection supports one selected Actor that contains exactly one valid
 Static Mesh Component. A single
 slot is targeted automatically. For a multi-slot mesh, the operator chooses an
@@ -91,16 +116,105 @@ Transform, compatible one-to-16-Light group edits, single-Camera property
 editing, and coordinated 2-16-camera property editing are connected. The
 bounded Key/Fill/Rim rig is also connected. Selected native StaticMeshActor
 evidence review plus approval-gated Cast Shadow and Max Draw Distance actions
-are connected. A separate read-only PIE/SIE capture now records recomputable
+are connected. Full Level Audit Stage 1 now scans the complete level, preserves
+explicit exclusions, ranks every captured Actor, and reuses the same safe
+approval/Undo executor for a bounded action subset. A separate read-only PIE/SIE
+capture now records recomputable
 frame, thread, GPU, process-memory, and RHI texture-memory evidence. A second
 trace-backed workflow records a five-second `.utrace`, ranks timed GPU scopes,
-and preserves the raw timeline for Unreal Insights. A controlled selected-Actor
-workflow now records visible and runtime-hidden traces, restores the Actor, and
-compares matched GPU scopes. General geometry-aware arrangement, multi-shot
-visual evaluation, richer shot-specific lighting tools, repeated/interleaved
-Actor trials, direct per-asset/material/shader/draw attribution, packaged-build
+and preserves the raw timeline for Unreal Insights. A repeatable selected-Actor
+workflow now records two visible controls and three counterbalanced AB/BA/AB
+pairs, restores the Actor, and aggregates scopes common to all eight traces.
+One profiling-first orchestration now runs the static funnel, fixed runtime
+baseline, GPU scope capture, and deterministic Top-2 Actor studies under one
+validated PIE/SIE workload and produces one composite report. Its first
+connected optimization handoff selects the best stable eligible Actor and runs
+a separate deterministic eight-trace Cast Shadow on/off experiment. Runtime
+state is restored before review; only an explicit, stale-checked approval after
+PIE/SIE stops can apply the exact formal change as one unsaved Undo transaction.
+That approval now arms **Post-Apply Shadow Verification**. Under a restarted,
+identical PIE/SIE workload, the Assistant repeats the complete profiling chain,
+hash-binds all three source reports, and recomputes fixed whole-level retain or
+rollback guards. Keeping the edit makes no additional mutation; rollback needs
+explicit approval, exact current-state revalidation, and a new bounded unsaved
+transaction so unrelated Editor changes are not consumed by global Undo.
+General geometry-aware arrangement, multi-shot visual evaluation, richer
+shot-specific lighting tools, direct per-asset/material/shader/draw attribution, packaged-build
 benchmark comparison, and asset-level performance fixes remain visibly marked
 as not connected.
+
+## Full Level Audit lifecycle
+
+1. Open an Editor level. No Actor selection or PIE/SIE session is required.
+2. Optionally enter a question. An empty prompt uses the default complete-level
+   static audit request.
+3. Press **Run Full Level Audit**.
+4. Review captured and excluded counts, aggregate static evidence, the Top 5
+   deterministic priorities, findings, and recommended deeper tests.
+5. If the request explicitly produced supported setting actions, press
+   **Approve & Apply Audit Actions**. Unreal revalidates every target; one stale
+   Actor rejects the complete batch.
+6. The level is never saved automatically. One Ctrl+Z restores the approved
+   batch. Static priority must be confirmed with runtime/GPU evidence before it
+   is treated as a measured bottleneck.
+
+See [assistant_level_audits.md](assistant_level_audits.md) for scoring,
+evidence limits, supported changes, and the next orchestration stage.
+
+## Profiling-First Level Audit lifecycle
+
+1. Start PIE or SIE with the representative camera, viewport, resolution, and
+   workload already in their intended state.
+2. Optionally enter a profiling question. An empty prompt uses the default
+   complete-level bottleneck request.
+3. Press **Run Profiling-First Level Audit** and keep the workload fixed.
+4. The Assistant runs the read-only static audit, discards 30 warmup frames,
+   captures 120 runtime samples, records one five-second GPU scope trace, and
+   runs up to two deterministic eight-capture Actor studies.
+5. If a selected static candidate cannot be mapped safely into the play world,
+   its reason is recorded as a skip; the Assistant does not substitute a more
+   convenient Actor.
+6. Review frame P95, budget misses, the leading inclusive GPU scope, Actor-study
+   outcomes relative to A/A control noise, limitations, and preserved evidence
+   IDs. Ending PIE/SIE early makes the run fail rather than mixing workloads.
+7. Cancel, failure, shutdown, and plugin unload restore temporary Actor runtime
+   visibility. The formal level is never edited or saved by this run.
+
+Profiling is the authority for performance. Images cannot measure frame or GPU
+cost and are only auxiliary visual-regression guards. See
+[assistant_level_profiling.md](assistant_level_profiling.md).
+
+## Cast Shadow optimization lifecycle
+
+1. Complete **Run Profiling-First Level Audit** under a representative fixed
+   PIE/SIE workload.
+2. Press **Test Best Shadow Optimization**. The Assistant selects the first
+   stable profiling candidate whose formal component still casts shadows.
+3. Keep the workload fixed while the Assistant records two shadow-on A/A
+   controls and three counterbalanced shadow-on/off pairs. Every capture has a
+   one-second warmup and a five-second trace.
+4. Unreal restores the runtime shadow state before deterministic host analysis.
+   A language or vision model cannot award the performance win.
+5. Review the common-scope median, MAD, noise, votes, relative reduction, and
+   fixed decision thresholds. Images may only inform human regression review.
+6. If proposed, stop PIE/SIE. Press **Approve & Apply Shadow Optimization** or
+   **Reject Shadow Optimization**. Approval revalidates the exact formal Actor,
+   component, mesh, and Before state.
+7. The level is not saved. One Ctrl+Z restores an approved Cast Shadow change.
+8. After approval, restart the same representative PIE/SIE workload and press
+   **Run Post-Apply Verification**. The complete profiling chain repeats with
+   fresh report/run IDs and hashes.
+9. Review frame P95, GPU P95, budget-miss, qualified-scope deltas, identity
+   checks, and decision reasons. Press **Keep Optimization**, **Keep Anyway
+   (Override Recommendation)**, or **Approve Rollback** as appropriate.
+10. Rollback is available only after PIE/SIE stops and the exact Actor,
+    component, mesh, and current `Cast Shadow = false` state revalidate. It is
+    a new Undo-backed `false -> true` edit; the level is never saved.
+
+See [assistant_shadow_optimization.md](assistant_shadow_optimization.md).
+See
+[assistant_shadow_optimization_verification.md](assistant_shadow_optimization_verification.md)
+for the fixed comparison guards and evidence-freshness rules.
 
 ## Material action lifecycle
 
@@ -399,24 +513,30 @@ is read-only; **Open Trace in Unreal Insights** launches the authoritative raw
 timeline. Inclusive totals may overlap, and the workflow does not infer an
 Actor, asset, material, shader, draw call, or packaged-build cause.
 
-**Measure Selected Actor GPU Impact** requires an active PIE or SIE world, an
-explicit question, and exactly one visible selected Actor with at least one
+**Run Repeatable Selected Actor GPU Study** requires an active PIE or SIE world,
+an explicit question, and exactly one visible selected Actor with at least one
 registered primitive component. Selection may point to the Editor Actor or its
 runtime counterpart; Unreal resolves and records both identities. The workflow
-captures a five-second visible baseline, temporarily sets only the runtime
-Actor hidden in game, verifies that state, waits one second, captures the
-five-second variant, and restores the original hidden state immediately after
-trace stop and before comparison or model review.
+uses fixed `AA_AB_BA_AB` order: two visible A/A controls, then AB, BA, AB
+visible/hidden pairs. Each of the eight five-second captures starts after a
+one-second warmup.
 
-The host compares only same-name queue-local scopes that appear in both Top-64
-sets. Inclusive total milliseconds and instance counts are divided by each
-trace's actual duration, and unmatched scope IDs remain explicit. The
-**Selected Actor GPU Impact Experiment** card exposes **Open Baseline Trace**
-and **Open Actor-Hidden Trace**. The formal level is never edited or saved, and
-restoration also runs on cancel, failure, dismissal, Editor shutdown, and
-plugin unload. Results are single-trial associations, not direct proof of pass,
-draw, material, shader, asset, or packaged-build causation. See
-[assistant_actor_gpu_impact.md](assistant_actor_gpu_impact.md).
+The runtime Actor is restored immediately after the final hidden trace stops,
+before analysis. Restoration also runs on cancel, failure, dismissal, Editor
+shutdown, and plugin unload. Python intersects queue-local scope identity across
+all eight Top-64 sets and recomputes A/A noise, three paired deltas, median,
+MAD, direction votes, signal excess, and classification from raw evidence. The
+**Repeatable Selected Actor GPU Study** card exposes **Open First A/A Control
+Trace** and **Open Final Hidden Trace**; all eight files remain preserved. The
+formal level is never edited or saved. Results remain associations, not direct
+pass/draw/material/shader/asset/packaged-build causation. See
+[assistant_actor_gpu_impact_studies.md](assistant_actor_gpu_impact_studies.md).
+
+The composite **Profiling-First Level Audit** controller runs these existing
+read-only stages sequentially. Its final Python synthesis makes no additional
+model call: it validates workload identity, child-report IDs and hashes, fixed
+capture parameters, deterministic candidate order, restoration, and
+recomputable summary metrics before Unreal accepts the report.
 
 The controller belongs to the plugin module, so closing and reopening the tab
 does not kill an active workflow. Pressing **Cancel**, closing the Editor, or
@@ -451,8 +571,13 @@ Run all Editor-side contract parsers inside a real, headless Editor process:
 The Editor automation suite covers running and terminal manifest parsing,
 project and external material proposals, single and batch Transform, Light,
 lighting-rig, lighting-rig-review, Camera, selected-mesh performance,
-runtime-performance, Insights GPU report parsing and aggregation, and Actor GPU
-impact comparison/report validation, an actual two-Actor Transform batch
+runtime-performance, Insights GPU report parsing and aggregation, single-pair
+Actor GPU comparison/report validation, repeatable-study report parsing, and
+profiling-first composite report parsing/tamper rejection, deterministic shadow
+optimization proposal parsing/threshold enforcement/tamper rejection,
+post-apply shadow verification retain/rollback/unresolved parsing plus
+metric/decision/threshold tamper rejection,
+an actual two-Actor Transform batch
 followed by one Unreal Undo, the original single-Actor Transform regression, a
 Stationary Light property apply followed by Unreal Undo, a three-light rig
 apply followed by one Unreal Undo, and a Camera property apply followed by
@@ -465,6 +590,11 @@ Light** exposes only type-valid fields and undoes correctly, **Prepare Camera**
 distinguishes FOV from focal length and undoes correctly, **Prepare Lighting
 Rig** shows exact Key/Fill/Rim roles and one grouped Undo, **Evaluate Applied
 Rig** restores the visible viewport and creates at most one intensity-only
-correction, **Measure Selected Actor GPU Impact** restores the runtime Actor
-and preserves two traces, and no
+correction, **Run Repeatable Selected Actor GPU Study** restores the runtime
+Actor and preserves eight traces, **Run Profiling-First Level Audit** stays on
+one fixed PIE/SIE workload and exposes one composite result, **Test Best Shadow
+Optimization** restores the runtime component and never exposes approval until
+PIE/SIE has stopped, **Run Post-Apply Verification** accepts only the restarted
+matching workload and exposes rollback only after an independently recomputed
+recommendation, and no
 RenderMasterBot-specific error is written during startup.

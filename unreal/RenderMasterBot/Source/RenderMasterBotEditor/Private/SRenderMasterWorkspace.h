@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "RenderMasterConversationAssistant.h"
 #include "Widgets/SCompoundWidget.h"
 
 class FRenderMasterWorkflowController;
@@ -12,14 +13,19 @@ class FRenderMasterLightingRigReviewAssistant;
 class FRenderMasterCameraAssistant;
 class FRenderMasterCameraBatchAssistant;
 class FRenderMasterPerformanceAssistant;
+class FRenderMasterLevelAuditAssistant;
 class FRenderMasterRuntimePerformanceAssistant;
 class FRenderMasterInsightsGpuAssistant;
+class FRenderMasterLevelProfilingAssistant;
+class FRenderMasterShadowOptimizationVerificationAssistant;
 class AActor;
 class ACameraActor;
 class ALight;
 class AStaticMeshActor;
 class SComboButton;
 class SMultiLineEditableTextBox;
+class SScrollBox;
+class SVerticalBox;
 class SWidgetSwitcher;
 class UStaticMeshComponent;
 
@@ -40,6 +46,21 @@ private:
     TSharedRef<SWidget> MakeNavigationButton(const FText& Label, int32 PageIndex);
     TSharedRef<SWidget> MakeMessage(const FText& Speaker, TAttribute<FText> Message, const FLinearColor& Accent);
 
+    FReply SendConversationMessage();
+    FReply ClearConversation();
+    void HandleConversationTurnCompleted(
+        const FRenderMasterConversationTurn& Turn);
+    void HandleConversationTurnFailed(const FString& Error);
+    void DispatchConversationIntent(
+        const FString& Intent,
+        const FString& ActionPrompt);
+    bool CaptureConversationContext(
+        FRenderMasterConversationContext& OutContext,
+        FString& OutError) const;
+    void AddConversationMessage(const FString& Role, const FString& Content);
+    void RefreshConversationMessages();
+    bool CanSendConversationMessage() const;
+
     FReply AnalyzeContext();
     FReply PrepareAction();
     FReply PrepareExternalAction();
@@ -53,10 +74,22 @@ private:
     FReply PreparePerformanceAction();
     FReply ApprovePerformanceAction();
     FReply RejectPerformanceAction();
+    FReply PrepareLevelAuditAction();
+    FReply ApproveLevelAuditAction();
+    FReply RejectLevelAuditAction();
     FReply PrepareRuntimePerformanceAction();
     FReply DismissRuntimePerformanceAction();
     FReply PrepareInsightsGpuAction();
     FReply PrepareActorGpuImpactAction();
+    FReply PrepareShadowOptimizationAction();
+    FReply ApproveShadowOptimizationAction();
+    FReply RejectShadowOptimizationAction();
+    FReply PrepareShadowVerificationAction();
+    FReply KeepShadowOptimizationAction();
+    FReply RollbackShadowOptimizationAction();
+    FReply DismissShadowVerificationAction();
+    FReply PrepareLevelProfilingAction();
+    FReply DismissLevelProfilingAction();
     FReply OpenInsightsGpuTraceAction();
     FReply OpenInsightsGpuBaselineTraceAction();
     FReply DismissInsightsGpuAction();
@@ -105,12 +138,24 @@ private:
     EVisibility GetPerformanceProposalVisibility() const;
     EVisibility GetPerformanceApplyVisibility() const;
     EVisibility GetPerformanceRejectVisibility() const;
+    EVisibility GetLevelAuditVisibility() const;
+    EVisibility GetLevelAuditApplyVisibility() const;
+    EVisibility GetLevelAuditRejectVisibility() const;
     EVisibility GetRuntimePerformanceVisibility() const;
     EVisibility GetRuntimePerformanceDismissVisibility() const;
     EVisibility GetInsightsGpuVisibility() const;
     EVisibility GetInsightsGpuOpenVisibility() const;
     EVisibility GetInsightsGpuBaselineOpenVisibility() const;
     EVisibility GetInsightsGpuDismissVisibility() const;
+    EVisibility GetShadowOptimizationApplyVisibility() const;
+    EVisibility GetShadowOptimizationRejectVisibility() const;
+    EVisibility GetShadowVerificationVisibility() const;
+    EVisibility GetShadowVerificationStartVisibility() const;
+    EVisibility GetShadowVerificationKeepVisibility() const;
+    EVisibility GetShadowVerificationRollbackVisibility() const;
+    EVisibility GetShadowVerificationDismissVisibility() const;
+    EVisibility GetLevelProfilingVisibility() const;
+    EVisibility GetLevelProfilingDismissVisibility() const;
     bool GetSelectedActorsForTransform(TArray<AActor*>& OutActors, FString& OutError) const;
     bool GetSelectedLights(TArray<ALight*>& OutLights, FString& OutError) const;
     bool GetSelectedLightingRig(
@@ -143,14 +188,23 @@ private:
     TSharedPtr<FRenderMasterCameraAssistant> CameraAssistant;
     TSharedPtr<FRenderMasterCameraBatchAssistant> CameraBatchAssistant;
     TSharedPtr<FRenderMasterPerformanceAssistant> PerformanceAssistant;
+    TSharedPtr<FRenderMasterLevelAuditAssistant> LevelAuditAssistant;
     TSharedPtr<FRenderMasterRuntimePerformanceAssistant> RuntimePerformanceAssistant;
     TSharedPtr<FRenderMasterInsightsGpuAssistant> InsightsGpuAssistant;
+    TSharedPtr<FRenderMasterLevelProfilingAssistant> LevelProfilingAssistant;
+    TSharedPtr<FRenderMasterShadowOptimizationVerificationAssistant>
+        ShadowVerificationAssistant;
+    TSharedPtr<FRenderMasterConversationAssistant> ConversationAssistant;
     TSharedPtr<SWidgetSwitcher> PageSwitcher;
     TSharedPtr<SMultiLineEditableTextBox> AssistantPromptBox;
+    TSharedPtr<SScrollBox> ConversationScrollBox;
+    TSharedPtr<SVerticalBox> ConversationMessagesBox;
     TSharedPtr<SComboButton> MaterialSlotComboButton;
     TWeakObjectPtr<UStaticMeshComponent> SelectedSlotComponent;
     FString LastRequest;
     FString AssistantReply;
+    TArray<FRenderMasterConversationMessage> ConversationMessages;
+    int32 NextConversationMessageNumber = 1;
     int32 SelectedMaterialSlotIndex = INDEX_NONE;
     int32 ActivePage = 0;
     enum class ELastAssistantAction : uint8
@@ -164,8 +218,12 @@ private:
         Camera,
         CameraBatch,
         Performance,
+        LevelAudit,
         RuntimePerformance,
         InsightsGpu,
+        ShadowOptimization,
+        ShadowVerification,
+        LevelProfiling,
     };
     ELastAssistantAction LastAssistantAction = ELastAssistantAction::None;
 };

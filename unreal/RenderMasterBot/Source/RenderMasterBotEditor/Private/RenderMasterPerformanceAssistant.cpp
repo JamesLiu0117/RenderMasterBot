@@ -542,6 +542,44 @@ bool RenderMasterPerformanceSnapshotsMatch(
             A.MaxDrawDistanceCm, B.MaxDrawDistanceCm, 0.01f);
 }
 
+bool RenderMasterPerformanceEvidenceMatches(
+    const FRenderMasterPerformanceEvidence& A,
+    const FRenderMasterPerformanceEvidence& B)
+{
+    return EvidenceMatches(A, B);
+}
+
+TSharedRef<FJsonObject> RenderMasterPerformanceEvidenceJson(
+    const FRenderMasterPerformanceEvidence& Evidence,
+    const FString& ProjectName,
+    const FString& LevelPath)
+{
+    return EvidenceJson(Evidence, ProjectName, LevelPath);
+}
+
+bool RenderMasterParsePerformanceEvidenceJson(
+    const TSharedPtr<FJsonObject>& Json,
+    const FString& ProjectName,
+    const FString& LevelPath,
+    FRenderMasterPerformanceEvidence& OutEvidence,
+    FString& OutError)
+{
+    return ParseEvidence(
+        Json, ProjectName, LevelPath, OutEvidence, OutError);
+}
+
+bool RenderMasterParsePerformanceActionJson(
+    const TSharedPtr<FJsonObject>& Json,
+    const FString& ProjectName,
+    const FString& LevelPath,
+    const FRenderMasterPerformanceEvidence& Expected,
+    FRenderMasterPerformanceAction& OutAction,
+    FString& OutError)
+{
+    return ParseAction(
+        Json, ProjectName, LevelPath, Expected, OutAction, OutError);
+}
+
 bool RenderMasterCapturePerformanceEvidence(
     AStaticMeshActor* Actor,
     UStaticMeshComponent* Component,

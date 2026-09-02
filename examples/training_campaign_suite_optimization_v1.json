@@ -1,0 +1,304 @@
+{
+  "schema_version": "0.1",
+  "suite_id": "optimization_training_v1",
+  "description": "Twenty-four frozen OptimizationPlugin requests spanning single assets, material assignment, multi-asset composition, camera views, and lighting. Every case is expectation-gated before it may become local planner training data.",
+  "project_name": "OptimizationPlugin",
+  "project_descriptor_sha256": "04bc3caa925b3a026de9651fea5d74c7c9b9d3aeab918ca86ef24eb86d2ff734",
+  "asset_catalog_sha256": "0ca34ee826f23f8a30b96f2937a7b41acfa2ea1331555e41b17e36481ac0e4eb",
+  "split_seed": "renderbot-stage0-v1",
+  "validation_group_fraction": 0.1,
+  "test_group_fraction": 0.1,
+  "cases": [
+    {
+      "case_id": "single_door",
+      "category": "single_asset",
+      "prompt": "Create a clean studio product preview of the SM_Door mesh as the only scene object. Keep the complete door centered, upright, clearly visible, and neutrally lit.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_door_50b5062a"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1
+      }
+    },
+    {
+      "case_id": "single_pistol",
+      "category": "single_asset",
+      "prompt": "Create a neutral product preview of SM_Pistol as the only object. Show the entire pistol in a readable three-quarter view with no other geometry.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_pistol_e3cf5887"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1
+      }
+    },
+    {
+      "case_id": "single_rifle",
+      "category": "single_asset",
+      "prompt": "Create a catalog-style product preview of SM_Rifle as the only object. Keep the complete silhouette visible with balanced neutral lighting.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_rifle_e162d617"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1
+      }
+    },
+    {
+      "case_id": "single_launcher",
+      "category": "single_asset",
+      "prompt": "Create a centered studio preview of SM_GrenadeLauncher as the only object. Show its full length and shape clearly against an uncluttered background.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_grenadelauncher_72f04838"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1
+      }
+    },
+    {
+      "case_id": "single_target",
+      "category": "single_asset",
+      "prompt": "Create a front-readable product preview of SM_TargetBaseMesh as the only object. Keep the complete vertical target centered and well separated from the background.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_targetbasemesh_78db30d8"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1
+      }
+    },
+    {
+      "case_id": "single_foam_bullet",
+      "category": "single_asset",
+      "prompt": "Create a macro product preview of SM_FoamBullet as the only scene object. Enlarge it in frame while keeping the full projectile visible and sharply lit.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_foambullet_7e3463d7"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1
+      }
+    },
+    {
+      "case_id": "single_chamfer_cube",
+      "category": "single_asset",
+      "prompt": "Create a simple studio preview of SM_ChamferCube as the only object. Use a three-quarter angle that clearly shows its beveled edges.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_chamfercube_8fb2dd78"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1
+      }
+    },
+    {
+      "case_id": "single_ramp",
+      "category": "single_asset",
+      "prompt": "Create a clean shape-study preview of SM_Ramp as the only object. Frame the whole ramp so its slope and volume are immediately readable.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_ramp_fd9e6f31"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1
+      }
+    },
+    {
+      "case_id": "material_door_weathered",
+      "category": "material_assignment",
+      "prompt": "Create a material-focused product preview of one SM_Door using the Weathered Planks PBR Wood Material. Show visible dark wood grain while keeping the complete door centered and well lit.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_door_50b5062a"],
+        "required_material_asset_ids": ["m_weatheredplanks_00aebe3e"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1,
+        "minimum_material_assignment_count": 1,
+        "maximum_material_assignment_count": 1
+      }
+    },
+    {
+      "case_id": "material_door_planks",
+      "category": "material_assignment",
+      "prompt": "Create a single-door product preview using SM_Door and the M_PH_PlanksBrown10 CC0 weathered brown planks material. Keep the full door visible with surface texture readable.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_door_50b5062a"],
+        "required_material_asset_ids": ["m_ph_planksbrown10_b5935b63"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1,
+        "minimum_material_assignment_count": 1,
+        "maximum_material_assignment_count": 1
+      }
+    },
+    {
+      "case_id": "material_cube_grid",
+      "category": "material_assignment",
+      "prompt": "Create a technical blockout preview of one SM_Cube using the M_PrototypeGrid material. Show the entire cube at a readable three-quarter angle.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_cube_0f01e0d4"],
+        "required_material_asset_ids": ["m_prototypegrid_85b4fafa"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1,
+        "minimum_material_assignment_count": 1,
+        "maximum_material_assignment_count": 1
+      }
+    },
+    {
+      "case_id": "material_cylinder_gray",
+      "category": "material_assignment",
+      "prompt": "Create a neutral blockout preview of one SM_Cylinder using MI_PrototypeGrid_Gray. Keep the full cylinder visible and make the grid pattern readable.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_cylinder_eeb3c1b7"],
+        "required_material_asset_ids": ["mi_prototypegrid_gray_0cbfd1e4"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1,
+        "minimum_material_assignment_count": 1,
+        "maximum_material_assignment_count": 1
+      }
+    },
+    {
+      "case_id": "compose_door_frame",
+      "category": "multi_asset_composition",
+      "prompt": "Build a compact doorway composition using exactly one SM_Door, one SM_DoorFrame_Corner, and one SM_DoorFrame_Edge. Arrange all three pieces as a readable centered architectural assembly.",
+      "expectation": {
+        "required_scene_asset_ids": [
+          "sm_door_50b5062a",
+          "sm_doorframe_corner_17bc7e3a",
+          "sm_doorframe_edge_28290fb9"
+        ],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 3,
+        "maximum_object_count": 3
+      }
+    },
+    {
+      "case_id": "compose_weapon_pair",
+      "category": "multi_asset_composition",
+      "prompt": "Create a comparison composition with exactly one SM_Pistol and one SM_Rifle. Place them side by side with both full silhouettes clearly visible.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_pistol_e3cf5887", "sm_rifle_e162d617"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 2,
+        "maximum_object_count": 2
+      }
+    },
+    {
+      "case_id": "compose_geometry_trio",
+      "category": "multi_asset_composition",
+      "prompt": "Create a balanced geometric study using exactly one SM_Cube, one SM_Cylinder, and one SM_Ramp. Arrange the three forms without overlap so each silhouette is readable.",
+      "expectation": {
+        "required_scene_asset_ids": [
+          "sm_cube_0f01e0d4",
+          "sm_cylinder_eeb3c1b7",
+          "sm_ramp_fd9e6f31"
+        ],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 3,
+        "maximum_object_count": 3
+      }
+    },
+    {
+      "case_id": "compose_jump_shapes",
+      "category": "multi_asset_composition",
+      "prompt": "Create a compact jump-pad shape study using exactly one SM_CircularBand and one SM_CircularGlow. Stack or align the two meshes so both remain visible.",
+      "expectation": {
+        "required_scene_asset_ids": [
+          "sm_circularband_10b5d251",
+          "sm_circularglow_09e45c70"
+        ],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 2,
+        "maximum_object_count": 2
+      }
+    },
+    {
+      "case_id": "camera_top_geometry",
+      "category": "camera_view",
+      "prompt": "Create a top-down geometric layout with exactly one SM_ChamferCube and one SM_Cylinder. Separate the objects clearly for an overhead composition.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_chamfercube_8fb2dd78", "sm_cylinder_eeb3c1b7"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 2,
+        "maximum_object_count": 2
+      },
+      "view_axis": "from-positive-z"
+    },
+    {
+      "case_id": "camera_pistol_side",
+      "category": "camera_view",
+      "prompt": "Create a strict side inspection preview of SM_Pistol as the only object. Keep the full weapon silhouette centered with minimal perspective distortion.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_pistol_e3cf5887"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1
+      },
+      "view_axis": "from-positive-x"
+    },
+    {
+      "case_id": "camera_rifle_front",
+      "category": "camera_view",
+      "prompt": "Create a front-axis inspection preview of SM_Rifle as the only object. Keep the complete rifle visible and centered for a consistent directional study.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_rifle_e162d617"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1
+      },
+      "view_axis": "from-negative-y"
+    },
+    {
+      "case_id": "camera_target_side",
+      "category": "camera_view",
+      "prompt": "Create a side-axis inspection of SM_TargetBaseMesh as the only object. Preserve the whole vertical form and center it with a consistent margin.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_targetbasemesh_78db30d8"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1
+      },
+      "view_axis": "from-negative-x"
+    },
+    {
+      "case_id": "lighting_door_high_key",
+      "category": "lighting",
+      "prompt": "Create a bright high-key studio preview of SM_Door as the only object. Use soft balanced illumination with readable surface detail and no crushed shadows.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_door_50b5062a"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1
+      }
+    },
+    {
+      "case_id": "lighting_pistol_dramatic",
+      "category": "lighting",
+      "prompt": "Create a dramatic low-key product preview of SM_Pistol as the only object. Use controlled edge separation while keeping the weapon readable and correctly exposed.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_pistol_e3cf5887"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1
+      }
+    },
+    {
+      "case_id": "lighting_rifle_rim",
+      "category": "lighting",
+      "prompt": "Create a cinematic studio preview of SM_Rifle as the only object with a clear rim-light silhouette and enough fill to preserve visible weapon detail.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_rifle_e162d617"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1
+      }
+    },
+    {
+      "case_id": "lighting_target_contrast",
+      "category": "lighting",
+      "prompt": "Create a contrast-focused studio preview of SM_TargetBaseMesh as the only object. Separate its outline from the background while keeping front-facing detail visible.",
+      "expectation": {
+        "required_scene_asset_ids": ["sm_targetbasemesh_78db30d8"],
+        "forbidden_asset_ids": ["sm_plane_8f05ebd7"],
+        "minimum_object_count": 1,
+        "maximum_object_count": 1
+      }
+    }
+  ]
+}

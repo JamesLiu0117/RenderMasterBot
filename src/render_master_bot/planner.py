@@ -76,6 +76,31 @@ class PlanResult:
     attempt_count: int = 1
 
 
+def build_scene_planner_messages(
+    *,
+    prompt: str,
+    asset_ids: list[str] | None = None,
+    asset_context: list[str] | None = None,
+) -> list[dict[str, str]]:
+    """Build the production planner prompt shared with training-data export."""
+
+    assets = asset_ids or []
+    if asset_context:
+        catalog = "\n".join(f"- {value}" for value in asset_context)
+    elif assets:
+        catalog = "\n".join(f"- {asset_id}" for asset_id in assets)
+    else:
+        catalog = "(empty; create no scene objects)"
+    user_message = (
+        "Available asset catalog (only the listed asset IDs may be used):\n"
+        f"{catalog}\n\nUser request:\n{prompt.strip()}"
+    )
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_message},
+    ]
+
+
 class ScenePlanner:
     def __init__(self, client: StructuredChatClient):
         self.client = client
@@ -89,20 +114,11 @@ class ScenePlanner:
         asset_context: list[str] | None = None,
     ) -> PlanResult:
         assets = asset_ids or []
-        if asset_context:
-            catalog = "\n".join(f"- {value}" for value in asset_context)
-        elif assets:
-            catalog = "\n".join(f"- {asset_id}" for asset_id in assets)
-        else:
-            catalog = "(empty; create no scene objects)"
-        user_message = (
-            "Available asset catalog (only the listed asset IDs may be used):\n"
-            f"{catalog}\n\nUser request:\n{prompt.strip()}"
+        messages = build_scene_planner_messages(
+            prompt=prompt,
+            asset_ids=assets,
+            asset_context=asset_context,
         )
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ]
         response = self.client.chat_structured(
             model=model,
             messages=messages,
