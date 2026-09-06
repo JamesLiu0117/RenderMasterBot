@@ -1,10 +1,40 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from render_master_bot.ollama import OllamaClient, OllamaError
+from render_master_bot.ollama import InstalledModel, OllamaClient, OllamaError
 
 
 class OllamaEmbeddingTests(unittest.TestCase):
+    def test_model_details_preserve_digest_and_size(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "models": [
+                {
+                    "name": "planner:latest",
+                    "digest": "a" * 64,
+                    "size": 1234,
+                }
+            ]
+        }
+        with patch("render_master_bot.ollama.httpx.get", return_value=response):
+            client = OllamaClient()
+            self.assertEqual(
+                client.list_model_details(),
+                [InstalledModel(name="planner:latest", digest="a" * 64, size_bytes=1234)],
+            )
+            self.assertEqual(client.list_models(), ["planner:latest"])
+
+    def test_model_details_reject_incomplete_identity(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "models": [{"name": "planner:latest", "size": 1234}]
+        }
+        with patch("render_master_bot.ollama.httpx.get", return_value=response):
+            with self.assertRaisesRegex(OllamaError, "invalid record"):
+                OllamaClient().list_model_details()
+
     def test_embedding_request_preserves_input_order(self):
         response = Mock()
         response.raise_for_status.return_value = None

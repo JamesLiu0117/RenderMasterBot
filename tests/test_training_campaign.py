@@ -23,6 +23,7 @@ from render_master_bot.serialization import canonical_sha256
 from render_master_bot.training_campaign import (
     CAMPAIGN_MANIFEST_FILENAME,
     build_training_baseline_report,
+    cancel_training_campaign,
     create_training_campaign_plan,
     load_training_campaign_run,
     _primary_failure_reason,
@@ -461,6 +462,64 @@ class TrainingCampaignTests(unittest.TestCase):
             self.assertEqual(calls, [])
             self.assertEqual(run.status, "completed")
             self.assertTrue(run.case_results[0].training_eligible)
+
+    def test_cancel_recovers_active_evidence_and_remains_resumable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            campaign, manifest_path, planned = self._create_plan(
+                root,
+                cases=[self._case("cancel_case")],
+            )
+            started = datetime(2026, 9, 5, 12, 0, tzinfo=UTC)
+            active = TrainingCampaignRun.model_validate(
+                {
+                    **planned.model_dump(mode="json"),
+                    "status": "running",
+                    "started_at": started,
+                    "active_case_id": "cancel_case",
+                    "active_attempt": 1,
+                    "active_started_at": started,
+                }
+            )
+            _write_json(manifest_path, active.model_dump(mode="json"))
+            self._write_successful_workflow(
+                campaign / "workflows" / "cancel_case" / "attempt-001",
+                workflow_id="campaign_v1_cancel_case",
+                prompt="Create a product preview for cancel_case",
+            )
+
+            cancelled = cancel_training_campaign(
+                manifest_path,
+                reason="paused for operator review",
+            )
+            repeated = cancel_training_campaign(manifest_path)
+
+            self.assertEqual(cancelled.status, "cancelled")
+            self.assertIsNone(cancelled.active_case_id)
+            self.assertEqual(len(cancelled.case_results), 1)
+            self.assertEqual(cancelled.case_results[0].status, "succeeded")
+            self.assertIn("paused for operator review", cancelled.errors)
+            self.assertEqual(repeated, cancelled)
+
+            calls = []
+            resumed = run_training_campaign(
+                campaign_manifest_path=manifest_path,
+                case_runner=lambda *args: calls.append(args),
+            )
+            self.assertEqual(calls, [])
+            self.assertEqual(resumed.status, "completed")
+
+    def test_cancel_command_parser_preserves_reason(self):
+        args = build_parser().parse_args(
+            [
+                "training-campaign",
+                "cancel",
+                "campaign_manifest.json",
+                "--reason",
+                "paused after operator request",
+            ]
+        )
+        self.assertEqual(args.reason, "paused after operator request")
 
     def test_campaign_gate_allows_only_hash_bound_eligible_workflows(self):
         with tempfile.TemporaryDirectory() as directory:

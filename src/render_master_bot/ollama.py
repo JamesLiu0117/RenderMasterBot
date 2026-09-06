@@ -26,6 +26,13 @@ class StructuredResponse:
     done_reason: str | None = None
 
 
+@dataclass(frozen=True)
+class InstalledModel:
+    name: str
+    digest: str
+    size_bytes: int
+
+
 class OllamaClient:
     def __init__(
         self,
@@ -37,13 +44,36 @@ class OllamaClient:
         self.timeout_seconds = timeout_seconds
         self.num_ctx = num_ctx
 
-    def list_models(self) -> list[str]:
+    def list_model_details(self) -> list[InstalledModel]:
         try:
             response = httpx.get(f"{self.base_url}/api/tags", timeout=10.0)
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise OllamaError(f"cannot reach Ollama at {self.base_url}: {exc}") from exc
-        return [item["name"] for item in response.json().get("models", [])]
+        records = []
+        for item in response.json().get("models", []):
+            try:
+                name = item["name"]
+                digest = item["digest"]
+                size = item["size"]
+            except (KeyError, TypeError) as exc:
+                raise OllamaError("Ollama model list contains an invalid record") from exc
+            if (
+                not isinstance(name, str)
+                or not name.strip()
+                or not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+                or not isinstance(size, int)
+                or isinstance(size, bool)
+                or size < 0
+            ):
+                raise OllamaError("Ollama model list contains an invalid record")
+            records.append(InstalledModel(name=name, digest=digest, size_bytes=size))
+        return records
+
+    def list_models(self) -> list[str]:
+        return [record.name for record in self.list_model_details()]
 
     def embed_texts(self, *, model: str, texts: list[str]) -> list[list[float]]:
         if not texts or any(not text.strip() for text in texts):

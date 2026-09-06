@@ -19,6 +19,7 @@ from render_master_bot.asset_index import (
 )
 from render_master_bot.camera_framing import frame_camera
 from render_master_bot.contracts import (
+    AssetCard,
     ArtifactRecord,
     RenderWorkflowManifest,
     TrainingCampaignCase,
@@ -425,11 +426,11 @@ def _frozen_retrieval_ids(
     *,
     retrieval_campaign_root: Path | None,
     case_id: str,
-    required_asset_id: str,
-    cards_by_id: dict[str, Any],
+    required_asset_ids: list[str],
+    cards_by_id: dict[str, AssetCard],
 ) -> list[str]:
     if retrieval_campaign_root is None:
-        return [required_asset_id]
+        return list(dict.fromkeys(required_asset_ids))
     attempts_root = retrieval_campaign_root / "workflows" / case_id
     candidates = sorted(
         attempts_root.glob("attempt-*/planning/retrieval.json"),
@@ -455,8 +456,9 @@ def _frozen_retrieval_ids(
             f"frozen retrieval for {case_id} contains unknown assets: "
             + ", ".join(unknown)
         )
-    if required_asset_id not in ids:
-        ids.insert(0, required_asset_id)
+    for required_asset_id in reversed(required_asset_ids):
+        if required_asset_id not in ids:
+            ids.insert(0, required_asset_id)
     if len(ids) > 50:
         raise TrainingReferenceError(
             f"frozen retrieval for {case_id} exceeds the 50-asset contract limit"
@@ -464,16 +466,32 @@ def _frozen_retrieval_ids(
     return ids
 
 
-def _single_asset_reference_spec(
+def _single_object_reference_spec(
     *,
     case: TrainingCampaignCase,
-    card: Any,
+    card: AssetCard,
+    material_card: AssetCard | None = None,
 ) -> RenderSpec:
     if card.dimensions_cm is None:
         raise TrainingReferenceError(
             f"single-asset reference {case.case_id} has no dimensions evidence"
         )
     target = card.pivot_offset_cm
+    material_assignments = []
+    if material_card is not None:
+        if len(card.material_slots) != 1:
+            raise TrainingReferenceError(
+                f"material reference {case.case_id} requires exactly one mesh slot"
+            )
+        material_assignments.append(
+            {
+                "slot_name": card.material_slots[0],
+                "material": {
+                    "asset_id": material_card.asset_id,
+                    "display_name": material_card.display_name,
+                },
+            }
+        )
     initial = {
         "source_prompt": case.prompt,
         "scene_name": f"{case.case_id}_reference",
@@ -484,7 +502,7 @@ def _single_asset_reference_spec(
                     "asset_id": card.asset_id,
                     "display_name": card.display_name,
                 },
-                "materials": [],
+                "materials": material_assignments,
             }
         ],
         "camera": {
@@ -539,6 +557,31 @@ def _single_asset_reference_spec(
     ).spec
 
 
+def _lighting_reference_spec(case: TrainingCampaignCase, card: AssetCard) -> RenderSpec:
+    """Named, reviewable light recipes for the four frozen Stage 1 requests."""
+    # (key lux, fill lux, rim lux). Exposure and geometry stay fixed, so
+    # differences in light ratios are explicit supervision rather than EV drift.
+    recipes = {
+        "lighting_door_high_key": (18_000.0, 12_000.0, 0.0),
+        "lighting_pistol_dramatic": (18_000.0, 1_500.0, 8_000.0),
+        "lighting_rifle_rim": (16_000.0, 5_000.0, 18_000.0),
+        "lighting_target_contrast": (20_000.0, 2_500.0, 6_000.0),
+    }
+    if case.case_id not in recipes:
+        raise TrainingReferenceError(f"no reviewed lighting recipe for {case.case_id}")
+    payload = _single_object_reference_spec(case=case, card=card).model_dump(mode="json")
+    key, fill, rim = recipes[case.case_id]
+    payload["lights"][0]["intensity"] = key
+    payload["lights"][1]["intensity"] = fill
+    if rim:
+        payload["lights"].append({
+            "light_id": "rim_light", "kind": "directional",
+            "transform": {"rotation_deg": {"y": -15.0, "z": 225.0}},
+            "intensity": rim, "intensity_unit": "lux",
+        })
+    return RenderSpec.model_validate(payload)
+
+
 def compile_single_asset_reference_suite(
     *,
     campaign_suite_path: str | Path,
@@ -548,9 +591,12 @@ def compile_single_asset_reference_suite(
     reference_suite_id: str,
     retrieval_campaign_directory: str | Path | None = None,
     case_ids: list[str] | None = None,
+    reference_category: str = "single_asset",
 ) -> TrainingReferenceSuite:
     """Compile deterministic three-quarter references for frozen single-asset cases."""
 
+    if reference_category not in {"single_asset", "lighting"}:
+        raise TrainingReferenceError(f"unsupported single-object reference category: {reference_category}")
     campaign_suite = load_training_campaign_suite(campaign_suite_path)
     project = Path(project_path).expanduser().resolve()
     catalog = Path(asset_catalog_path).expanduser().resolve()
@@ -568,7 +614,7 @@ def compile_single_asset_reference_suite(
         raise TrainingReferenceError(str(exc)) from exc
     cards_by_id = {card.asset_id: card for card in cards}
     single_cases = [
-        case for case in campaign_suite.cases if case.category == "single_asset"
+        case for case in campaign_suite.cases if case.category == reference_category
     ]
     if case_ids:
         if len(case_ids) != len(set(case_ids)):
@@ -577,14 +623,14 @@ def compile_single_asset_reference_suite(
         missing = [case_id for case_id in case_ids if case_id not in case_map]
         if missing:
             raise TrainingReferenceError(
-                "reference compiler supports only known single_asset cases: "
+                f"reference compiler supports only known {reference_category} cases: "
                 + ", ".join(missing)
             )
         selected_cases = [case_map[case_id] for case_id in case_ids]
     else:
         selected_cases = single_cases
     if not selected_cases:
-        raise TrainingReferenceError("campaign suite has no selected single_asset cases")
+        raise TrainingReferenceError(f"campaign suite has no selected {reference_category} cases")
     retrieval_root = (
         Path(retrieval_campaign_directory).expanduser().resolve()
         if retrieval_campaign_directory is not None
@@ -614,12 +660,20 @@ def compile_single_asset_reference_suite(
             raise TrainingReferenceError(
                 f"single-asset reference {case.case_id} requires a static mesh"
             )
-        spec = _single_asset_reference_spec(case=case, card=card)
+        spec = (
+            _lighting_reference_spec(case, card) if reference_category == "lighting"
+            else _single_object_reference_spec(case=case, card=card)
+        )
         references.append(
             TrainingReferenceCase(
                 case_id=case.case_id,
                 authoring_source="deterministic_compiler",
                 rationale=(
+                    f"Deterministic lighting recipe v0.1 ({case.case_id}): exact mesh, "
+                    "fixed EV100 11 and bounded three-quarter framing; explicit key/fill "
+                    "illuminance ratio and optional rear rim. Visual style must pass "
+                    "the requested-prompt evaluator and independent pixel gate."
+                ) if reference_category == "lighting" else (
                     "Deterministic single-asset compiler v0.1: exact required mesh, "
                     "no unsolicited material, bounded elevated three-quarter camera, "
                     "fixed EV100 11, and neutral key/fill directional lighting."
@@ -627,7 +681,147 @@ def compile_single_asset_reference_suite(
                 retrieved_asset_ids=_frozen_retrieval_ids(
                     retrieval_campaign_root=retrieval_root,
                     case_id=case.case_id,
-                    required_asset_id=asset_id,
+                    required_asset_ids=[asset_id],
+                    cards_by_id=cards_by_id,
+                ),
+                render_spec=spec,
+                render_spec_sha256=canonical_sha256(spec),
+            )
+        )
+    suite = TrainingReferenceSuite(
+        reference_suite_id=reference_suite_id,
+        campaign_suite_id=campaign_suite.suite_id,
+        campaign_suite_sha256=canonical_sha256(campaign_suite),
+        cases=references,
+    )
+    results = [
+        _validate_reference_case(
+            campaign_case=case,
+            reference=reference,
+            cards_by_id=cards_by_id,
+        )
+        for case, reference in zip(selected_cases, references, strict=True)
+    ]
+    rejected = [result for result in results if result.status == "rejected"]
+    if rejected:
+        details = "; ".join(
+            f"{result.case_id}: {', '.join(result.issue_codes)}"
+            for result in rejected
+        )
+        raise TrainingReferenceError(
+            "compiled references failed their own static gate: " + details
+        )
+    output = Path(output_path).expanduser().resolve()
+    if output.exists():
+        raise TrainingReferenceError(f"reference output already exists: {output}")
+    _write_json(output, suite.model_dump(mode="json"))
+    return suite
+
+
+def compile_material_reference_suite(
+    *,
+    campaign_suite_path: str | Path,
+    project_path: str | Path,
+    asset_catalog_path: str | Path,
+    output_path: str | Path,
+    reference_suite_id: str,
+    retrieval_campaign_directory: str | Path | None = None,
+    case_ids: list[str] | None = None,
+) -> TrainingReferenceSuite:
+    """Compile exact mesh, material, slot, camera, and lighting references."""
+
+    campaign_suite = load_training_campaign_suite(campaign_suite_path)
+    project = Path(project_path).expanduser().resolve()
+    catalog = Path(asset_catalog_path).expanduser().resolve()
+    if project.suffix.casefold() != ".uproject" or not project.is_file():
+        raise TrainingReferenceError(f"not an existing .uproject file: {project}")
+    if project.stem != campaign_suite.project_name:
+        raise TrainingReferenceError("project name does not match the campaign suite")
+    if _sha256_file(project) != campaign_suite.project_descriptor_sha256:
+        raise TrainingReferenceError("campaign project descriptor SHA-256 is stale")
+    if _sha256_file(catalog) != campaign_suite.asset_catalog_sha256:
+        raise TrainingReferenceError("campaign asset catalog SHA-256 is stale")
+    try:
+        cards = load_asset_card_catalog(catalog)
+    except AssetIndexError as exc:
+        raise TrainingReferenceError(str(exc)) from exc
+    cards_by_id = {card.asset_id: card for card in cards}
+    material_cases = [
+        case
+        for case in campaign_suite.cases
+        if case.category == "material_assignment"
+    ]
+    if case_ids:
+        if len(case_ids) != len(set(case_ids)):
+            raise TrainingReferenceError("reference compiler case IDs must be unique")
+        case_map = {case.case_id: case for case in material_cases}
+        missing = [case_id for case_id in case_ids if case_id not in case_map]
+        if missing:
+            raise TrainingReferenceError(
+                "reference compiler supports only known material_assignment cases: "
+                + ", ".join(missing)
+            )
+        selected_cases = [case_map[case_id] for case_id in case_ids]
+    else:
+        selected_cases = material_cases
+    if not selected_cases:
+        raise TrainingReferenceError(
+            "campaign suite has no selected material_assignment cases"
+        )
+    retrieval_root = (
+        Path(retrieval_campaign_directory).expanduser().resolve()
+        if retrieval_campaign_directory is not None
+        else None
+    )
+    references: list[TrainingReferenceCase] = []
+    for case in selected_cases:
+        expectation = case.expectation
+        if (
+            len(expectation.required_scene_asset_ids) != 1
+            or len(expectation.required_material_asset_ids) != 1
+            or expectation.minimum_object_count != 1
+            or expectation.maximum_object_count != 1
+            or expectation.minimum_material_assignment_count != 1
+            or expectation.maximum_material_assignment_count != 1
+        ):
+            raise TrainingReferenceError(
+                f"material compiler cannot satisfy case shape {case.case_id}"
+            )
+        mesh_id = expectation.required_scene_asset_ids[0]
+        material_id = expectation.required_material_asset_ids[0]
+        mesh_card = cards_by_id.get(mesh_id)
+        material_card = cards_by_id.get(material_id)
+        if mesh_card is None or material_card is None:
+            raise TrainingReferenceError(
+                f"material reference {case.case_id} uses an unknown required asset"
+            )
+        if mesh_card.asset_type != "static_mesh":
+            raise TrainingReferenceError(
+                f"material reference {case.case_id} requires a static mesh"
+            )
+        if material_card.asset_type != "material":
+            raise TrainingReferenceError(
+                f"material reference {case.case_id} requires a material asset"
+            )
+        spec = _single_object_reference_spec(
+            case=case,
+            card=mesh_card,
+            material_card=material_card,
+        )
+        references.append(
+            TrainingReferenceCase(
+                case_id=case.case_id,
+                authoring_source="deterministic_compiler",
+                rationale=(
+                    "Deterministic material compiler v0.1: exact required mesh, "
+                    "required catalog material on the sole mesh slot, bounded "
+                    "elevated three-quarter camera, fixed EV100 11, and neutral "
+                    "key/fill directional lighting."
+                ),
+                retrieved_asset_ids=_frozen_retrieval_ids(
+                    retrieval_campaign_root=retrieval_root,
+                    case_id=case.case_id,
+                    required_asset_ids=[mesh_id, material_id],
                     cards_by_id=cards_by_id,
                 ),
                 render_spec=spec,

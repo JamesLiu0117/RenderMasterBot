@@ -11,6 +11,8 @@
 #include "GameFramework/Actor.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/App.h"
+#include "Misc/DateTime.h"
+#include "Misc/FileHelper.h"
 #include "RenderMasterCameraAssistant.h"
 #include "RenderMasterCameraBatchAssistant.h"
 #include "RenderMasterPerformanceAssistant.h"
@@ -19,6 +21,7 @@
 #include "RenderMasterInsightsGpuAssistant.h"
 #include "RenderMasterLevelProfilingAssistant.h"
 #include "RenderMasterShadowOptimizationVerificationAssistant.h"
+#include "RenderMasterSha256.h"
 #include "RenderMasterWorkflowController.h"
 #include "RenderMasterMaterialAssistant.h"
 #include "RenderMasterLightAssistant.h"
@@ -45,24 +48,67 @@
 namespace
 {
 constexpr float WorkspacePadding = 22.0f;
+const FLinearColor BrandCyan(0.10f, 0.72f, 0.92f, 1.0f);
+const FLinearColor BrandBlue(0.08f, 0.38f, 0.78f, 1.0f);
+const FLinearColor NavigationSurface(0.018f, 0.027f, 0.045f, 1.0f);
+const FLinearColor HeroSurface(0.025f, 0.070f, 0.115f, 1.0f);
+const FLinearColor CardSurface(0.028f, 0.038f, 0.058f, 1.0f);
+const FLinearColor MutedSurface(0.020f, 0.028f, 0.042f, 1.0f);
+
+bool HashConversationEvidenceFile(
+    const FString& Filename,
+    FString& OutSha256)
+{
+    int64 SizeBytes = 0;
+    return RenderMasterSha256File(Filename, OutSha256, &SizeBytes)
+        && SizeBytes > 0;
+}
+
+int32 NextConversationSequence(
+    const FString& Prefix,
+    const TArray<FString>& Identifiers)
+{
+    int32 Maximum = 0;
+    for (const FString& Identifier : Identifiers)
+    {
+        if (!Identifier.StartsWith(Prefix)) continue;
+        const FString Suffix = Identifier.RightChop(Prefix.Len());
+        if (Suffix.IsNumeric()) Maximum = FMath::Max(Maximum, FCString::Atoi(*Suffix));
+    }
+    return Maximum + 1;
+}
 
 TSharedRef<SWidget> WorkspaceSectionTitle(
     TAttribute<FText> Title,
     TAttribute<FText> Subtitle)
 {
-    return SNew(SVerticalBox)
-        + SVerticalBox::Slot().AutoHeight()
+    return SNew(SHorizontalBox)
+        + SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 1.0f, 10.0f, 1.0f)
         [
-            SNew(STextBlock)
-            .Text(Title)
-            .Font(FAppStyle::GetFontStyle(TEXT("HeadingMedium")))
+            SNew(SBox)
+            .WidthOverride(3.0f)
+            [
+                SNew(SBorder)
+                .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+                .BorderBackgroundColor(BrandCyan)
+            ]
         ]
-        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f, 0.0f, 0.0f)
+        + SHorizontalBox::Slot().FillWidth(1.0f)
         [
-            SNew(STextBlock)
-            .Text(Subtitle)
-            .ColorAndOpacity(FSlateColor::UseSubduedForeground())
-            .AutoWrapText(true)
+            SNew(SVerticalBox)
+            + SVerticalBox::Slot().AutoHeight()
+            [
+                SNew(STextBlock)
+                .Text(Title)
+                .Font(FAppStyle::GetFontStyle(TEXT("HeadingMedium")))
+            ]
+            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 3.0f, 0.0f, 0.0f)
+            [
+                SNew(STextBlock)
+                .Text(Subtitle)
+                .ColorAndOpacity(FSlateColor::UseSubduedForeground())
+                .AutoWrapText(true)
+            ]
         ];
 }
 }
@@ -84,6 +130,10 @@ void SRenderMasterWorkspace::Construct(const FArguments& InArgs)
     MaterialAssistant = MakeShared<FRenderMasterMaterialAssistant>(Controller);
     MaterialAssistant->Initialize();
     TransformAssistant = MakeShared<FRenderMasterTransformBatchAssistant>(Controller);
+    TransformAssistant->SetOnResultReady(
+        FOnRenderMasterTransformResultReady::CreateSP(
+            this,
+            &SRenderMasterWorkspace::HandleTransformResultReady));
     TransformAssistant->Initialize();
     LightAssistant = MakeShared<FRenderMasterLightBatchAssistant>(Controller);
     LightAssistant->Initialize();
@@ -115,10 +165,22 @@ void SRenderMasterWorkspace::Construct(const FArguments& InArgs)
         MakeShared<FRenderMasterShadowOptimizationVerificationAssistant>(
             Controller, LevelProfilingAssistant);
     ShadowVerificationAssistant->Initialize();
-    AssistantReply = TEXT("Tell me what you want to understand or change. I will inspect the current Unreal context before proposing an action.");
-    AddConversationMessage(
-        TEXT("assistant"),
-        TEXT("Tell me what you want to understand, analyze, or change. I can ask for missing context, answer basic questions, or route an approved capability from this conversation."));
+    FString RestoredStatus;
+    if (RestoreConversationSession(RestoredStatus))
+    {
+        AssistantReply = RestoredStatus;
+    }
+    else
+    {
+        AssistantReply = RestoredStatus.IsEmpty()
+            ? TEXT("Tell me what you want to understand or change. I will inspect the current Unreal context before proposing an action.")
+            : RestoredStatus;
+        AddConversationMessage(
+            TEXT("assistant"),
+            RestoredStatus.IsEmpty()
+                ? TEXT("Tell me what you want to understand, analyze, or change. I can ask for missing context, answer basic questions, or route an approved capability from this conversation.")
+                : RestoredStatus);
+    }
 
     ChildSlot
     [
@@ -147,6 +209,7 @@ void SRenderMasterWorkspace::Construct(const FArguments& InArgs)
 
 SRenderMasterWorkspace::~SRenderMasterWorkspace()
 {
+    SaveConversationSession();
     if (ConversationAssistant.IsValid())
     {
         ConversationAssistant->Shutdown();
@@ -222,23 +285,60 @@ SRenderMasterWorkspace::~SRenderMasterWorkspace()
 TSharedRef<SWidget> SRenderMasterWorkspace::BuildNavigation()
 {
     return SNew(SBox)
-        .WidthOverride(208.0f)
+        .WidthOverride(228.0f)
         [
             SNew(SBorder)
-            .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
-            .Padding(FMargin(12.0f, 18.0f))
+            .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+            .BorderBackgroundColor(NavigationSurface)
+            .Padding(FMargin(14.0f, 18.0f))
             [
                 SNew(SVerticalBox)
-                + SVerticalBox::Slot().AutoHeight().Padding(8.0f, 0.0f, 8.0f, 4.0f)
+                + SVerticalBox::Slot().AutoHeight().Padding(6.0f, 0.0f, 6.0f, 22.0f)
                 [
-                    SNew(STextBlock)
-                    .Text(LOCTEXT("ProductName", "RenderMasterBot"))
-                    .Font(FAppStyle::GetFontStyle(TEXT("HeadingMedium")))
+                    SNew(SHorizontalBox)
+                    + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+                    [
+                        SNew(SBox)
+                        .WidthOverride(42.0f)
+                        .HeightOverride(42.0f)
+                        [
+                            SNew(SBorder)
+                            .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+                            .BorderBackgroundColor(BrandBlue)
+                            .HAlign(HAlign_Center)
+                            .VAlign(VAlign_Center)
+                            [
+                                SNew(STextBlock)
+                                .Text(LOCTEXT("ProductMark", "RM"))
+                                .Font(FAppStyle::GetFontStyle(TEXT("HeadingMedium")))
+                                .ColorAndOpacity(FLinearColor::White)
+                            ]
+                        ]
+                    ]
+                    + SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+                        .Padding(11.0f, 0.0f, 0.0f, 0.0f)
+                    [
+                        SNew(SVerticalBox)
+                        + SVerticalBox::Slot().AutoHeight()
+                        [
+                            SNew(STextBlock)
+                            .Text(LOCTEXT("ProductName", "RenderMasterBot"))
+                            .Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
+                        ]
+                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f, 0.0f, 0.0f)
+                        [
+                            SNew(STextBlock)
+                            .Text(LOCTEXT("ProductType", "GRAPHICS AI"))
+                            .Font(FAppStyle::GetFontStyle(TEXT("SmallFont")))
+                            .ColorAndOpacity(BrandCyan)
+                        ]
+                    ]
                 ]
-                + SVerticalBox::Slot().AutoHeight().Padding(8.0f, 0.0f, 8.0f, 18.0f)
+                + SVerticalBox::Slot().AutoHeight().Padding(8.0f, 0.0f, 8.0f, 7.0f)
                 [
                     SNew(STextBlock)
-                    .Text(LOCTEXT("ProductType", "Graphics Assistant"))
+                    .Text(LOCTEXT("WorkspaceNavigationLabel", "WORKSPACE"))
+                    .Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
                     .ColorAndOpacity(FSlateColor::UseSubduedForeground())
                 ]
                 + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f)
@@ -250,22 +350,28 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildNavigation()
                     MakeNavigationButton(LOCTEXT("RenderNav", "Render & Evaluate"), 1)
                 ]
                 + SVerticalBox::Slot().FillHeight(1.0f)
-                + SVerticalBox::Slot().AutoHeight().Padding(8.0f, 10.0f)
+                + SVerticalBox::Slot().AutoHeight().Padding(2.0f, 12.0f, 2.0f, 2.0f)
                 [
-                    SNew(SVerticalBox)
-                    + SVerticalBox::Slot().AutoHeight()
+                    SNew(SBorder)
+                    .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Header")))
+                    .BorderBackgroundColor(FLinearColor(0.02f, 0.11f, 0.10f, 1.0f))
+                    .Padding(12.0f)
                     [
-                        SNew(STextBlock)
-                        .Text(LOCTEXT("LocalModels", "LOCAL WORKSPACE"))
-                        .Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
-                        .ColorAndOpacity(FLinearColor(0.22f, 0.67f, 1.0f))
-                    ]
-                    + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f, 0.0f, 0.0f)
-                    [
-                        SNew(STextBlock)
-                        .Text(LOCTEXT("LocalPrivacy", "Models, project assets, prompts, and render evidence stay on this workstation."))
-                        .ColorAndOpacity(FSlateColor::UseSubduedForeground())
-                        .AutoWrapText(true)
+                        SNew(SVerticalBox)
+                        + SVerticalBox::Slot().AutoHeight()
+                        [
+                            SNew(STextBlock)
+                            .Text(LOCTEXT("LocalModels", "●  LOCAL / PRIVATE"))
+                            .Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
+                            .ColorAndOpacity(FLinearColor(0.18f, 0.82f, 0.57f))
+                        ]
+                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f, 0.0f, 0.0f)
+                        [
+                            SNew(STextBlock)
+                            .Text(LOCTEXT("LocalPrivacy", "Models, assets, prompts, and evidence remain on this workstation."))
+                            .ColorAndOpacity(FSlateColor::UseSubduedForeground())
+                            .AutoWrapText(true)
+                        ]
                     ]
                 ]
             ]
@@ -284,33 +390,57 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                 SNew(SVerticalBox)
                 + SVerticalBox::Slot().AutoHeight().Padding(WorkspacePadding, 20.0f, WorkspacePadding, 14.0f)
                 [
-                    SNew(SHorizontalBox)
-                    + SHorizontalBox::Slot().FillWidth(1.0f)
+                    SNew(SBorder)
+                    .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Header")))
+                    .BorderBackgroundColor(HeroSurface)
+                    .Padding(FMargin(18.0f, 16.0f))
                     [
-                        SNew(SVerticalBox)
-                        + SVerticalBox::Slot().AutoHeight()
+                        SNew(SHorizontalBox)
+                        + SHorizontalBox::Slot().FillWidth(1.0f)
                         [
-                            SNew(STextBlock)
-                            .Text(LOCTEXT("AssistantTitle", "Graphics Assistant"))
-                            .Font(FAppStyle::GetFontStyle(TEXT("HeadingExtraLarge")))
+                            SNew(SVerticalBox)
+                            + SVerticalBox::Slot().AutoHeight()
+                            [
+                                SNew(STextBlock)
+                                .Text(LOCTEXT("AssistantEyebrow", "AI WORKSPACE  /  PROJECT-AWARE"))
+                                .Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
+                                .ColorAndOpacity(BrandCyan)
+                            ]
+                            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f, 0.0f, 0.0f)
+                            [
+                                SNew(STextBlock)
+                                .Text(LOCTEXT("AssistantTitle", "Graphics Assistant"))
+                                .Font(FAppStyle::GetFontStyle(TEXT("HeadingExtraLarge")))
+                            ]
+                            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 0.0f)
+                            [
+                                SNew(STextBlock)
+                                .Text(LOCTEXT("AssistantSubtitle", "Ask, inspect, profile, and prepare bounded Unreal changes with evidence before execution."))
+                                .ColorAndOpacity(FSlateColor::UseSubduedForeground())
+                                .AutoWrapText(true)
+                            ]
                         ]
-                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 4.0f, 0.0f, 0.0f)
+                        + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+                            .Padding(16.0f, 0.0f, 0.0f, 0.0f)
                         [
-                            SNew(STextBlock)
-                            .Text(LOCTEXT("AssistantSubtitle", "Understand the current Unreal context, review a bounded action, then decide whether to execute."))
-                            .ColorAndOpacity(FSlateColor::UseSubduedForeground())
-                        ]
-                    ]
-                    + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-                    [
-                        SNew(SBorder)
-                        .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Header")))
-                        .BorderBackgroundColor_Lambda([Controller = Controller]() { return Controller->GetStatusColor(); })
-                        .Padding(FMargin(12.0f, 7.0f))
-                        [
-                            SNew(STextBlock)
-                            .Text_Lambda([Controller = Controller]() { return Controller->GetStatusText(); })
-                            .Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
+                            SNew(SBorder)
+                            .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+                            .BorderBackgroundColor_Lambda([Controller = Controller]()
+                            {
+                                const FLinearColor Status = Controller->GetStatusColor();
+                                return FLinearColor(
+                                    Status.R * 0.22f,
+                                    Status.G * 0.22f,
+                                    Status.B * 0.22f,
+                                    1.0f);
+                            })
+                            .Padding(FMargin(13.0f, 8.0f))
+                            [
+                                SNew(STextBlock)
+                                .Text_Lambda([Controller = Controller]() { return Controller->GetStatusText(); })
+                                .Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
+                                .ColorAndOpacity_Lambda([Controller = Controller]() { return Controller->GetStatusColor(); })
+                            ]
                         ]
                     ]
                 ]
@@ -325,6 +455,7 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                         [
                             SNew(SBorder)
                             .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+                            .BorderBackgroundColor(CardSurface)
                             .Padding(16.0f)
                             [
                                 SNew(SVerticalBox)
@@ -720,12 +851,20 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                         [
                             SNew(SBorder)
                             .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+                            .BorderBackgroundColor(CardSurface)
                             .Padding(16.0f)
                             [
                                 SNew(SVerticalBox)
                                 + SVerticalBox::Slot().AutoHeight()
                                 [
-                                    SNew(SBox).HeightOverride(135.0f)
+                                    SNew(STextBlock)
+                                    .Text(LOCTEXT("MessageComposerLabel", "MESSAGE COMPOSER"))
+                                    .Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
+                                    .ColorAndOpacity(BrandCyan)
+                                ]
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f, 0.0f, 0.0f)
+                                [
+                                    SNew(SBox).HeightOverride(112.0f)
                                     [
                                         SAssignNew(AssistantPromptBox, SMultiLineEditableTextBox)
                                         .HintText(LOCTEXT("AssistantPromptHint", "Ask about the current scene, or describe a change you want to make..."))
@@ -999,6 +1138,7 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                         [
                             SNew(SBorder)
                             .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+                            .BorderBackgroundColor(CardSurface)
                             .Padding(16.0f)
                             [
                                 SNew(SVerticalBox)
@@ -1006,17 +1146,49 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                                 [WorkspaceSectionTitle(LOCTEXT("ContextTitle", "Current Unreal Context"), LOCTEXT("ContextHelp", "Live read-only context from this Editor session."))]
                                 + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 12.0f, 0.0f, 0.0f)
                                 [
-                                    SNew(STextBlock)
-                                    .Text(this, &SRenderMasterWorkspace::GetProjectContext)
-                                    .AutoWrapText(true)
+                                    SNew(SBorder)
+                                    .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Header")))
+                                    .BorderBackgroundColor(MutedSurface)
+                                    .Padding(12.0f)
+                                    [
+                                        SNew(SVerticalBox)
+                                        + SVerticalBox::Slot().AutoHeight()
+                                        [
+                                            SNew(STextBlock)
+                                            .Text(LOCTEXT("ProjectContextLabel", "PROJECT"))
+                                            .Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
+                                            .ColorAndOpacity(BrandCyan)
+                                        ]
+                                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f, 0.0f, 0.0f)
+                                        [
+                                            SNew(STextBlock)
+                                            .Text(this, &SRenderMasterWorkspace::GetProjectContext)
+                                            .AutoWrapText(true)
+                                        ]
+                                    ]
                                 ]
-                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f)
-                                [SNew(SSeparator)]
-                                + SVerticalBox::Slot().AutoHeight()
+                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f, 0.0f, 0.0f)
                                 [
-                                    SNew(STextBlock)
-                                    .Text(this, &SRenderMasterWorkspace::GetSelectionContext)
-                                    .AutoWrapText(true)
+                                    SNew(SBorder)
+                                    .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Header")))
+                                    .BorderBackgroundColor(MutedSurface)
+                                    .Padding(12.0f)
+                                    [
+                                        SNew(SVerticalBox)
+                                        + SVerticalBox::Slot().AutoHeight()
+                                        [
+                                            SNew(STextBlock)
+                                            .Text(LOCTEXT("SelectionContextLabel", "SELECTION"))
+                                            .Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
+                                            .ColorAndOpacity(BrandCyan)
+                                        ]
+                                        + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f, 0.0f, 0.0f)
+                                        [
+                                            SNew(STextBlock)
+                                            .Text(this, &SRenderMasterWorkspace::GetSelectionContext)
+                                            .AutoWrapText(true)
+                                        ]
+                                    ]
                                 ]
                             ]
                         ]
@@ -1181,12 +1353,14 @@ TSharedRef<SWidget> SRenderMasterWorkspace::BuildAssistantPage()
                         [
                             SNew(SBorder)
                             .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+                            .BorderBackgroundColor(CardSurface)
                             .Padding(16.0f)
                             [
-                                SNew(SVerticalBox)
-                                + SVerticalBox::Slot().AutoHeight()
-                                [WorkspaceSectionTitle(LOCTEXT("Capabilities", "Connected Capabilities"), LOCTEXT("CapabilitiesHelp", "Only connected actions can be approved."))]
-                                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 10.0f, 0.0f, 0.0f)
+                                SNew(SExpandableArea)
+                                .InitiallyCollapsed(true)
+                                .AreaTitle(LOCTEXT("Capabilities", "Capability Matrix"))
+                                .ToolTipText(LOCTEXT("CapabilitiesHelp", "Review connected and planned capabilities. Only connected actions can be approved."))
+                                .BodyContent()
                                 [
                                     SNew(STextBlock)
                                     .Text(LOCTEXT("CapabilityList", "CONNECTED\n✓ Live project and actor-selection context\n✓ Explicit material-slot targeting\n✓ Catalog-backed project material recommendation\n✓ CC0 Poly Haven search and verified local cache\n✓ Hash-bound approval for 5-asset PBR import\n✓ Automatic catalog and Chroma synchronization\n✓ Approval-gated material override with Ctrl+Z Undo\n✓ Approval-gated 1–32 Actor world/local Transform with grouped Ctrl+Z Undo\n✓ Approval-gated 1–16 Light compatible group properties with grouped Ctrl+Z Undo\n✓ Subject- and camera-aware Key/Fill/Rim rig with grouped Ctrl+Z Undo\n✓ Camera-view visual rig review with approval-gated intensity correction\n✓ Camera and Cine Camera Transform, lens, focus, and exposure compensation with Ctrl+Z Undo\n✓ Coordinated 2–16 Camera editing with grouped Ctrl+Z Undo\n✓ Evidence-backed StaticMeshActor performance review\n✓ Approval-gated shadow and cull-distance changes with grouped Ctrl+Z Undo\n✓ Recomputable PIE/SIE frame, thread, GPU, process-memory, and RHI texture-memory review\n✓ Unreal Insights GPU queue and scope trace review\n✓ Repeatable selected-Actor AA + AB/BA/AB GPU study with automatic restoration\n✓ Profiling-first whole-level orchestration under one fixed PIE/SIE workload\n✓ Profiling-gated Cast Shadow A/B optimization with runtime restoration and approval-backed Undo\n✓ Post-apply whole-level verification with fixed retain/rollback guards\n✓ Schema-gated scene planning\n✓ Transient Unreal preview\n✓ Visual evaluation and bounded correction\n\nNOT CONNECTED YET\n○ Geometry-aware arrangement beyond the bounded three-point rig\n○ Direct per-draw/per-material/per-shader GPU attribution\n○ Packaged-build benchmark comparison\n○ Asset-level Nanite, LOD, mesh, material, or collision optimization"))
@@ -1273,12 +1447,37 @@ TSharedRef<SWidget> SRenderMasterWorkspace::MakeNavigationButton(const FText& La
     return SNew(SButton)
         .ButtonColorAndOpacity_Lambda([this, PageIndex]()
         {
-            return ActivePage == PageIndex ? FLinearColor(0.08f, 0.38f, 0.68f) : FLinearColor(0.12f, 0.13f, 0.16f);
+            return ActivePage == PageIndex ? FLinearColor(0.08f, 0.25f, 0.38f) : FLinearColor(0.07f, 0.08f, 0.11f);
         })
-        .ContentPadding(FMargin(12.0f, 9.0f))
+        .ContentPadding(0.0f)
         .OnClicked_Lambda([this, PageIndex]() { SetPage(PageIndex); return FReply::Handled(); })
         [
-            SNew(STextBlock).Text(Label)
+            SNew(SHorizontalBox)
+            + SHorizontalBox::Slot().AutoWidth()
+            [
+                SNew(SBox)
+                .WidthOverride(3.0f)
+                [
+                    SNew(SBorder)
+                    .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+                    .BorderBackgroundColor_Lambda([this, PageIndex]()
+                    {
+                        return ActivePage == PageIndex ? BrandCyan : FLinearColor::Transparent;
+                    })
+                ]
+            ]
+            + SHorizontalBox::Slot().FillWidth(1.0f).Padding(12.0f, 10.0f)
+            [
+                SNew(STextBlock)
+                .Text(Label)
+                .Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
+                .ColorAndOpacity_Lambda([this, PageIndex]()
+                {
+                    return ActivePage == PageIndex
+                        ? FSlateColor(FLinearColor::White)
+                        : FSlateColor::UseSubduedForeground();
+                })
+            ]
         ];
 }
 
@@ -1289,22 +1488,36 @@ TSharedRef<SWidget> SRenderMasterWorkspace::MakeMessage(
 {
     return SNew(SBorder)
         .BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Header")))
-        .BorderBackgroundColor(FLinearColor(Accent.R * 0.18f, Accent.G * 0.18f, Accent.B * 0.18f, 1.0f))
-        .Padding(12.0f)
+        .BorderBackgroundColor(FLinearColor(Accent.R * 0.12f, Accent.G * 0.12f, Accent.B * 0.12f, 1.0f))
+        .Padding(0.0f)
         [
-            SNew(SVerticalBox)
-            + SVerticalBox::Slot().AutoHeight()
+            SNew(SHorizontalBox)
+            + SHorizontalBox::Slot().AutoWidth()
             [
-                SNew(STextBlock)
-                .Text(Speaker)
-                .Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
-                .ColorAndOpacity(Accent)
+                SNew(SBox)
+                .WidthOverride(3.0f)
+                [
+                    SNew(SBorder)
+                    .BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+                    .BorderBackgroundColor(Accent)
+                ]
             ]
-            + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f, 0.0f, 0.0f)
+            + SHorizontalBox::Slot().FillWidth(1.0f).Padding(12.0f)
             [
-                SNew(STextBlock)
-                .Text(Message)
-                .AutoWrapText(true)
+                SNew(SVerticalBox)
+                + SVerticalBox::Slot().AutoHeight()
+                [
+                    SNew(STextBlock)
+                    .Text(Speaker)
+                    .Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
+                    .ColorAndOpacity(Accent)
+                ]
+                + SVerticalBox::Slot().AutoHeight().Padding(0.0f, 5.0f, 0.0f, 0.0f)
+                [
+                    SNew(STextBlock)
+                    .Text(Message)
+                    .AutoWrapText(true)
+                ]
             ]
         ];
 }
@@ -1334,7 +1547,8 @@ FReply SRenderMasterWorkspace::SendConversationMessage()
     if (!ConversationAssistant->StartTurn(
             Request,
             Context,
-            PriorHistory))
+            PriorHistory,
+            ConversationResultEvents))
     {
         AssistantReply = ConversationAssistant->GetStateText().ToString();
     }
@@ -1346,7 +1560,10 @@ FReply SRenderMasterWorkspace::ClearConversation()
     if (ConversationAssistant->IsThinking()) return FReply::Handled();
     ConversationAssistant->ResetConversation();
     ConversationMessages.Reset();
+    ConversationResultEvents.Reset();
     NextConversationMessageNumber = 1;
+    NextConversationResultNumber = 1;
+    ClearActiveConversationAction();
     LastRequest.Reset();
     LastAssistantAction = ELastAssistantAction::None;
     AssistantReply = TEXT("A new local conversation is ready.");
@@ -1365,6 +1582,15 @@ void SRenderMasterWorkspace::HandleConversationTurnCompleted(
     AddConversationMessage(TEXT("assistant"), Turn.AssistantMessage);
     if (Turn.Outcome == TEXT("route"))
     {
+        if (Turn.Intent == TEXT("transform"))
+        {
+            ActiveConversationActionTurnId = Turn.TurnId;
+            ActiveConversationActionIntent = Turn.Intent;
+        }
+        else
+        {
+            ClearActiveConversationAction();
+        }
         DispatchConversationIntent(Turn.Intent, Turn.ActionPrompt);
     }
 }
@@ -1375,6 +1601,68 @@ void SRenderMasterWorkspace::HandleConversationTurnFailed(const FString& Error)
     AddConversationMessage(TEXT("assistant"), FString::Printf(
         TEXT("I could not complete that local conversation turn: %s"),
         *Error));
+}
+
+void SRenderMasterWorkspace::HandleTransformResultReady()
+{
+    if (ActiveConversationActionIntent != TEXT("transform")
+        || ActiveConversationActionTurnId.IsEmpty()
+        || !TransformAssistant.IsValid())
+    {
+        return;
+    }
+
+    const ERenderMasterTransformAssistantState State = TransformAssistant->GetState();
+    const FRenderMasterTransformBatchProposal& Proposal =
+        TransformAssistant->GetProposal();
+    TArray<FString> SubjectIds;
+    for (const FRenderMasterTransformProposal& Action : Proposal.Actions)
+        SubjectIds.Add(Action.ActorPath);
+
+    if (State == ERenderMasterTransformAssistantState::Proposed)
+    {
+        const FString Message = FString::Printf(
+            TEXT("Transform proposal %s is ready for review for %d Actor(s). No scene change has been applied. Review the Transform Action Card, then approve or reject it."),
+            *Proposal.ProposalId,
+            Proposal.Actions.Num());
+        AddConversationResultEvent(
+            TEXT("transform"),
+            TEXT("proposal"),
+            TEXT("needs_review"),
+            Message,
+            Proposal.ProposalId,
+            SubjectIds,
+            TEXT("proposal"),
+            TransformAssistant->GetProposalOutputPath());
+        AssistantReply = Message;
+        AddConversationMessage(TEXT("assistant"), Message);
+        return;
+    }
+
+    if (State == ERenderMasterTransformAssistantState::Unresolved)
+    {
+        const FString Message = TransformAssistant->GetSummaryText().ToString();
+        AddConversationResultEvent(
+            TEXT("transform"),
+            TEXT("proposal"),
+            TEXT("unresolved"),
+            Message,
+            Proposal.ProposalId,
+            SubjectIds,
+            TEXT("proposal"),
+            TransformAssistant->GetProposalOutputPath());
+        AssistantReply = Message;
+        AddConversationMessage(TEXT("assistant"), Message);
+        ClearActiveConversationAction();
+        return;
+    }
+
+    if (State == ERenderMasterTransformAssistantState::Failed)
+    {
+        RecordConversationActionFailure(
+            TEXT("transform"),
+            TransformAssistant->GetSummaryText().ToString());
+    }
 }
 
 void SRenderMasterWorkspace::DispatchConversationIntent(
@@ -1422,6 +1710,7 @@ void SRenderMasterWorkspace::DispatchConversationIntent(
             *Intent);
     }
     AssistantPromptBox->SetText(FText::GetEmpty());
+    SaveConversationSession();
 }
 
 bool SRenderMasterWorkspace::CaptureConversationContext(
@@ -1539,6 +1828,268 @@ void SRenderMasterWorkspace::AddConversationMessage(
     if (ConversationMessages.Num() > 100)
         ConversationMessages.RemoveAt(0, ConversationMessages.Num() - 100);
     RefreshConversationMessages();
+    SaveConversationSession();
+}
+
+void SRenderMasterWorkspace::AddConversationResultEvent(
+    const FString& Intent,
+    const FString& Phase,
+    const FString& Status,
+    const FString& Summary,
+    const FString& ProposalId,
+    const TArray<FString>& SubjectIds,
+    const FString& EvidenceKind,
+    const FString& EvidencePath)
+{
+    if (!ConversationAssistant.IsValid()
+        || ActiveConversationActionTurnId.IsEmpty()
+        || ActiveConversationActionIntent != Intent)
+    {
+        return;
+    }
+
+    FRenderMasterConversationResultEvent Event;
+    Event.EventId = FString::Printf(
+        TEXT("result_%06d"),
+        NextConversationResultNumber++);
+    Event.ConversationId = ConversationAssistant->GetConversationId();
+    Event.SourceTurnId = ActiveConversationActionTurnId;
+    Event.Intent = Intent;
+    Event.Phase = Phase;
+    Event.Status = Status;
+    Event.Summary = Summary.TrimStartAndEnd().Left(4000);
+    Event.ProposalId = ProposalId;
+    Event.SubjectIds = SubjectIds;
+    Event.CreatedAtUtc = FDateTime::UtcNow().ToIso8601();
+
+    FString EvidenceSha256;
+    if (!EvidenceKind.IsEmpty()
+        && !EvidencePath.IsEmpty()
+        && HashConversationEvidenceFile(EvidencePath, EvidenceSha256))
+    {
+        FRenderMasterConversationEvidenceReference Evidence;
+        Evidence.EvidenceId = TEXT("result_evidence_001");
+        Evidence.Kind = EvidenceKind;
+        Evidence.Path = FPaths::ConvertRelativePathToFull(EvidencePath);
+        Evidence.Sha256 = EvidenceSha256;
+        Event.Evidence.Add(MoveTemp(Evidence));
+    }
+
+    ConversationResultEvents.Add(MoveTemp(Event));
+    if (ConversationResultEvents.Num() > 100)
+    {
+        ConversationResultEvents.RemoveAt(
+            0,
+            ConversationResultEvents.Num() - 100);
+    }
+    SaveConversationSession();
+}
+
+void SRenderMasterWorkspace::RecordConversationActionFailure(
+    const FString& Intent,
+    const FString& Error)
+{
+    if (ActiveConversationActionIntent != Intent
+        || ActiveConversationActionTurnId.IsEmpty())
+    {
+        return;
+    }
+    const FString Message = FString::Printf(
+        TEXT("The routed %s action could not complete: %s"),
+        *Intent,
+        *Error.TrimStartAndEnd());
+    AddConversationResultEvent(
+        Intent,
+        TEXT("failure"),
+        TEXT("failed"),
+        Message,
+        FString(),
+        TArray<FString>());
+    AssistantReply = Message;
+    AddConversationMessage(TEXT("assistant"), Message);
+    ClearActiveConversationAction();
+}
+
+void SRenderMasterWorkspace::ClearActiveConversationAction()
+{
+    ActiveConversationActionTurnId.Reset();
+    ActiveConversationActionIntent.Reset();
+    SaveConversationSession();
+}
+
+FString SRenderMasterWorkspace::GetConversationSessionPath() const
+{
+    if (!Controller.IsValid() || Controller->GetWorkflowRoot().IsEmpty())
+        return FString();
+    return FPaths::Combine(
+        Controller->GetWorkflowRoot(),
+        TEXT("assistant-conversations"),
+        TEXT("editor_session.json"));
+}
+
+TOptional<FRenderMasterConversationTaskState>
+SRenderMasterWorkspace::BuildConversationTaskState() const
+{
+    if (ActiveConversationActionTurnId.IsEmpty()
+        || ActiveConversationActionIntent.IsEmpty()
+        || ActiveConversationActionIntent != TEXT("transform")
+        || !TransformAssistant.IsValid())
+    {
+        return TOptional<FRenderMasterConversationTaskState>();
+    }
+
+    FRenderMasterConversationTaskState Task;
+    Task.SourceTurnId = ActiveConversationActionTurnId;
+    Task.Intent = ActiveConversationActionIntent;
+    if (TransformAssistant->GetState()
+        == ERenderMasterTransformAssistantState::Planning)
+    {
+        Task.Status = TEXT("planning");
+        return Task;
+    }
+    if (TransformAssistant->GetState()
+        != ERenderMasterTransformAssistantState::Proposed)
+    {
+        return TOptional<FRenderMasterConversationTaskState>();
+    }
+
+    const FRenderMasterTransformBatchProposal& Proposal =
+        TransformAssistant->GetProposal();
+    for (int32 Index = ConversationResultEvents.Num() - 1; Index >= 0; --Index)
+    {
+        const FRenderMasterConversationResultEvent& Event =
+            ConversationResultEvents[Index];
+        if (Event.SourceTurnId != Task.SourceTurnId
+            || Event.Intent != Task.Intent
+            || Event.Status != TEXT("needs_review")
+            || Event.ProposalId != Proposal.ProposalId
+            || Event.Evidence.IsEmpty())
+        {
+            continue;
+        }
+        Task.Status = TEXT("needs_review");
+        Task.ProposalId = Proposal.ProposalId;
+        Task.ProposalEvidence = Event.Evidence[0];
+        return Task;
+    }
+    return TOptional<FRenderMasterConversationTaskState>();
+}
+
+void SRenderMasterWorkspace::SaveConversationSession()
+{
+    if (bRestoringConversationSession || !ConversationAssistant.IsValid()) return;
+    const FString Path = GetConversationSessionPath();
+    if (Path.IsEmpty()) return;
+    FString Error;
+    if (!RenderMasterWriteConversationSessionFile(
+            Path,
+            ConversationAssistant->GetConversationId(),
+            FApp::GetProjectName(),
+            ConversationMessages,
+            ConversationResultEvents,
+            BuildConversationTaskState(),
+            Error))
+    {
+        UE_LOG(
+            LogTemp,
+            Warning,
+            TEXT("RenderMasterBot could not persist the conversation session: %s"),
+            *Error);
+    }
+}
+
+bool SRenderMasterWorkspace::RestoreConversationSession(FString& OutStatus)
+{
+    OutStatus.Reset();
+    const FString Path = GetConversationSessionPath();
+    if (Path.IsEmpty() || !FPaths::FileExists(Path)) return false;
+
+    FString ConversationId;
+    TArray<FRenderMasterConversationMessage> History;
+    TArray<FRenderMasterConversationResultEvent> Results;
+    TOptional<FRenderMasterConversationTaskState> ActiveTask;
+    FString Error;
+    if (!RenderMasterLoadConversationSessionFile(
+            Path,
+            FApp::GetProjectName(),
+            ConversationId,
+            History,
+            Results,
+            ActiveTask,
+            Error)
+        || !ConversationAssistant->RestoreConversationId(ConversationId))
+    {
+        OutStatus = FString::Printf(
+            TEXT("The previous local conversation could not be restored safely: %s A new conversation was started; preserved workflow evidence was not deleted."),
+            Error.IsEmpty() ? TEXT("its identity was invalid.") : *Error);
+        return false;
+    }
+
+    bRestoringConversationSession = true;
+    ConversationMessages = MoveTemp(History);
+    ConversationResultEvents = MoveTemp(Results);
+    TArray<FString> MessageIds;
+    for (const FRenderMasterConversationMessage& Message : ConversationMessages)
+        MessageIds.Add(Message.MessageId);
+    NextConversationMessageNumber = NextConversationSequence(
+        TEXT("message_"), MessageIds);
+    TArray<FString> ResultIds;
+    for (const FRenderMasterConversationResultEvent& Event : ConversationResultEvents)
+        ResultIds.Add(Event.EventId);
+    NextConversationResultNumber = NextConversationSequence(
+        TEXT("result_"), ResultIds);
+    bRestoringConversationSession = false;
+
+    if (!ActiveTask.IsSet())
+    {
+        OutStatus = TEXT("Restored the previous local conversation and its typed tool results.");
+        return true;
+    }
+
+    const FRenderMasterConversationTaskState& Task = ActiveTask.GetValue();
+    ActiveConversationActionTurnId = Task.SourceTurnId;
+    ActiveConversationActionIntent = Task.Intent;
+    if (Task.Status == TEXT("planning"))
+    {
+        const FString Message = TEXT(
+            "The previously active Transform planning process was interrupted when the panel or Editor closed. It was not resumed and no scene change was applied; send the request again if it is still needed.");
+        AddConversationResultEvent(
+            Task.Intent,
+            TEXT("cancellation"),
+            TEXT("cancelled"),
+            Message,
+            FString(),
+            TArray<FString>());
+        AssistantReply = Message;
+        AddConversationMessage(TEXT("assistant"), Message);
+        ClearActiveConversationAction();
+        OutStatus = Message;
+        return true;
+    }
+
+    if (Task.Intent != TEXT("transform")
+        || !TransformAssistant.IsValid()
+        || !TransformAssistant->RestoreProposal(
+            Task.ProposalEvidence.Path,
+            Task.ProposalEvidence.Sha256,
+            Error))
+    {
+        RecordConversationActionFailure(
+            Task.Intent,
+            Error.IsEmpty()
+                ? TEXT("this pending task type cannot yet be restored")
+                : Error);
+        OutStatus = AssistantReply;
+        return true;
+    }
+
+    LastAssistantAction = ELastAssistantAction::Transform;
+    OutStatus = FString::Printf(
+        TEXT("Restored Transform proposal %s after rechecking its file hash, Actor identities, and current Before values. It still requires approval and has not been applied."),
+        *Task.ProposalId);
+    AssistantReply = OutStatus;
+    SaveConversationSession();
+    return true;
 }
 
 void SRenderMasterWorkspace::RefreshConversationMessages()
@@ -1691,6 +2242,7 @@ FReply SRenderMasterWorkspace::PrepareTransformAction()
     if (Prompt.IsEmpty())
     {
         AssistantReply = TEXT("Enter a world- or local-space Transform request before preparing an action. Nothing has been executed.");
+        RecordConversationActionFailure(TEXT("transform"), AssistantReply);
         return FReply::Handled();
     }
 
@@ -1701,6 +2253,7 @@ FReply SRenderMasterWorkspace::PrepareTransformAction()
     if (!GetSelectedActorsForTransform(Actors, SelectionError))
     {
         AssistantReply = SelectionError;
+        RecordConversationActionFailure(TEXT("transform"), SelectionError);
         return FReply::Handled();
     }
     if (TransformAssistant->StartProposal(Prompt, Actors))
@@ -1712,6 +2265,7 @@ FReply SRenderMasterWorkspace::PrepareTransformAction()
     else
     {
         AssistantReply = TransformAssistant->GetSummaryText().ToString();
+        RecordConversationActionFailure(TEXT("transform"), AssistantReply);
     }
     return FReply::Handled();
 }
@@ -1866,9 +2420,25 @@ FReply SRenderMasterWorkspace::RejectAction()
 FReply SRenderMasterWorkspace::ApproveTransformAction()
 {
     LastAssistantAction = ELastAssistantAction::Transform;
+    const FRenderMasterTransformBatchProposal Proposal =
+        TransformAssistant->GetProposal();
     if (TransformAssistant->ApplyProposal())
     {
         AssistantReply = TEXT("The approved Transform was applied to the complete captured selection as one grouped Editor action. The level was not saved automatically. Use Ctrl+Z once to undo the batch.");
+        TArray<FString> SubjectIds;
+        for (const FRenderMasterTransformProposal& Action : Proposal.Actions)
+            SubjectIds.Add(Action.ActorPath);
+        AddConversationResultEvent(
+            TEXT("transform"),
+            TEXT("execution"),
+            TEXT("applied"),
+            AssistantReply,
+            Proposal.ProposalId,
+            SubjectIds,
+            TEXT("proposal"),
+            TransformAssistant->GetProposalOutputPath());
+        AddConversationMessage(TEXT("assistant"), AssistantReply);
+        ClearActiveConversationAction();
     }
     else
     {
@@ -1880,8 +2450,24 @@ FReply SRenderMasterWorkspace::ApproveTransformAction()
 FReply SRenderMasterWorkspace::RejectTransformAction()
 {
     LastAssistantAction = ELastAssistantAction::Transform;
+    const FRenderMasterTransformBatchProposal Proposal =
+        TransformAssistant->GetProposal();
     TransformAssistant->RejectProposal();
     AssistantReply = TEXT("The proposed Transform action was rejected. No Editor scene change was applied.");
+    TArray<FString> SubjectIds;
+    for (const FRenderMasterTransformProposal& Action : Proposal.Actions)
+        SubjectIds.Add(Action.ActorPath);
+    AddConversationResultEvent(
+        TEXT("transform"),
+        TEXT("rejection"),
+        TEXT("rejected"),
+        AssistantReply,
+        Proposal.ProposalId,
+        SubjectIds,
+        TEXT("proposal"),
+        TransformAssistant->GetProposalOutputPath());
+    AddConversationMessage(TEXT("assistant"), AssistantReply);
+    ClearActiveConversationAction();
     return FReply::Handled();
 }
 

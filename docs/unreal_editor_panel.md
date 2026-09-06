@@ -7,7 +7,7 @@ weights, start a network service, or add runtime code to a packaged game.
 ## Workspace model
 
 The default **Assistant** page is the conversational product entry point. It
-keeps a local user/assistant message timeline and reads the live project name,
+keeps a bounded local user/assistant message timeline and reads the live project name,
 current level, PIE/SIE mode, selected actors, and relevant completed-workflow
 state directly from the Editor. **Send to Assistant** produces exactly one
 strict result: a read-only answer, one clarifying question, or a route to one
@@ -17,14 +17,28 @@ and proposal generation do not modify the Editor scene.
 
 Capability-specific entry buttons are collapsed under **Advanced Direct
 Tools**. They remain useful for debugging and expert operation but are not the
-normal interaction model. **New Conversation** clears only the in-memory
-timeline and generates a fresh local conversation ID. It does not delete run
-artifacts or modify the project.
+normal interaction model. The current session is atomically persisted as
+`assistant-conversations/editor_session.json` under the configured workflow
+root, outside the source repository. **New Conversation** replaces that current
+session with a fresh local conversation ID. It does not delete immutable turn,
+proposal, capture, trace, or run artifacts and does not modify the Unreal project.
 
 Conversation remains available while a stable Action Card waits for approval,
 so the operator can ask a follow-up question. The router will not start a
-second action until the current card is approved or rejected. Active planning,
-capture, import, render, and profiling processes still serialize model turns.
+second action until the current card is approved or rejected. Transform is the
+first capability connected to the typed result loop: proposal completion,
+failure, apply, and rejection are appended to the conversation with the source
+turn, exact proposal ID, Actor paths, and SHA-256 identity of the proposal file.
+The next router turn receives at most 12 recent host-authored result events and
+therefore does not have to infer execution state from conversational prose.
+Messages and result events survive panel/Editor restart. A planning process is
+not silently restarted; it becomes a `cancelled` result. A pending Transform
+card is restored only when the proposal-file SHA-256 and all live Actor identity,
+root-component, mobility, lock, and Before Transform evidence still match.
+Otherwise Apply remains unavailable and the session records a failure. Other
+specialist result adapters remain Phase 1 work.
+Active planning, capture, import, render, and profiling processes still
+serialize model turns.
 
 The connected direct Editor actions are material selection, one-to-32-Actor
 world/local Transform editing, compatible one-to-16-Light group property
@@ -66,6 +80,9 @@ Before/After values. **Approve & Apply Transform** rechecks every Actor; if any
 identity, root component, mobility, lock state, or Transform is stale, nothing
 is applied. A successful batch uses one `FScopedTransaction`, never saves the
 level automatically, and is restored by one Ctrl+Z.
+For a Transform started through **Send to Assistant**, the timeline separately
+records `needs_review`, `applied`, `rejected`, or `failed`; generating a card is
+never reported as applying the edit.
 
 **Prepare Light** accepts one to 16 selected Directional, Point, Spot, or Rect
 Lights and applies one compatible intent to the complete ordered selection. Its

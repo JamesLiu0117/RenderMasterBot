@@ -99,6 +99,8 @@ bool RenderMasterApplyActorTransformBatch(
     FString& OutError,
     bool bMarkPackageDirty = true);
 
+DECLARE_DELEGATE(FOnRenderMasterTransformResultReady);
+
 class FRenderMasterTransformBatchAssistant : public TSharedFromThis<FRenderMasterTransformBatchAssistant>
 {
 public:
@@ -109,6 +111,10 @@ public:
     void Initialize();
     void Shutdown();
     bool StartProposal(const FString& Prompt, const TArray<AActor*>& Actors);
+    bool RestoreProposal(
+        const FString& Filename,
+        const FString& ExpectedSha256,
+        FString& OutError);
     bool ApplyProposal();
     void RejectProposal();
     void Cancel();
@@ -117,10 +123,16 @@ public:
     bool CanApply() const;
     bool IsPlanning() const;
     ERenderMasterTransformAssistantState GetState() const { return State; }
+    const FRenderMasterTransformBatchProposal& GetProposal() const { return Proposal; }
+    const FString& GetProposalOutputPath() const { return ProposalOutputPath; }
     FText GetStateText() const;
     FText GetSummaryText() const;
     FText GetLogText() const;
     FLinearColor GetStateColor() const;
+    void SetOnResultReady(FOnRenderMasterTransformResultReady InDelegate)
+    {
+        OnResultReady = MoveTemp(InDelegate);
+    }
 
 private:
     bool Tick(float DeltaTime);
@@ -149,6 +161,7 @@ private:
     void* StdErrRead = nullptr;
     void* StdErrWrite = nullptr;
     FTSTicker::FDelegateHandle TickHandle;
+    FOnRenderMasterTransformResultReady OnResultReady;
 };
 
 class FRenderMasterTransformAssistant : public TSharedFromThis<FRenderMasterTransformAssistant>

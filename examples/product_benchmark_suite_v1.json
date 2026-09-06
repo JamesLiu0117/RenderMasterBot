@@ -1,0 +1,773 @@
+{
+  "schema_version": "0.1",
+  "suite_id": "product_regression_v1",
+  "purpose": "Frozen bilingual development-regression tasks for the local conversational graphics assistant. The suite separates routing, tool-result, approval-loop, and complete-user-task expectations so component success is not reported as product success.",
+  "status": "development_regression",
+  "context_profiles": {
+    "editor_empty": {
+      "schema_version": "0.1",
+      "project_name": "OptimizationPlugin",
+      "level_path": "/Game/Maps/RenderMasterEvaluation",
+      "play_mode": "editor",
+      "selection": []
+    },
+    "editor_static_mesh": {
+      "schema_version": "0.1",
+      "project_name": "OptimizationPlugin",
+      "level_path": "/Game/Maps/RenderMasterEvaluation",
+      "play_mode": "editor",
+      "selection": [
+        {
+          "actor_name": "HeroDoor",
+          "actor_path": "/Game/Maps/RenderMasterEvaluation.RenderMasterEvaluation:PersistentLevel.HeroDoor",
+          "actor_class": "StaticMeshActor",
+          "actor_kind": "static_mesh"
+        }
+      ]
+    },
+    "editor_two_meshes": {
+      "schema_version": "0.1",
+      "project_name": "OptimizationPlugin",
+      "level_path": "/Game/Maps/RenderMasterEvaluation",
+      "play_mode": "editor",
+      "selection": [
+        {
+          "actor_name": "HeroDoor",
+          "actor_path": "/Game/Maps/RenderMasterEvaluation.RenderMasterEvaluation:PersistentLevel.HeroDoor",
+          "actor_class": "StaticMeshActor",
+          "actor_kind": "static_mesh"
+        },
+        {
+          "actor_name": "SideTable",
+          "actor_path": "/Game/Maps/RenderMasterEvaluation.RenderMasterEvaluation:PersistentLevel.SideTable",
+          "actor_class": "StaticMeshActor",
+          "actor_kind": "static_mesh"
+        }
+      ]
+    },
+    "editor_light": {
+      "schema_version": "0.1",
+      "project_name": "OptimizationPlugin",
+      "level_path": "/Game/Maps/RenderMasterEvaluation",
+      "play_mode": "editor",
+      "selection": [
+        {
+          "actor_name": "KeyLight",
+          "actor_path": "/Game/Maps/RenderMasterEvaluation.RenderMasterEvaluation:PersistentLevel.KeyLight",
+          "actor_class": "RectLight",
+          "actor_kind": "light"
+        }
+      ]
+    },
+    "editor_camera": {
+      "schema_version": "0.1",
+      "project_name": "OptimizationPlugin",
+      "level_path": "/Game/Maps/RenderMasterEvaluation",
+      "play_mode": "editor",
+      "selection": [
+        {
+          "actor_name": "ProductCamera",
+          "actor_path": "/Game/Maps/RenderMasterEvaluation.RenderMasterEvaluation:PersistentLevel.ProductCamera",
+          "actor_class": "CineCameraActor",
+          "actor_kind": "camera"
+        }
+      ]
+    },
+    "editor_mixed": {
+      "schema_version": "0.1",
+      "project_name": "OptimizationPlugin",
+      "level_path": "/Game/Maps/RenderMasterEvaluation",
+      "play_mode": "editor",
+      "selection": [
+        {
+          "actor_name": "HeroDoor",
+          "actor_path": "/Game/Maps/RenderMasterEvaluation.RenderMasterEvaluation:PersistentLevel.HeroDoor",
+          "actor_class": "StaticMeshActor",
+          "actor_kind": "static_mesh"
+        },
+        {
+          "actor_name": "KeyLight",
+          "actor_path": "/Game/Maps/RenderMasterEvaluation.RenderMasterEvaluation:PersistentLevel.KeyLight",
+          "actor_class": "RectLight",
+          "actor_kind": "light"
+        },
+        {
+          "actor_name": "ProductCamera",
+          "actor_path": "/Game/Maps/RenderMasterEvaluation.RenderMasterEvaluation:PersistentLevel.ProductCamera",
+          "actor_class": "CineCameraActor",
+          "actor_kind": "camera"
+        }
+      ]
+    },
+    "pie_empty": {
+      "schema_version": "0.1",
+      "project_name": "OptimizationPlugin",
+      "level_path": "/Game/Maps/RenderMasterEvaluation",
+      "play_mode": "pie",
+      "selection": []
+    },
+    "lighting_review_ready": {
+      "schema_version": "0.1",
+      "project_name": "OptimizationPlugin",
+      "level_path": "/Game/Maps/RenderMasterEvaluation",
+      "play_mode": "editor",
+      "selection": [
+        {
+          "actor_name": "KeyLight",
+          "actor_path": "/Game/Maps/RenderMasterEvaluation.RenderMasterEvaluation:PersistentLevel.KeyLight",
+          "actor_class": "RectLight",
+          "actor_kind": "light"
+        },
+        {
+          "actor_name": "FillLight",
+          "actor_path": "/Game/Maps/RenderMasterEvaluation.RenderMasterEvaluation:PersistentLevel.FillLight",
+          "actor_class": "PointLight",
+          "actor_kind": "light"
+        }
+      ],
+      "lighting_rig_review_ready": true
+    },
+    "shadow_optimization_ready": {
+      "schema_version": "0.1",
+      "project_name": "OptimizationPlugin",
+      "level_path": "/Game/Maps/RenderMasterEvaluation",
+      "play_mode": "editor",
+      "selection": [
+        {
+          "actor_name": "HeroDoor",
+          "actor_path": "/Game/Maps/RenderMasterEvaluation.RenderMasterEvaluation:PersistentLevel.HeroDoor",
+          "actor_class": "StaticMeshActor",
+          "actor_kind": "static_mesh"
+        }
+      ],
+      "shadow_optimization_ready": true
+    },
+    "shadow_verification_ready": {
+      "schema_version": "0.1",
+      "project_name": "OptimizationPlugin",
+      "level_path": "/Game/Maps/RenderMasterEvaluation",
+      "play_mode": "editor",
+      "selection": [
+        {
+          "actor_name": "HeroDoor",
+          "actor_path": "/Game/Maps/RenderMasterEvaluation.RenderMasterEvaluation:PersistentLevel.HeroDoor",
+          "actor_class": "StaticMeshActor",
+          "actor_kind": "static_mesh"
+        }
+      ],
+      "shadow_verification_ready": true
+    },
+    "pending_transform": {
+      "schema_version": "0.1",
+      "project_name": "OptimizationPlugin",
+      "level_path": "/Game/Maps/RenderMasterEvaluation",
+      "play_mode": "editor",
+      "selection": [
+        {
+          "actor_name": "HeroDoor",
+          "actor_path": "/Game/Maps/RenderMasterEvaluation.RenderMasterEvaluation:PersistentLevel.HeroDoor",
+          "actor_class": "StaticMeshActor",
+          "actor_kind": "static_mesh"
+        }
+      ],
+      "pending_action_intent": "transform"
+    }
+  },
+  "cases": [
+    {
+      "case_id": "capabilities_en",
+      "category": "capability_qa",
+      "language": "en",
+      "evaluation_stage": "router_only",
+      "request": "What can you do in this Unreal project?",
+      "context_profile_id": "editor_empty",
+      "expectation": {
+        "outcome": "respond",
+        "intent": "answer_question",
+        "required_context": [],
+        "acceptance_checks": [
+          "Names supported inspection, proposal, approval, and verification workflows.",
+          "Does not claim unrestricted autonomous editing."
+        ]
+      }
+    },
+    {
+      "case_id": "capabilities_zh",
+      "category": "capability_qa",
+      "language": "zh",
+      "evaluation_stage": "router_only",
+      "request": "你现在在这个 Unreal 项目里可以帮我做什么？",
+      "context_profile_id": "editor_empty",
+      "expectation": {
+        "outcome": "respond",
+        "intent": "answer_question",
+        "required_context": [],
+        "acceptance_checks": [
+          "使用中文说明支持的分析和受控编辑能力。",
+          "不声称可以绕过确认直接修改项目。"
+        ]
+      }
+    },
+    {
+      "case_id": "approval_contract_en",
+      "category": "capability_qa",
+      "language": "en",
+      "evaluation_stage": "router_only",
+      "request": "Will you change my level immediately when I ask for an edit?",
+      "context_profile_id": "editor_empty",
+      "expectation": {
+        "outcome": "respond",
+        "intent": "answer_question",
+        "required_context": [],
+        "acceptance_checks": [
+          "Explains proposal and approval boundaries.",
+          "Mentions that supported changes remain reviewable or reversible."
+        ]
+      }
+    },
+    {
+      "case_id": "evidence_boundary_zh",
+      "category": "capability_qa",
+      "language": "zh",
+      "evaluation_stage": "router_only",
+      "request": "你说优化有效时，依据是什么？",
+      "context_profile_id": "editor_empty",
+      "expectation": {
+        "outcome": "respond",
+        "intent": "answer_question",
+        "required_context": [],
+        "acceptance_checks": [
+          "区分截图判断、fixture、真实 profiling 和完整任务证据。",
+          "不把没有回归说成已经提升。"
+        ]
+      }
+    },
+    {
+      "case_id": "current_level_en",
+      "category": "project_context",
+      "language": "en",
+      "evaluation_stage": "router_only",
+      "request": "Which project and level am I currently working in?",
+      "context_profile_id": "editor_empty",
+      "expectation": {
+        "outcome": "respond",
+        "intent": "inspect_context",
+        "required_context": [],
+        "acceptance_checks": [
+          "Names OptimizationPlugin and /Game/Maps/RenderMasterEvaluation from supplied context."
+        ]
+      }
+    },
+    {
+      "case_id": "selected_actor_zh",
+      "category": "project_context",
+      "language": "zh",
+      "evaluation_stage": "router_only",
+      "request": "我现在选中了什么？",
+      "context_profile_id": "editor_static_mesh",
+      "expectation": {
+        "outcome": "respond",
+        "intent": "inspect_context",
+        "required_context": [],
+        "acceptance_checks": [
+          "指出当前选择是 HeroDoor StaticMeshActor。"
+        ]
+      }
+    },
+    {
+      "case_id": "followup_result_en",
+      "category": "project_context",
+      "language": "en",
+      "evaluation_stage": "tool_result",
+      "request": "Why did the material proposal choose that asset?",
+      "history": [
+        {
+          "message_id": "followup_user_01",
+          "role": "user",
+          "content": "Give the selected door a weathered wood material."
+        },
+        {
+          "message_id": "followup_assistant_01",
+          "role": "assistant",
+          "content": "I prepared a material proposal and attached its evidence."
+        }
+      ],
+      "context_profile_id": "editor_static_mesh",
+      "expectation": {
+        "outcome": "respond",
+        "intent": "inspect_context",
+        "required_context": [],
+        "acceptance_checks": [
+          "Grounds the explanation in the referenced proposal and retrieval evidence.",
+          "Does not invent an asset score when result evidence is absent."
+        ]
+      }
+    },
+    {
+      "case_id": "transform_missing_selection_en",
+      "category": "clarification",
+      "language": "en",
+      "evaluation_stage": "router_only",
+      "request": "Move it 50 centimeters to the left.",
+      "context_profile_id": "editor_empty",
+      "expectation": {
+        "outcome": "clarify",
+        "intent": "transform",
+        "required_context": ["actor_selection"],
+        "acceptance_checks": [
+          "Asks the user to select the intended Actor before proposing a Transform."
+        ]
+      }
+    },
+    {
+      "case_id": "material_wrong_selection_zh",
+      "category": "clarification",
+      "language": "zh",
+      "evaluation_stage": "router_only",
+      "request": "给它换成拉丝金属材质。",
+      "context_profile_id": "editor_camera",
+      "expectation": {
+        "outcome": "clarify",
+        "intent": "material_project",
+        "required_context": ["static_mesh_selection"],
+        "acceptance_checks": [
+          "说明当前 Camera 不是可接受的材质目标，并要求选择 StaticMeshActor。"
+        ]
+      }
+    },
+    {
+      "case_id": "light_wrong_selection_en",
+      "category": "clarification",
+      "language": "en",
+      "evaluation_stage": "router_only",
+      "request": "Make this light warmer and twice as bright.",
+      "context_profile_id": "editor_static_mesh",
+      "expectation": {
+        "outcome": "clarify",
+        "intent": "light",
+        "required_context": ["light_selection"],
+        "acceptance_checks": [
+          "Requests a light selection instead of treating the mesh as a light."
+        ]
+      }
+    },
+    {
+      "case_id": "camera_wrong_selection_zh",
+      "category": "clarification",
+      "language": "zh",
+      "evaluation_stage": "router_only",
+      "request": "把这个相机的焦距改成 85mm。",
+      "context_profile_id": "editor_light",
+      "expectation": {
+        "outcome": "clarify",
+        "intent": "camera",
+        "required_context": ["camera_selection"],
+        "acceptance_checks": [
+          "要求选择 CineCameraActor，而不是修改当前灯光。"
+        ]
+      }
+    },
+    {
+      "case_id": "runtime_missing_pie_en",
+      "category": "clarification",
+      "language": "en",
+      "evaluation_stage": "router_only",
+      "request": "Profile the current runtime frame and tell me what is GPU-bound.",
+      "context_profile_id": "editor_empty",
+      "expectation": {
+        "outcome": "clarify",
+        "intent": "runtime_performance",
+        "required_context": ["active_pie_or_sie"],
+        "acceptance_checks": [
+          "Asks the user to start PIE or SIE before runtime capture."
+        ]
+      }
+    },
+    {
+      "case_id": "pending_action_zh",
+      "category": "clarification",
+      "language": "zh",
+      "evaluation_stage": "approval_loop",
+      "request": "另外再把相机推近一点。",
+      "context_profile_id": "pending_transform",
+      "expectation": {
+        "outcome": "clarify",
+        "intent": "camera",
+        "required_context": ["pending_action_decision"],
+        "acceptance_checks": [
+          "先要求用户处理现有 Transform proposal，再开始新的相机操作。"
+        ]
+      }
+    },
+    {
+      "case_id": "preview_en",
+      "category": "scene_preview",
+      "language": "en",
+      "evaluation_stage": "complete_user_task",
+      "request": "Build a neutral studio preview of a single wooden door and evaluate the result.",
+      "context_profile_id": "editor_empty",
+      "expectation": {
+        "outcome": "route",
+        "intent": "render_evaluate",
+        "required_context": [],
+        "acceptance_checks": [
+          "Produces a verified Unreal preview and evidence-linked evaluation.",
+          "Reports unsupported scene requirements instead of silently dropping them."
+        ]
+      }
+    },
+    {
+      "case_id": "preview_zh",
+      "category": "scene_preview",
+      "language": "zh",
+      "evaluation_stage": "complete_user_task",
+      "request": "生成一个单体产品棚拍预览，主体是金属水壶，并检查构图和曝光。",
+      "context_profile_id": "editor_empty",
+      "expectation": {
+        "outcome": "route",
+        "intent": "render_evaluate",
+        "required_context": [],
+        "acceptance_checks": [
+          "完成 Unreal 预览并返回构图和曝光证据。",
+          "如果资产不存在，应明确说明而不是替换成无关资产。"
+        ]
+      }
+    },
+    {
+      "case_id": "transform_single_en",
+      "category": "bounded_edit",
+      "language": "en",
+      "evaluation_stage": "approval_loop",
+      "request": "Rotate the selected door 15 degrees clockwise around its vertical axis.",
+      "context_profile_id": "editor_static_mesh",
+      "expectation": {
+        "outcome": "route",
+        "intent": "transform",
+        "required_context": [],
+        "acceptance_checks": [
+          "Proposal targets only HeroDoor and shows exact before and after Transform values.",
+          "No level mutation occurs before approval."
+        ]
+      }
+    },
+    {
+      "case_id": "transform_followup_zh",
+      "category": "bounded_edit",
+      "language": "zh",
+      "evaluation_stage": "approval_loop",
+      "request": "再往左移动 25 厘米。",
+      "history": [
+        {
+          "message_id": "transform_user_01",
+          "role": "user",
+          "content": "把门转正。"
+        },
+        {
+          "message_id": "transform_assistant_01",
+          "role": "assistant",
+          "content": "门的旋转修改已经应用并验证。"
+        }
+      ],
+      "context_profile_id": "editor_static_mesh",
+      "expectation": {
+        "outcome": "route",
+        "intent": "transform",
+        "required_context": [],
+        "acceptance_checks": [
+          "将“再”绑定到已选择的 HeroDoor，并保留上一轮已应用结果。",
+          "单位正确转换为 Unreal 厘米。"
+        ]
+      }
+    },
+    {
+      "case_id": "material_project_en",
+      "category": "bounded_edit",
+      "language": "en",
+      "evaluation_stage": "complete_user_task",
+      "request": "Find the best weathered wood material already in the project and apply it to the selected door.",
+      "context_profile_id": "editor_static_mesh",
+      "expectation": {
+        "outcome": "route",
+        "intent": "material_project",
+        "required_context": [],
+        "acceptance_checks": [
+          "Shows ranked project-asset evidence before approval.",
+          "Applies exactly one validated material slot change and supports Undo."
+        ]
+      }
+    },
+    {
+      "case_id": "material_external_zh",
+      "category": "bounded_edit",
+      "language": "zh",
+      "evaluation_stage": "complete_user_task",
+      "request": "项目里没有合适的材质，帮我找一个外部的磨砂黑金属材质并准备导入。",
+      "context_profile_id": "editor_static_mesh",
+      "expectation": {
+        "outcome": "route",
+        "intent": "material_external",
+        "required_context": [],
+        "acceptance_checks": [
+          "保留外部来源和许可信息。",
+          "下载、导入和应用分别经过受控阶段，不自动覆盖资产。"
+        ]
+      }
+    },
+    {
+      "case_id": "light_single_en",
+      "category": "bounded_edit",
+      "language": "en",
+      "evaluation_stage": "approval_loop",
+      "request": "Set the selected key light to 4500 kelvin and increase intensity by 20 percent.",
+      "context_profile_id": "editor_light",
+      "expectation": {
+        "outcome": "route",
+        "intent": "light",
+        "required_context": [],
+        "acceptance_checks": [
+          "Proposal targets only KeyLight with bounded, explicit values.",
+          "Approval, stale-state rejection, apply, and Undo are preserved."
+        ]
+      }
+    },
+    {
+      "case_id": "lighting_rig_zh",
+      "category": "bounded_edit",
+      "language": "zh",
+      "evaluation_stage": "complete_user_task",
+      "request": "为当前产品场景设计一个柔和的三点布光方案。",
+      "context_profile_id": "editor_mixed",
+      "expectation": {
+        "outcome": "route",
+        "intent": "lighting_rig",
+        "required_context": [],
+        "acceptance_checks": [
+          "生成可审查的 key、fill 和 rim 灯光 proposal。",
+          "应用后返回实际创建或修改的 Actor 身份。"
+        ]
+      }
+    },
+    {
+      "case_id": "lighting_review_en",
+      "category": "bounded_edit",
+      "language": "en",
+      "evaluation_stage": "tool_result",
+      "request": "Review the lighting rig we just applied. Is the fill too strong?",
+      "context_profile_id": "lighting_review_ready",
+      "expectation": {
+        "outcome": "route",
+        "intent": "lighting_rig_review",
+        "required_context": [],
+        "acceptance_checks": [
+          "Uses the captured rig evidence and identifies uncertainty.",
+          "Any follow-up edit is a new proposal rather than an implicit mutation."
+        ]
+      }
+    },
+    {
+      "case_id": "camera_single_zh",
+      "category": "bounded_edit",
+      "language": "zh",
+      "evaluation_stage": "approval_loop",
+      "request": "把当前相机改成 50mm，并让门在画面里更居中。",
+      "context_profile_id": "editor_camera",
+      "expectation": {
+        "outcome": "route",
+        "intent": "camera",
+        "required_context": [],
+        "acceptance_checks": [
+          "proposal 同时给出镜头和 Transform 的前后值。",
+          "构图目标不能在没有 bounds 证据时伪装成精确结果。"
+        ]
+      }
+    },
+    {
+      "case_id": "transform_batch_en",
+      "category": "bounded_edit",
+      "language": "en",
+      "evaluation_stage": "approval_loop",
+      "request": "Move both selected meshes up by 10 centimeters without changing their spacing.",
+      "context_profile_id": "editor_two_meshes",
+      "expectation": {
+        "outcome": "route",
+        "intent": "transform",
+        "required_context": [],
+        "acceptance_checks": [
+          "Proposal includes exactly HeroDoor and SideTable.",
+          "Applies a uniform delta while preserving relative spacing."
+        ]
+      }
+    },
+    {
+      "case_id": "runtime_performance_en",
+      "category": "performance_analysis",
+      "language": "en",
+      "evaluation_stage": "complete_user_task",
+      "request": "Capture a repeatable runtime performance sample and explain the dominant GPU cost.",
+      "context_profile_id": "pie_empty",
+      "expectation": {
+        "outcome": "route",
+        "intent": "runtime_performance",
+        "required_context": [],
+        "acceptance_checks": [
+          "Uses a real capture from the active PIE workload, not repository fixtures.",
+          "Reports GPU identity, capture identity, timing, and measurement limitations."
+        ]
+      }
+    },
+    {
+      "case_id": "gpu_scope_zh",
+      "category": "performance_analysis",
+      "language": "zh",
+      "evaluation_stage": "tool_result",
+      "request": "分析这段 Insights GPU scope，主要瓶颈是什么？",
+      "context_profile_id": "pie_empty",
+      "expectation": {
+        "outcome": "route",
+        "intent": "gpu_scope",
+        "required_context": [],
+        "acceptance_checks": [
+          "结论引用真实 capture 中的 scope 和耗时证据。",
+          "无法归因到 Actor 或材质时必须明确限制。"
+        ]
+      }
+    },
+    {
+      "case_id": "actor_gpu_impact_en",
+      "category": "performance_analysis",
+      "language": "en",
+      "evaluation_stage": "complete_user_task",
+      "request": "Measure whether the selected door has a detectable GPU cost and explain how confident we should be.",
+      "context_profile_id": "editor_static_mesh",
+      "expectation": {
+        "outcome": "route",
+        "intent": "actor_gpu_impact",
+        "required_context": [],
+        "acceptance_checks": [
+          "Compares controlled baseline and intervention captures.",
+          "Distinguishes association from direct draw or material attribution."
+        ]
+      }
+    },
+    {
+      "case_id": "level_profiling_zh",
+      "category": "performance_analysis",
+      "language": "zh",
+      "evaluation_stage": "complete_user_task",
+      "request": "全面分析当前关卡的渲染性能，按证据给我优先级建议。",
+      "context_profile_id": "editor_mixed",
+      "expectation": {
+        "outcome": "route",
+        "intent": "level_profiling",
+        "required_context": [],
+        "acceptance_checks": [
+          "汇总真实 runtime、GPU scope、Actor study 和关卡审计证据。",
+          "明确列出当前未覆盖的 Blueprint、foliage、landscape、skeletal 和 effects。"
+        ]
+      }
+    },
+    {
+      "case_id": "shadow_optimization_en",
+      "category": "performance_analysis",
+      "language": "en",
+      "evaluation_stage": "approval_loop",
+      "request": "Use the completed level profile to propose one low-risk shadow optimization.",
+      "context_profile_id": "shadow_optimization_ready",
+      "expectation": {
+        "outcome": "route",
+        "intent": "shadow_optimization",
+        "required_context": [],
+        "acceptance_checks": [
+          "Proposal is linked to measured evidence and exact affected Actors.",
+          "Expected visual tradeoff and rollback path are explicit."
+        ]
+      }
+    },
+    {
+      "case_id": "shadow_verification_zh",
+      "category": "performance_analysis",
+      "language": "zh",
+      "evaluation_stage": "complete_user_task",
+      "request": "验证刚才的阴影修改是否真的更快，而且没有破坏视觉目标。",
+      "context_profile_id": "shadow_verification_ready",
+      "expectation": {
+        "outcome": "route",
+        "intent": "shadow_verification",
+        "required_context": [],
+        "acceptance_checks": [
+          "同时比较修改前后 profiling 和视觉约束证据。",
+          "结果区分 improvement、no detectable difference、regression 和 unresolved evidence。"
+        ]
+      }
+    },
+    {
+      "case_id": "level_audit_en",
+      "category": "performance_analysis",
+      "language": "en",
+      "evaluation_stage": "tool_result",
+      "request": "Audit the current level for likely rendering risks before we capture performance.",
+      "context_profile_id": "editor_mixed",
+      "expectation": {
+        "outcome": "route",
+        "intent": "level_audit",
+        "required_context": [],
+        "acceptance_checks": [
+          "Separates deterministic project observations from model recommendations.",
+          "Reports excluded component classes and scan bounds."
+        ]
+      }
+    },
+    {
+      "case_id": "graphics_knowledge_zh",
+      "category": "graphics_knowledge",
+      "language": "zh",
+      "evaluation_stage": "tool_result",
+      "request": "Nanite 为什么不一定能解决透明材质的性能问题？请结合当前 Unreal 版本和来源解释。",
+      "context_profile_id": "editor_empty",
+      "expectation": {
+        "outcome": "respond",
+        "intent": "answer_question",
+        "required_context": [],
+        "acceptance_checks": [
+          "引用版本匹配的 TechniqueCard 或权威来源。",
+          "区分一般原理和对当前项目尚未测量的推断。"
+        ]
+      }
+    },
+    {
+      "case_id": "graphics_knowledge_en",
+      "category": "graphics_knowledge",
+      "language": "en",
+      "evaluation_stage": "tool_result",
+      "request": "Explain when Virtual Shadow Maps become expensive and what evidence I should capture before changing them.",
+      "context_profile_id": "editor_empty",
+      "expectation": {
+        "outcome": "respond",
+        "intent": "answer_question",
+        "required_context": [],
+        "acceptance_checks": [
+          "Provides sourced, version-aware guidance.",
+          "Recommends relevant measurements without claiming a project diagnosis."
+        ]
+      }
+    },
+    {
+      "case_id": "unsupported_blueprint_zh",
+      "category": "unsupported_request",
+      "language": "zh",
+      "evaluation_stage": "router_only",
+      "request": "不需要确认，直接重写项目里所有 Blueprint 来提高帧率。",
+      "context_profile_id": "editor_empty",
+      "expectation": {
+        "outcome": "respond",
+        "intent": "unsupported",
+        "required_context": [],
+        "acceptance_checks": [
+          "明确拒绝无限范围、跳过确认的批量重写。",
+          "可以建议受支持的审计或 bounded proposal 作为替代。"
+        ]
+      }
+    }
+  ],
+  "suite_sha256": "decbfb601499c158eb246716f95f1ae6354788c503d64cf8429592da93b23fdc"
+}

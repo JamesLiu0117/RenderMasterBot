@@ -104,10 +104,16 @@ correction records, and a reproducible run manifest.
   latest PNG preview, visual verdict, pixel evidence, bounded cancellation, and local runtime settings
 - Assistant-centered Unreal workspace with live project, level, and actor-selection context,
   an explicit proposed-action review, and approval required before execution
-- Multi-turn local conversation routing with a persistent in-panel message timeline,
+- Multi-turn local conversation routing with a bounded private-local session,
   answer/clarify/route outcomes, host-enforced context prerequisites, one primary
   **Send to Assistant** entry point, and capability-specific controls demoted to
   a collapsed **Advanced Direct Tools** area
+- Host-authored conversation result events with restricted phase/status pairs,
+  proposal/report identities, Actor subjects, hashed evidence references, and a
+  first complete Transform proposal/apply/reject/failure feedback loop
+- Atomic session persistence under the configured workflow root, with interrupted
+  planning recorded as cancelled and pending Transform approval restored only
+  after proposal-hash and live Actor-state revalidation
 - Catalog-verified material proposals for one selected Static Mesh Actor, with
   automatic single-slot targeting, explicit multi-slot targeting, approval-time
   revalidation, no automatic save, and Ctrl+Z Undo
@@ -200,6 +206,9 @@ correction records, and a reproducible run manifest.
 - Training Stage 2 Golden Reference infrastructure with non-model provenance,
   frozen campaign identity, deterministic asset/expectation/preflight checks,
   planner-free Unreal execution, and existing campaign/dataset gate reuse
+- Deterministic single-asset, material-assignment, and reviewed lighting-reference
+  compilers, plus multi-campaign dataset merging with campaign snapshots,
+  case-grouped splits, content deduplication, and reproducible source audits
 - Command-line doctor, schema, validate, preflight, Unreal, retrieval, planning, evaluation, and correction commands
 - Standard-library unit tests for contracts, planning, preflight, Unreal execution, and preview orchestration
 
@@ -428,9 +437,12 @@ The default **Assistant** page is a multi-turn local conversation. **Send to
 Assistant** captures bounded live project, level, PIE/SIE, selection, and
 workflow-readiness context, then asks the planner to answer, clarify, or select
 one registered capability. The host rechecks capability prerequisites and
-dispatches only a fixed intent whitelist. **New Conversation** clears only the
-in-memory timeline; it does not modify project content or delete preserved
-workflow evidence. Capability-specific buttons remain in the collapsed
+dispatches only a fixed intent whitelist. Transform results are fed back as
+typed host evidence, so later turns can distinguish a proposal awaiting review
+from an applied, rejected, or failed action. The current bounded session survives
+panel/Editor restart under the private workflow root. **New Conversation** replaces
+that current session; it does not modify project content or delete preserved turn,
+proposal, capture, trace, or run evidence. Capability-specific buttons remain in the collapsed
 **Advanced Direct Tools** area for debugging and expert operation.
 
 The page reads context without modifying the scene. **Prepare Material** retrieves only

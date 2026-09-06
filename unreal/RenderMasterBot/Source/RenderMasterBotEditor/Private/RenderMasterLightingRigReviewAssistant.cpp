@@ -8,7 +8,6 @@
 #include "Editor.h"
 #include "Engine/Light.h"
 #include "Engine/World.h"
-#include "GenericPlatform/GenericPlatformMisc.h"
 #include "HAL/FileManager.h"
 #include "LevelEditorViewport.h"
 #include "Misc/App.h"
@@ -19,6 +18,7 @@
 #include "Misc/ScopeExit.h"
 #include "Misc/Timespan.h"
 #include "RenderMasterWorkflowController.h"
+#include "RenderMasterSha256.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "UnrealClient.h"
@@ -434,16 +434,9 @@ bool ParseCorrectionAction(
 
 bool HashFileSha256(const FString& Filename, FString& OutHash)
 {
-    TArray<uint8> Bytes;
-    if (!FFileHelper::LoadFileToArray(Bytes, *Filename) || Bytes.IsEmpty()) return false;
-    FSHA256Signature Signature;
-    if (!FPlatformMisc::GetSHA256Signature(
-            Bytes.GetData(), static_cast<uint32>(Bytes.Num()), Signature))
-    {
-        return false;
-    }
-    OutHash = Signature.ToString().ToLower();
-    return true;
+    int64 SizeBytes = 0;
+    return RenderMasterSha256File(Filename, OutHash, &SizeBytes)
+        && SizeBytes > 0;
 }
 }
 

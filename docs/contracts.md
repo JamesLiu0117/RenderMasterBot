@@ -7,7 +7,9 @@ these strict models. Unknown fields are rejected.
 | Contract | Producer | Consumer | Purpose |
 | --- | --- | --- | --- |
 | `UnrealConversationContext` | Unreal Editor conversation host | local conversation router | bounded project, level, play-mode, selection, and workflow-readiness context |
-| `AssistantConversationRequest` | Unreal Editor conversation host | local conversation router | one current request plus at most 24 prior user/assistant messages |
+| `AssistantToolResultEvent` | registered Unreal capability host | local conversation router | typed proposal, analysis, execution, verification, rejection, failure, or cancellation result with identities and hashed evidence references |
+| `AssistantConversationRequest` | Unreal Editor conversation host | local conversation router | one current request plus at most 24 prior messages and 12 recent tool-result events |
+| `AssistantConversationSession` | Unreal Editor workspace | Unreal Editor workspace | bounded private-local history, result events, and hash-bound resumable task state |
 | `AssistantConversationTurn` | host-validated local conversation router | Unreal Editor workspace | auditable respond, clarify, or fixed-whitelist route decision |
 | `TechniqueCard` | knowledge ingestion | retriever/planner | cited graphics knowledge |
 | `AssetCard` | Unreal asset scanner | retriever/planner/adapter | resolvable project assets |
@@ -65,7 +67,7 @@ these strict models. Unknown fields are rejected.
 | `TrainingBaselineReport` | baseline builder | operator/training comparison | frozen base-model outcomes, per-category metrics, failure counts, and self-hash |
 
 Although the early planning note called these "six contracts," the actual
-boundary now contains fifty-seven top-level contracts. `CorrectionDecision` is kept
+boundary now contains fifty-nine top-level contracts. `CorrectionDecision` is kept
 separate from `EvaluationReport` so visual observation and executable repair
 remain independently testable.
 
@@ -77,6 +79,17 @@ remain independently testable.
   The model cannot return a command, function, module, file mutation, or raw
   Unreal API call. C++ independently revalidates the outcome/intent pairing,
   active conversation ID, turn ID, and original request.
+- Conversation tool results are host-authored rather than model-authored. Their
+  phase/status combinations are restricted, review/apply/reject states require
+  the exact proposal ID, evidence files carry SHA-256 identities, and events
+  from another conversation are rejected. The router must distinguish a
+  proposal awaiting review from an action that was actually applied.
+- Conversation sessions retain at most 100 messages and 100 tool-result events
+  under the configured local workflow root. A reviewable task must bind to the
+  exact proposal evidence already present in its result stream. An interrupted
+  planning process resumes as `cancelled`; a pending Transform proposal regains
+  Apply permission only after its file hash and live Actor Before state pass
+  revalidation.
 - Selection-dependent routes are downgraded to clarification when the required
   bounded Actor, mesh, light, camera, lighting-rig, PIE/SIE, completed-profile,
   or applied-optimization context is absent. First-turn action text preserves
@@ -279,6 +292,11 @@ remain independently testable.
   IDs while writing distinct attempt directories.
 - Campaign-gated builder 0.2 trains on the hash-verified final RenderSpec and
   removes non-executable notes from positive targets.
+- Builder 0.3 binds multiple completed campaigns through byte-hashed snapshots,
+  deduplicates examples, and groups campaign reruns by project/catalog/case
+  identity. Auditing checks campaign eligibility and source membership;
+  `--source-root` additionally verifies original evidence and reproduces examples.
+  Existing 0.1/0.2 manifests retain their original hash-validation behavior.
 
 ## CLI
 
@@ -325,6 +343,8 @@ render-master schema assistant-shadow-optimization-report -o assistant_shadow_op
 render-master schema unreal-level-profiling-run -o unreal_level_profiling_run.schema.json
 render-master schema assistant-level-profiling-report -o assistant_level_profiling_report.schema.json
 render-master schema assistant-shadow-optimization-verification-report -o assistant_shadow_optimization_verification_report.schema.json
+render-master schema assistant-tool-result-event -o assistant_tool_result_event.schema.json
+render-master schema assistant-conversation-session -o assistant_conversation_session.schema.json
 render-master schema training-example -o training_example.schema.json
 render-master schema training-dataset-manifest -o training_dataset_manifest.schema.json
 render-master schema training-dataset-audit-report -o training_dataset_audit_report.schema.json

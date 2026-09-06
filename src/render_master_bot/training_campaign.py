@@ -614,6 +614,65 @@ def run_training_campaign(
     return run
 
 
+def cancel_training_campaign(
+    campaign_manifest_path: str | Path,
+    *,
+    reason: str = "campaign cancelled by operator",
+) -> TrainingCampaignRun:
+    """Recover any active attempt evidence and persist a resumable cancelled state."""
+
+    manifest_path = Path(campaign_manifest_path).expanduser().resolve()
+    campaign_root = manifest_path.parent
+    run = load_training_campaign_run(manifest_path)
+    if run.status == "completed":
+        return run
+    if run.status == "failed":
+        raise TrainingCampaignError("failed campaign state requires operator inspection")
+    if run.status == "cancelled" and run.active_case_id is None:
+        return run
+
+    suite = _load_campaign_snapshot(campaign_root)
+    if run.suite_id != suite.suite_id or run.suite_sha256 != canonical_sha256(suite):
+        raise TrainingCampaignError("campaign suite snapshot does not match its run manifest")
+    case_map = _campaign_case_map(suite)
+    if run.active_case_id is not None:
+        case = case_map.get(run.active_case_id)
+        if case is None:
+            raise TrainingCampaignError("campaign active case is missing from suite snapshot")
+        workflow_directory = (
+            campaign_root
+            / "workflows"
+            / case.case_id
+            / f"attempt-{run.active_attempt:03d}"
+        )
+        recovered = _analyze_attempt(
+            case=case,
+            campaign_root=campaign_root,
+            workflow_directory=workflow_directory,
+            workflow_id=_workflow_id(run.campaign_id, case.case_id),
+            attempt_number=run.active_attempt,
+            started_at=run.active_started_at,
+            started_monotonic=None,
+            runner_error=None,
+        )
+        run = _append_attempt_result(run, case=case, attempt=recovered)
+
+    now = datetime.now(UTC)
+    started_at = run.started_at or now
+    errors = list(run.errors)
+    if reason and reason not in errors:
+        errors.append(reason[:4000])
+    run = _updated_run(
+        run,
+        status="cancelled",
+        started_at=started_at,
+        finished_at=now,
+        errors=errors,
+    )
+    _write_json_atomic(manifest_path, run.model_dump(mode="json"))
+    return run
+
+
 def campaign_status_summary(run: TrainingCampaignRun) -> dict[str, object]:
     latest_attempts = [result.attempts[-1] for result in run.case_results]
     return {

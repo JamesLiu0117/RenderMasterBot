@@ -153,6 +153,12 @@ from render_master_bot.orchestrator import WorkflowError, run_render_workflow
 from render_master_bot.patching import PatchApplicationError, apply_render_spec_patch
 from render_master_bot.planner import PlanningError, ScenePlanner
 from render_master_bot.preflight import run_preflight
+from render_master_bot.product_baseline import (
+    ProductBaselineError,
+    capture_product_runtime_baseline,
+    load_capability_evidence_ledger,
+    load_product_benchmark_suite,
+)
 from render_master_bot.schemas import contract_model, contract_schema
 from render_master_bot.serialization import canonical_sha256
 from render_master_bot.settings import Settings
@@ -167,6 +173,7 @@ from render_master_bot.training_campaign import (
     CAMPAIGN_MANIFEST_FILENAME,
     TrainingCampaignError,
     build_training_baseline_report,
+    cancel_training_campaign,
     campaign_status_summary,
     create_training_campaign_plan,
     load_training_campaign_run,
@@ -175,6 +182,7 @@ from render_master_bot.training_campaign import (
 )
 from render_master_bot.training_reference import (
     TrainingReferenceError,
+    compile_material_reference_suite,
     compile_single_asset_reference_suite,
     create_training_reference_campaign_plan,
     reference_campaign_manifest,
@@ -304,6 +312,88 @@ def cmd_config(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_product_benchmark_validate(args: argparse.Namespace) -> int:
+    try:
+        suite = load_product_benchmark_suite(args.path)
+    except ProductBaselineError as exc:
+        print(f"ERROR: product benchmark validation failed: {exc}", file=sys.stderr)
+        return 1
+    category_counts: dict[str, int] = {}
+    stage_counts: dict[str, int] = {}
+    language_counts: dict[str, int] = {}
+    for case in suite.cases:
+        category_counts[case.category] = category_counts.get(case.category, 0) + 1
+        stage_counts[case.evaluation_stage] = (
+            stage_counts.get(case.evaluation_stage, 0) + 1
+        )
+        language_counts[case.language] = language_counts.get(case.language, 0) + 1
+    _write_json(
+        {
+            "suite_id": suite.suite_id,
+            "status": suite.status,
+            "case_count": len(suite.cases),
+            "context_profile_count": len(suite.context_profiles),
+            "category_counts": dict(sorted(category_counts.items())),
+            "evaluation_stage_counts": dict(sorted(stage_counts.items())),
+            "language_counts": dict(sorted(language_counts.items())),
+            "suite_sha256": suite.suite_sha256,
+        },
+        args.output,
+    )
+    return 0
+
+
+def cmd_capability_evidence_validate(args: argparse.Namespace) -> int:
+    try:
+        ledger = load_capability_evidence_ledger(args.path)
+    except ProductBaselineError as exc:
+        print(f"ERROR: capability evidence validation failed: {exc}", file=sys.stderr)
+        return 1
+    level_counts: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
+    for entry in ledger.entries:
+        level_counts[entry.highest_evidence_level] = (
+            level_counts.get(entry.highest_evidence_level, 0) + 1
+        )
+        status_counts[entry.implementation_status] = (
+            status_counts.get(entry.implementation_status, 0) + 1
+        )
+    _write_json(
+        {
+            "ledger_id": ledger.ledger_id,
+            "assessed_at_utc": ledger.assessed_at_utc.isoformat(),
+            "capability_count": len(ledger.entries),
+            "implementation_status_counts": dict(sorted(status_counts.items())),
+            "highest_evidence_level_counts": dict(sorted(level_counts.items())),
+            "ledger_sha256": ledger.ledger_sha256,
+        },
+        args.output,
+    )
+    return 0
+
+
+def cmd_product_baseline_capture(args: argparse.Namespace) -> int:
+    settings = _settings()
+    try:
+        baseline = capture_product_runtime_baseline(
+            baseline_id=args.baseline_id,
+            source_root=args.source_root,
+            unreal_project_path=args.path,
+            engine_root=args.engine_root,
+            asset_catalog_path=args.assets,
+            training_dataset_manifest_path=args.dataset,
+            product_benchmark_suite_path=args.benchmark_suite,
+            capability_evidence_ledger_path=args.evidence_ledger,
+            settings=settings,
+            client=_client(settings),
+        )
+    except (ProductBaselineError, ValueError) as exc:
+        print(f"ERROR: product baseline capture failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(baseline.model_dump(mode="json"), args.output)
+    return 0
+
+
 def cmd_training_data_build(args: argparse.Namespace) -> int:
     try:
         result = build_training_dataset(
@@ -313,7 +403,8 @@ def cmd_training_data_build(args: argparse.Namespace) -> int:
             split_seed=args.split_seed,
             validation_group_fraction=args.validation_fraction,
             test_group_fraction=args.test_fraction,
-            campaign_run_path=args.campaign_run,
+            campaign_run_path=getattr(args, "campaign_run", None),
+            campaign_run_paths=getattr(args, "campaign_runs", None),
         )
     except TrainingDataError as exc:
         print(f"ERROR: training dataset build failed: {exc}", file=sys.stderr)
@@ -331,6 +422,11 @@ def cmd_training_data_build(args: argparse.Namespace) -> int:
             ),
             "skipped_source_count": len(result.manifest.skipped_sources),
             "total_example_count": result.manifest.total_example_count,
+            "campaign_count": (
+                len(result.manifest.campaign_sources or [])
+                or int(result.manifest.campaign_run_path is not None)
+            ),
+            "source_evidence_checked": result.audit.source_evidence_checked,
             "split_counts": result.audit.split_counts,
             "integrity_status": result.audit.integrity_status,
             "qlora_smoke_ready": result.audit.qlora_smoke_ready,
@@ -344,7 +440,7 @@ def cmd_training_data_build(args: argparse.Namespace) -> int:
 
 def cmd_training_data_audit(args: argparse.Namespace) -> int:
     try:
-        report = audit_training_dataset(args.manifest)
+        report = audit_training_dataset(args.manifest, source_root=args.source_root)
     except TrainingDataError as exc:
         print(f"ERROR: training dataset audit failed: {exc}", file=sys.stderr)
         return 1
@@ -452,6 +548,16 @@ def cmd_training_campaign_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_training_campaign_cancel(args: argparse.Namespace) -> int:
+    try:
+        run = cancel_training_campaign(args.manifest, reason=args.reason)
+    except TrainingCampaignError as exc:
+        print(f"ERROR: training campaign cancellation failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(campaign_status_summary(run), args.output)
+    return 0
+
+
 def cmd_training_campaign_baseline(args: argparse.Namespace) -> int:
     try:
         run = load_training_campaign_run(args.manifest)
@@ -481,6 +587,34 @@ def cmd_training_reference_validate(args: argparse.Namespace) -> int:
 def cmd_training_reference_compile(args: argparse.Namespace) -> int:
     try:
         suite = compile_single_asset_reference_suite(
+            campaign_suite_path=args.suite,
+            project_path=args.path,
+            asset_catalog_path=args.assets,
+            output_path=args.output,
+            reference_suite_id=args.reference_suite_id,
+            retrieval_campaign_directory=args.retrieval_campaign,
+            case_ids=args.case_id,
+            reference_category=getattr(args, "reference_category", "single_asset"),
+        )
+    except (TrainingReferenceError, TrainingCampaignError) as exc:
+        print(f"ERROR: training reference compile failed: {exc}", file=sys.stderr)
+        return 1
+    _write_json(
+        {
+            "reference_suite_id": suite.reference_suite_id,
+            "reference_suite_sha256": canonical_sha256(suite),
+            "compiled_case_count": len(suite.cases),
+            "compiled_case_ids": [case.case_id for case in suite.cases],
+            "output_path": str(Path(args.output).expanduser().resolve()),
+        },
+        None,
+    )
+    return 0
+
+
+def cmd_training_reference_compile_materials(args: argparse.Namespace) -> int:
+    try:
+        suite = compile_material_reference_suite(
             campaign_suite_path=args.suite,
             project_path=args.path,
             asset_catalog_path=args.assets,
@@ -2018,6 +2152,49 @@ def build_parser() -> argparse.ArgumentParser:
     config = subparsers.add_parser("config", help="show resolved runtime configuration")
     config.set_defaults(handler=cmd_config)
 
+    benchmark_validate = subparsers.add_parser(
+        "product-benchmark-validate",
+        help="validate and summarize a frozen product task suite",
+    )
+    benchmark_validate.add_argument("path", help="ProductBenchmarkSuite JSON file")
+    benchmark_validate.add_argument("--output", "-o", help="write summary JSON")
+    benchmark_validate.set_defaults(handler=cmd_product_benchmark_validate)
+
+    evidence_validate = subparsers.add_parser(
+        "capability-evidence-validate",
+        help="validate and summarize a capability evidence ledger",
+    )
+    evidence_validate.add_argument("path", help="CapabilityEvidenceLedger JSON file")
+    evidence_validate.add_argument("--output", "-o", help="write summary JSON")
+    evidence_validate.set_defaults(handler=cmd_capability_evidence_validate)
+
+    baseline_capture = subparsers.add_parser(
+        "product-baseline-capture",
+        help="capture auditable code, model, engine, data, and benchmark identities",
+    )
+    baseline_capture.add_argument("path", help="path to the target .uproject file")
+    baseline_capture.add_argument("--baseline-id", required=True)
+    baseline_capture.add_argument("--source-root", required=True)
+    baseline_capture.add_argument("--engine-root", required=True)
+    baseline_capture.add_argument("--assets", required=True, help="AssetCard catalog JSON")
+    baseline_capture.add_argument(
+        "--dataset",
+        required=True,
+        help="training dataset manifest JSON",
+    )
+    baseline_capture.add_argument(
+        "--benchmark-suite",
+        required=True,
+        help="frozen ProductBenchmarkSuite JSON",
+    )
+    baseline_capture.add_argument(
+        "--evidence-ledger",
+        required=True,
+        help="CapabilityEvidenceLedger JSON",
+    )
+    baseline_capture.add_argument("--output", "-o", required=True)
+    baseline_capture.set_defaults(handler=cmd_product_baseline_capture)
+
     schema = subparsers.add_parser("schema", help="print a public contract JSON Schema")
     schema.add_argument("contract", nargs="?", default="render-spec", choices=CONTRACT_MODELS)
     schema.add_argument("--output", "-o")
@@ -3000,11 +3177,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional JSON path for the compact build summary",
     )
     training_build.set_defaults(handler=cmd_training_data_build)
+    training_merge = training_commands.add_parser(
+        "merge",
+        help="rebuild one audited dataset from explicitly selected completed campaigns",
+    )
+    training_merge.add_argument("--source-root", required=True, help="common private campaigns root")
+    training_merge.add_argument("--output-dir", required=True, help="new or empty dataset directory")
+    training_merge.add_argument("--dataset-id", default=DEFAULT_DATASET_ID)
+    training_merge.add_argument("--split-seed", default=DEFAULT_SPLIT_SEED)
+    training_merge.add_argument("--validation-fraction", type=float, default=0.1)
+    training_merge.add_argument("--test-fraction", type=float, default=0.1)
+    training_merge.add_argument(
+        "--campaign-run", dest="campaign_runs", action="append", required=True,
+        help="completed campaign_manifest.json; repeat for each campaign to include",
+    )
+    training_merge.add_argument("--output", help="optional compact build summary JSON")
+    training_merge.set_defaults(handler=cmd_training_data_build)
     training_audit = training_commands.add_parser(
         "audit",
         help="verify hashes, contracts, split membership, leakage, and readiness",
     )
     training_audit.add_argument("manifest", help="generated dataset_manifest.json")
+    training_audit.add_argument(
+        "--source-root", help="also rehash original evidence and reproduce each training example",
+    )
     training_audit.add_argument("--output", "-o", help="optional audit report JSON path")
     training_audit.set_defaults(handler=cmd_training_data_audit)
 
@@ -3035,6 +3231,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reference_compile.add_argument("--output", "-o", required=True)
     reference_compile.set_defaults(handler=cmd_training_reference_compile)
+
+    reference_lighting = reference_commands.add_parser(
+        "compile-lighting", help="compile the four reviewed single-object lighting recipes",
+    )
+    reference_lighting.add_argument("--suite", required=True)
+    reference_lighting.add_argument("--path", required=True)
+    reference_lighting.add_argument("--assets", required=True)
+    reference_lighting.add_argument("--reference-suite-id", required=True)
+    reference_lighting.add_argument("--retrieval-campaign")
+    reference_lighting.add_argument("--case-id", action="append")
+    reference_lighting.add_argument("--output", "-o", required=True)
+    reference_lighting.set_defaults(
+        handler=cmd_training_reference_compile, reference_category="lighting",
+    )
+
+    reference_compile_materials = reference_commands.add_parser(
+        "compile-materials",
+        help="compile deterministic Golden References for frozen material cases",
+    )
+    reference_compile_materials.add_argument("--suite", required=True)
+    reference_compile_materials.add_argument(
+        "--path", required=True, help="compiled .uproject file"
+    )
+    reference_compile_materials.add_argument("--assets", required=True)
+    reference_compile_materials.add_argument("--reference-suite-id", required=True)
+    reference_compile_materials.add_argument(
+        "--retrieval-campaign",
+        help="optional frozen Stage 1 campaign whose retrieval candidates are reused",
+    )
+    reference_compile_materials.add_argument(
+        "--case-id",
+        action="append",
+        help="compile one exact material_assignment case; repeat for an ordered subset",
+    )
+    reference_compile_materials.add_argument("--output", "-o", required=True)
+    reference_compile_materials.set_defaults(
+        handler=cmd_training_reference_compile_materials
+    )
 
     reference_validate = reference_commands.add_parser(
         "validate",
@@ -3136,6 +3370,19 @@ def build_parser() -> argparse.ArgumentParser:
     campaign_status.add_argument("manifest")
     campaign_status.add_argument("--output", "-o")
     campaign_status.set_defaults(handler=cmd_training_campaign_status)
+
+    campaign_cancel = campaign_commands.add_parser(
+        "cancel",
+        help="recover active evidence and mark a stopped campaign as resumable cancelled",
+    )
+    campaign_cancel.add_argument("manifest")
+    campaign_cancel.add_argument(
+        "--reason",
+        default="campaign cancelled by operator",
+        help="bounded cancellation reason saved with the campaign",
+    )
+    campaign_cancel.add_argument("--output", "-o")
+    campaign_cancel.set_defaults(handler=cmd_training_campaign_cancel)
 
     campaign_baseline = campaign_commands.add_parser(
         "baseline",

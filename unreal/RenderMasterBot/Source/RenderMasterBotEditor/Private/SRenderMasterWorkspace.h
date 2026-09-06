@@ -51,6 +51,7 @@ private:
     void HandleConversationTurnCompleted(
         const FRenderMasterConversationTurn& Turn);
     void HandleConversationTurnFailed(const FString& Error);
+    void HandleTransformResultReady();
     void DispatchConversationIntent(
         const FString& Intent,
         const FString& ActionPrompt);
@@ -58,6 +59,23 @@ private:
         FRenderMasterConversationContext& OutContext,
         FString& OutError) const;
     void AddConversationMessage(const FString& Role, const FString& Content);
+    void AddConversationResultEvent(
+        const FString& Intent,
+        const FString& Phase,
+        const FString& Status,
+        const FString& Summary,
+        const FString& ProposalId,
+        const TArray<FString>& SubjectIds,
+        const FString& EvidenceKind = FString(),
+        const FString& EvidencePath = FString());
+    void RecordConversationActionFailure(
+        const FString& Intent,
+        const FString& Error);
+    void ClearActiveConversationAction();
+    FString GetConversationSessionPath() const;
+    TOptional<FRenderMasterConversationTaskState> BuildConversationTaskState() const;
+    void SaveConversationSession();
+    bool RestoreConversationSession(FString& OutStatus);
     void RefreshConversationMessages();
     bool CanSendConversationMessage() const;
 
@@ -204,7 +222,12 @@ private:
     FString LastRequest;
     FString AssistantReply;
     TArray<FRenderMasterConversationMessage> ConversationMessages;
+    TArray<FRenderMasterConversationResultEvent> ConversationResultEvents;
+    FString ActiveConversationActionTurnId;
+    FString ActiveConversationActionIntent;
     int32 NextConversationMessageNumber = 1;
+    int32 NextConversationResultNumber = 1;
+    bool bRestoringConversationSession = false;
     int32 SelectedMaterialSlotIndex = INDEX_NONE;
     int32 ActivePage = 0;
     enum class ELastAssistantAction : uint8

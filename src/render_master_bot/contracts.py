@@ -5571,11 +5571,19 @@ class TrainingDatasetSplit(StrictModel):
         return self
 
 
+class TrainingDatasetCampaignSource(StrictModel):
+    """A byte-for-byte campaign snapshot with its original relative location."""
+
+    source_run_path: RelativeArtifactPath
+    snapshot_path: RelativeArtifactPath
+    sha256: Sha256
+
+
 class TrainingDatasetManifest(StrictModel):
     """Deterministic identity and provenance for a private local SFT dataset."""
 
     schema_version: Literal["0.1"] = "0.1"
-    builder_version: Literal["0.1", "0.2"] = "0.1"
+    builder_version: Literal["0.1", "0.2", "0.3"] = "0.1"
     dataset_id: Identifier
     split_strategy: Literal["group_sha256_v1"] = "group_sha256_v1"
     split_group_key: Literal["source_group_id"] = "source_group_id"
@@ -5584,6 +5592,9 @@ class TrainingDatasetManifest(StrictModel):
     test_group_fraction: UnitFloat = 0.1
     campaign_run_path: RelativeArtifactPath | None = None
     campaign_run_sha256: Sha256 | None = None
+    campaign_sources: list[TrainingDatasetCampaignSource] | None = Field(
+        default=None, min_length=1, max_length=256,
+    )
     discovered_source_manifest_count: NonNegativeInt
     accepted_source_manifests: list[TrainingArtifactReference] = Field(
         default_factory=list,
@@ -5602,6 +5613,16 @@ class TrainingDatasetManifest(StrictModel):
     def dataset_manifest_is_consistent(self) -> "TrainingDatasetManifest":
         if (self.campaign_run_path is None) != (self.campaign_run_sha256 is None):
             raise ValueError("campaign run path and hash must be supplied together")
+        if self.builder_version == "0.3":
+            if not self.campaign_sources or self.campaign_run_path is not None:
+                raise ValueError("builder 0.3 requires campaign snapshots without legacy provenance")
+        elif self.campaign_sources is not None:
+            raise ValueError("campaign snapshots require builder 0.3")
+        if self.campaign_sources:
+            for attribute in ("source_run_path", "snapshot_path"):
+                paths = [getattr(item, attribute).casefold() for item in self.campaign_sources]
+                if len(paths) != len(set(paths)):
+                    raise ValueError(f"campaign {attribute} values must be unique")
         if [split.name for split in self.splits] != ["train", "validation", "test"]:
             raise ValueError("dataset splits must be ordered train, validation, test")
         if self.discovered_source_manifest_count != (
@@ -5638,6 +5659,8 @@ class TrainingDatasetAuditReport(StrictModel):
     dataset_id: Identifier
     manifest_sha256: Sha256
     dataset_sha256: Sha256
+    source_evidence_checked: bool = False
+    campaign_snapshot_count: NonNegativeInt = 0
     integrity_status: Literal["passed", "failed"]
     split_counts: dict[Literal["train", "validation", "test"], NonNegativeInt]
     valid_example_count: NonNegativeInt
@@ -6284,6 +6307,100 @@ class AssistantConversationMessage(StrictModel):
     content: Annotated[str, Field(min_length=1, max_length=8000)]
 
 
+class AssistantToolEvidenceReference(StrictModel):
+    """Immutable file evidence produced by one bounded assistant capability."""
+
+    evidence_id: Identifier
+    kind: Literal[
+        "proposal",
+        "report",
+        "capture",
+        "render",
+        "trace",
+        "log",
+        "other",
+    ]
+    path: Annotated[str, Field(min_length=1, max_length=1000)]
+    sha256: Sha256
+
+
+class AssistantToolResultEvent(StrictModel):
+    """Host-authored capability result supplied back to the conversation router."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    event_id: Identifier
+    conversation_id: Identifier
+    source_turn_id: Identifier | None = None
+    intent: ConversationActionIntentName
+    phase: Literal[
+        "proposal",
+        "analysis",
+        "execution",
+        "verification",
+        "rejection",
+        "failure",
+        "cancellation",
+    ]
+    status: Literal[
+        "needs_review",
+        "succeeded",
+        "applied",
+        "rejected",
+        "failed",
+        "cancelled",
+        "unresolved",
+    ]
+    summary: LongText
+    proposal_id: Identifier | None = None
+    report_id: Identifier | None = None
+    subject_ids: list[Annotated[str, Field(min_length=1, max_length=1000)]] = Field(
+        default_factory=list,
+        max_length=32,
+    )
+    evidence: list[AssistantToolEvidenceReference] = Field(
+        default_factory=list,
+        max_length=16,
+    )
+    created_at_utc: datetime
+
+    @model_validator(mode="after")
+    def phase_matches_status_and_identity(self) -> "AssistantToolResultEvent":
+        allowed_statuses = {
+            "proposal": {"needs_review", "unresolved", "failed"},
+            "analysis": {"succeeded", "unresolved", "failed"},
+            "execution": {"applied", "failed"},
+            "verification": {"succeeded", "unresolved", "failed"},
+            "rejection": {"rejected"},
+            "failure": {"failed"},
+            "cancellation": {"cancelled"},
+        }
+        if self.status not in allowed_statuses[self.phase]:
+            raise ValueError(
+                f"tool-result phase {self.phase!r} cannot use status {self.status!r}"
+            )
+        if self.status in {"needs_review", "applied", "rejected"}:
+            if self.proposal_id is None:
+                raise ValueError(
+                    f"tool-result status {self.status!r} requires proposal_id"
+                )
+        subject_ids = self.subject_ids
+        if len(subject_ids) != len(set(subject_ids)):
+            raise ValueError("tool-result subject IDs must be unique")
+        evidence_ids = [item.evidence_id for item in self.evidence]
+        if len(evidence_ids) != len(set(evidence_ids)):
+            raise ValueError("tool-result evidence IDs must be unique")
+        evidence_paths = [item.path for item in self.evidence]
+        if len(evidence_paths) != len(set(evidence_paths)):
+            raise ValueError("tool-result evidence paths must be unique")
+        if (
+            self.created_at_utc.tzinfo is None
+            or self.created_at_utc.utcoffset() is None
+            or self.created_at_utc.utcoffset().total_seconds() != 0
+        ):
+            raise ValueError("tool-result created_at_utc must use an explicit UTC timezone")
+        return self
+
+
 class AssistantConversationRequest(StrictModel):
     """Complete bounded input for one local-model conversation turn."""
 
@@ -6296,6 +6413,10 @@ class AssistantConversationRequest(StrictModel):
         default_factory=list,
         max_length=24,
     )
+    result_events: list[AssistantToolResultEvent] = Field(
+        default_factory=list,
+        max_length=12,
+    )
 
     @model_validator(mode="after")
     def history_is_ordered_and_does_not_duplicate_request(
@@ -6307,6 +6428,106 @@ class AssistantConversationRequest(StrictModel):
         if self.history and self.history[-1].role == "user":
             if self.history[-1].content.strip() == self.request.strip():
                 raise ValueError("current request must not be duplicated in history")
+        event_ids = [event.event_id for event in self.result_events]
+        if len(event_ids) != len(set(event_ids)):
+            raise ValueError("conversation tool-result event IDs must be unique")
+        if any(
+            event.conversation_id != self.conversation_id
+            for event in self.result_events
+        ):
+            raise ValueError(
+                "conversation tool-result events must match the request conversation ID"
+            )
+        timestamps = [event.created_at_utc for event in self.result_events]
+        if timestamps != sorted(timestamps):
+            raise ValueError("conversation tool-result events must be chronological")
+        return self
+
+
+class AssistantConversationTaskState(StrictModel):
+    """Only the bounded resumable state of one conversationally routed task."""
+
+    source_turn_id: Identifier
+    intent: ConversationActionIntentName
+    status: Literal["planning", "needs_review"]
+    proposal_id: Identifier | None = None
+    proposal_evidence: AssistantToolEvidenceReference | None = None
+
+    @model_validator(mode="after")
+    def status_matches_resumable_identity(self) -> "AssistantConversationTaskState":
+        if self.status == "needs_review":
+            if self.proposal_id is None or self.proposal_evidence is None:
+                raise ValueError(
+                    "reviewable conversation tasks require proposal identity and evidence"
+                )
+            if self.proposal_evidence.kind != "proposal":
+                raise ValueError("reviewable conversation task evidence must be a proposal")
+        elif self.proposal_id is not None or self.proposal_evidence is not None:
+            raise ValueError("planning conversation tasks cannot claim proposal evidence")
+        return self
+
+
+class AssistantConversationSession(StrictModel):
+    """Mutable local Editor session state, distinct from immutable run evidence."""
+
+    schema_version: Literal["0.1"] = "0.1"
+    conversation_id: Identifier
+    project_name: ShortText
+    history: list[AssistantConversationMessage] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    result_events: list[AssistantToolResultEvent] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    active_task: AssistantConversationTaskState | None = None
+    updated_at_utc: datetime
+
+    @model_validator(mode="after")
+    def session_history_and_task_are_consistent(self) -> "AssistantConversationSession":
+        message_ids = [message.message_id for message in self.history]
+        if len(message_ids) != len(set(message_ids)):
+            raise ValueError("conversation session message IDs must be unique")
+        event_ids = [event.event_id for event in self.result_events]
+        if len(event_ids) != len(set(event_ids)):
+            raise ValueError("conversation session result-event IDs must be unique")
+        if any(
+            event.conversation_id != self.conversation_id
+            for event in self.result_events
+        ):
+            raise ValueError("conversation session result events must match its ID")
+        timestamps = [event.created_at_utc for event in self.result_events]
+        if timestamps != sorted(timestamps):
+            raise ValueError("conversation session result events must be chronological")
+        if (
+            self.updated_at_utc.tzinfo is None
+            or self.updated_at_utc.utcoffset() is None
+            or self.updated_at_utc.utcoffset().total_seconds() != 0
+        ):
+            raise ValueError("conversation session updated_at_utc must use UTC")
+        if timestamps and self.updated_at_utc < timestamps[-1]:
+            raise ValueError("conversation session cannot predate its latest result event")
+        if self.active_task is not None and self.active_task.status == "needs_review":
+            task = self.active_task
+            matching_events = [
+                event
+                for event in self.result_events
+                if event.source_turn_id == task.source_turn_id
+                and event.intent == task.intent
+                and event.phase == "proposal"
+                and event.status == "needs_review"
+                and event.proposal_id == task.proposal_id
+            ]
+            if not matching_events:
+                raise ValueError(
+                    "reviewable conversation task requires its proposal result event"
+                )
+            evidence = task.proposal_evidence
+            if evidence not in matching_events[-1].evidence:
+                raise ValueError(
+                    "reviewable conversation task evidence must match its result event"
+                )
         return self
 
 
@@ -6455,7 +6676,9 @@ CONTRACT_MODELS = {
     "unreal-level-profiling-run": UnrealLevelProfilingRun,
     "assistant-level-profiling-report": AssistantLevelProfilingReport,
     "unreal-conversation-context": UnrealConversationContext,
+    "assistant-tool-result-event": AssistantToolResultEvent,
     "assistant-conversation-request": AssistantConversationRequest,
+    "assistant-conversation-session": AssistantConversationSession,
     "assistant-conversation-turn": AssistantConversationTurn,
     "render-spec-patch": RenderSpecPatch,
     "correction-decision": CorrectionDecision,

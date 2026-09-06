@@ -5,6 +5,7 @@
 #include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
+#include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
 #include "Misc/Paths.h"
@@ -36,6 +37,23 @@ bool IsSha256(const FString& Value)
     {
         if (!FChar::IsHexDigit(Character) || FChar::IsUpper(Character))
             return false;
+    }
+    return true;
+}
+
+bool IsContractIdentifier(const FString& Value)
+{
+    if (Value.IsEmpty() || Value.Len() > 64 || !FChar::IsLower(Value[0]))
+        return false;
+    for (const TCHAR Character : Value)
+    {
+        if (!FChar::IsLower(Character)
+            && !FChar::IsDigit(Character)
+            && Character != TEXT('_')
+            && Character != TEXT('-'))
+        {
+            return false;
+        }
     }
     return true;
 }
@@ -120,6 +138,149 @@ bool IsRegisteredRequiredContext(const FString& Value)
     return Values.Contains(Value);
 }
 
+bool IsRegisteredEvidenceKind(const FString& Value)
+{
+    return TSet<FString>({
+        TEXT("proposal"),
+        TEXT("report"),
+        TEXT("capture"),
+        TEXT("render"),
+        TEXT("trace"),
+        TEXT("log"),
+        TEXT("other"),
+    }).Contains(Value);
+}
+
+bool ToolResultPhaseMatchesStatus(
+    const FString& Phase,
+    const FString& Status)
+{
+    if (Phase == TEXT("proposal"))
+        return TSet<FString>({
+            TEXT("needs_review"), TEXT("unresolved"), TEXT("failed")
+        }).Contains(Status);
+    if (Phase == TEXT("analysis") || Phase == TEXT("verification"))
+        return TSet<FString>({
+            TEXT("succeeded"), TEXT("unresolved"), TEXT("failed")
+        }).Contains(Status);
+    if (Phase == TEXT("execution"))
+        return TSet<FString>({TEXT("applied"), TEXT("failed")}).Contains(Status);
+    if (Phase == TEXT("rejection")) return Status == TEXT("rejected");
+    if (Phase == TEXT("failure")) return Status == TEXT("failed");
+    if (Phase == TEXT("cancellation")) return Status == TEXT("cancelled");
+    return false;
+}
+
+bool IsValidToolResultEvent(
+    const FRenderMasterConversationResultEvent& Event,
+    const FString& ConversationId)
+{
+    if (!IsContractIdentifier(Event.EventId)
+        || Event.ConversationId != ConversationId
+        || !IsContractIdentifier(Event.ConversationId)
+        || (!Event.SourceTurnId.IsEmpty()
+            && !IsContractIdentifier(Event.SourceTurnId))
+        || !IsRegisteredActionIntent(Event.Intent)
+        || !ToolResultPhaseMatchesStatus(Event.Phase, Event.Status)
+        || Event.Summary.IsEmpty()
+        || Event.Summary.Len() > 4000
+        || Event.SubjectIds.Num() > 32
+        || Event.Evidence.Num() > 16
+        || Event.CreatedAtUtc.IsEmpty())
+    {
+        return false;
+    }
+    if (TSet<FString>({
+            TEXT("needs_review"), TEXT("applied"), TEXT("rejected")
+        }).Contains(Event.Status)
+        && Event.ProposalId.IsEmpty())
+    {
+        return false;
+    }
+    FDateTime CreatedAt;
+    if (!FDateTime::ParseIso8601(*Event.CreatedAtUtc, CreatedAt)
+        || !Event.CreatedAtUtc.EndsWith(TEXT("Z")))
+    {
+        return false;
+    }
+    TSet<FString> SeenSubjects;
+    for (const FString& SubjectId : Event.SubjectIds)
+    {
+        if (SubjectId.IsEmpty() || SeenSubjects.Contains(SubjectId)) return false;
+        SeenSubjects.Add(SubjectId);
+    }
+    TSet<FString> SeenEvidenceIds;
+    TSet<FString> SeenEvidencePaths;
+    for (const FRenderMasterConversationEvidenceReference& Evidence : Event.Evidence)
+    {
+        if (Evidence.EvidenceId.IsEmpty()
+            || SeenEvidenceIds.Contains(Evidence.EvidenceId)
+            || !IsRegisteredEvidenceKind(Evidence.Kind)
+            || Evidence.Path.IsEmpty()
+            || SeenEvidencePaths.Contains(Evidence.Path)
+            || !IsSha256(Evidence.Sha256))
+        {
+            return false;
+        }
+        SeenEvidenceIds.Add(Evidence.EvidenceId);
+        SeenEvidencePaths.Add(Evidence.Path);
+    }
+    return true;
+}
+
+bool IsValidConversationTask(
+    const FRenderMasterConversationTaskState& Task,
+    const TArray<FRenderMasterConversationResultEvent>& ResultEvents)
+{
+    if (!IsContractIdentifier(Task.SourceTurnId)
+        || !IsRegisteredActionIntent(Task.Intent)
+        || (Task.Status != TEXT("planning")
+            && Task.Status != TEXT("needs_review")))
+    {
+        return false;
+    }
+    if (Task.Status == TEXT("planning"))
+    {
+        return Task.ProposalId.IsEmpty()
+            && Task.ProposalEvidence.EvidenceId.IsEmpty()
+            && Task.ProposalEvidence.Kind.IsEmpty()
+            && Task.ProposalEvidence.Path.IsEmpty()
+            && Task.ProposalEvidence.Sha256.IsEmpty();
+    }
+    if (!IsContractIdentifier(Task.ProposalId)
+        || !IsContractIdentifier(Task.ProposalEvidence.EvidenceId)
+        || Task.ProposalEvidence.Kind != TEXT("proposal")
+        || Task.ProposalEvidence.Path.IsEmpty()
+        || !IsSha256(Task.ProposalEvidence.Sha256))
+    {
+        return false;
+    }
+    for (int32 Index = ResultEvents.Num() - 1; Index >= 0; --Index)
+    {
+        const FRenderMasterConversationResultEvent& Event = ResultEvents[Index];
+        if (Event.SourceTurnId != Task.SourceTurnId
+            || Event.Intent != Task.Intent
+            || Event.Phase != TEXT("proposal")
+            || Event.Status != TEXT("needs_review")
+            || Event.ProposalId != Task.ProposalId)
+        {
+            continue;
+        }
+        for (const FRenderMasterConversationEvidenceReference& Evidence : Event.Evidence)
+        {
+            if (Evidence.EvidenceId == Task.ProposalEvidence.EvidenceId
+                && Evidence.Kind == Task.ProposalEvidence.Kind
+                && Evidence.Path == Task.ProposalEvidence.Path
+                && Evidence.Sha256 == Task.ProposalEvidence.Sha256)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+    return false;
+}
+
 TSharedRef<FJsonObject> SelectionJson(
     const FRenderMasterConversationSelectionItem& Item)
 {
@@ -168,6 +329,169 @@ TSharedRef<FJsonObject> ContextJson(
             Context.PendingActionIntent);
     }
     return Json;
+}
+
+TSharedRef<FJsonObject> EvidenceJson(
+    const FRenderMasterConversationEvidenceReference& Evidence)
+{
+    TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+    Json->SetStringField(TEXT("evidence_id"), Evidence.EvidenceId);
+    Json->SetStringField(TEXT("kind"), Evidence.Kind);
+    Json->SetStringField(TEXT("path"), Evidence.Path);
+    Json->SetStringField(TEXT("sha256"), Evidence.Sha256);
+    return Json;
+}
+
+TSharedRef<FJsonObject> MessageJson(
+    const FRenderMasterConversationMessage& Message)
+{
+    TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+    Json->SetStringField(TEXT("message_id"), Message.MessageId);
+    Json->SetStringField(TEXT("role"), Message.Role);
+    Json->SetStringField(TEXT("content"), Message.Content);
+    return Json;
+}
+
+TSharedRef<FJsonObject> ResultEventJson(
+    const FRenderMasterConversationResultEvent& Event)
+{
+    TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+    Json->SetStringField(TEXT("schema_version"), TEXT("0.1"));
+    Json->SetStringField(TEXT("event_id"), Event.EventId);
+    Json->SetStringField(TEXT("conversation_id"), Event.ConversationId);
+    if (Event.SourceTurnId.IsEmpty())
+        Json->SetField(TEXT("source_turn_id"), MakeShared<FJsonValueNull>());
+    else
+        Json->SetStringField(TEXT("source_turn_id"), Event.SourceTurnId);
+    Json->SetStringField(TEXT("intent"), Event.Intent);
+    Json->SetStringField(TEXT("phase"), Event.Phase);
+    Json->SetStringField(TEXT("status"), Event.Status);
+    Json->SetStringField(TEXT("summary"), Event.Summary);
+    if (Event.ProposalId.IsEmpty())
+        Json->SetField(TEXT("proposal_id"), MakeShared<FJsonValueNull>());
+    else
+        Json->SetStringField(TEXT("proposal_id"), Event.ProposalId);
+    if (Event.ReportId.IsEmpty())
+        Json->SetField(TEXT("report_id"), MakeShared<FJsonValueNull>());
+    else
+        Json->SetStringField(TEXT("report_id"), Event.ReportId);
+
+    TArray<TSharedPtr<FJsonValue>> SubjectIds;
+    for (const FString& SubjectId : Event.SubjectIds)
+        SubjectIds.Add(MakeShared<FJsonValueString>(SubjectId));
+    Json->SetArrayField(TEXT("subject_ids"), SubjectIds);
+
+    TArray<TSharedPtr<FJsonValue>> EvidenceValues;
+    for (const FRenderMasterConversationEvidenceReference& Evidence : Event.Evidence)
+        EvidenceValues.Add(MakeShared<FJsonValueObject>(EvidenceJson(Evidence)));
+    Json->SetArrayField(TEXT("evidence"), EvidenceValues);
+    Json->SetStringField(TEXT("created_at_utc"), Event.CreatedAtUtc);
+    return Json;
+}
+
+TSharedRef<FJsonObject> TaskJson(
+    const FRenderMasterConversationTaskState& Task)
+{
+    TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+    Json->SetStringField(TEXT("source_turn_id"), Task.SourceTurnId);
+    Json->SetStringField(TEXT("intent"), Task.Intent);
+    Json->SetStringField(TEXT("status"), Task.Status);
+    if (Task.ProposalId.IsEmpty())
+        Json->SetField(TEXT("proposal_id"), MakeShared<FJsonValueNull>());
+    else
+        Json->SetStringField(TEXT("proposal_id"), Task.ProposalId);
+    if (Task.ProposalEvidence.EvidenceId.IsEmpty())
+        Json->SetField(TEXT("proposal_evidence"), MakeShared<FJsonValueNull>());
+    else
+        Json->SetObjectField(
+            TEXT("proposal_evidence"),
+            EvidenceJson(Task.ProposalEvidence));
+    return Json;
+}
+
+bool ParseEvidenceJson(
+    const TSharedPtr<FJsonObject>& Json,
+    FRenderMasterConversationEvidenceReference& OutEvidence,
+    FString& OutError)
+{
+    return ReadRequiredString(
+            Json, TEXT("evidence_id"), OutEvidence.EvidenceId, OutError)
+        && ReadRequiredString(Json, TEXT("kind"), OutEvidence.Kind, OutError)
+        && ReadRequiredString(Json, TEXT("path"), OutEvidence.Path, OutError)
+        && ReadRequiredString(Json, TEXT("sha256"), OutEvidence.Sha256, OutError);
+}
+
+bool ParseResultEventJson(
+    const TSharedPtr<FJsonObject>& Json,
+    const FString& ConversationId,
+    FRenderMasterConversationResultEvent& OutEvent,
+    FString& OutError)
+{
+    FString SchemaVersion;
+    if (!ReadRequiredString(Json, TEXT("schema_version"), SchemaVersion, OutError)
+        || SchemaVersion != TEXT("0.1")
+        || !ReadRequiredString(Json, TEXT("event_id"), OutEvent.EventId, OutError)
+        || !ReadRequiredString(
+            Json, TEXT("conversation_id"), OutEvent.ConversationId, OutError)
+        || !ReadOptionalString(
+            Json, TEXT("source_turn_id"), OutEvent.SourceTurnId, OutError)
+        || !ReadRequiredString(Json, TEXT("intent"), OutEvent.Intent, OutError)
+        || !ReadRequiredString(Json, TEXT("phase"), OutEvent.Phase, OutError)
+        || !ReadRequiredString(Json, TEXT("status"), OutEvent.Status, OutError)
+        || !ReadRequiredString(Json, TEXT("summary"), OutEvent.Summary, OutError)
+        || !ReadOptionalString(
+            Json, TEXT("proposal_id"), OutEvent.ProposalId, OutError)
+        || !ReadOptionalString(Json, TEXT("report_id"), OutEvent.ReportId, OutError)
+        || !ReadRequiredString(
+            Json, TEXT("created_at_utc"), OutEvent.CreatedAtUtc, OutError))
+    {
+        return false;
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* SubjectValues = nullptr;
+    const TArray<TSharedPtr<FJsonValue>>* EvidenceValues = nullptr;
+    if (!Json->TryGetArrayField(TEXT("subject_ids"), SubjectValues)
+        || SubjectValues == nullptr
+        || !Json->TryGetArrayField(TEXT("evidence"), EvidenceValues)
+        || EvidenceValues == nullptr)
+    {
+        OutError = TEXT("Conversation result arrays are invalid.");
+        return false;
+    }
+    OutEvent.SubjectIds.Reset();
+    for (const TSharedPtr<FJsonValue>& Value : *SubjectValues)
+    {
+        FString SubjectId;
+        if (!Value.IsValid() || !Value->TryGetString(SubjectId))
+        {
+            OutError = TEXT("Conversation result subject identity is invalid.");
+            return false;
+        }
+        OutEvent.SubjectIds.Add(MoveTemp(SubjectId));
+    }
+    OutEvent.Evidence.Reset();
+    for (const TSharedPtr<FJsonValue>& Value : *EvidenceValues)
+    {
+        const TSharedPtr<FJsonObject>* EvidenceObject = nullptr;
+        FRenderMasterConversationEvidenceReference Evidence;
+        if (!Value.IsValid()
+            || !Value->TryGetObject(EvidenceObject)
+            || EvidenceObject == nullptr
+            || !EvidenceObject->IsValid()
+            || !ParseEvidenceJson(*EvidenceObject, Evidence, OutError))
+        {
+            if (OutError.IsEmpty())
+                OutError = TEXT("Conversation result evidence is invalid.");
+            return false;
+        }
+        OutEvent.Evidence.Add(MoveTemp(Evidence));
+    }
+    if (!IsValidToolResultEvent(OutEvent, ConversationId))
+    {
+        OutError = TEXT("Conversation result event failed strict validation.");
+        return false;
+    }
+    return true;
 }
 }
 
@@ -352,7 +676,8 @@ void FRenderMasterConversationAssistant::Shutdown()
 bool FRenderMasterConversationAssistant::StartTurn(
     const FString& Request,
     const FRenderMasterConversationContext& Context,
-    const TArray<FRenderMasterConversationMessage>& History)
+    const TArray<FRenderMasterConversationMessage>& History,
+    const TArray<FRenderMasterConversationResultEvent>& ResultEvents)
 {
     if (!CanStart()) return false;
     const FString CleanRequest = Request.TrimStartAndEnd();
@@ -404,6 +729,7 @@ bool FRenderMasterConversationAssistant::StartTurn(
             CleanRequest,
             Context,
             History,
+            ResultEvents,
             Error))
     {
         Fail(Error);
@@ -448,15 +774,21 @@ bool FRenderMasterConversationAssistant::StartTurn(
     return true;
 }
 
-bool FRenderMasterConversationAssistant::WriteRequest(
+bool RenderMasterWriteConversationRequestFile(
     const FString& Filename,
+    const FString& ConversationId,
     const FString& TurnId,
     const FString& Request,
     const FRenderMasterConversationContext& Context,
     const TArray<FRenderMasterConversationMessage>& History,
-    FString& OutError) const
+    const TArray<FRenderMasterConversationResultEvent>& ResultEvents,
+    FString& OutError)
 {
-    if (Context.ProjectName.IsEmpty() || Context.LevelPath.IsEmpty()
+    if (!IsContractIdentifier(ConversationId)
+        || !IsContractIdentifier(TurnId)
+        || Request.IsEmpty()
+        || Request.Len() > 8000
+        || Context.ProjectName.IsEmpty() || Context.LevelPath.IsEmpty()
         || Context.Selection.Num() > 32
         || !TSet<FString>({TEXT("editor"), TEXT("pie"), TEXT("sie")})
                 .Contains(Context.PlayMode))
@@ -483,13 +815,26 @@ bool FRenderMasterConversationAssistant::WriteRequest(
             OutError = TEXT("Conversation history contains an invalid message.");
             return false;
         }
-        TSharedRef<FJsonObject> MessageJson = MakeShared<FJsonObject>();
-        MessageJson->SetStringField(TEXT("message_id"), Message.MessageId);
-        MessageJson->SetStringField(TEXT("role"), Message.Role);
-        MessageJson->SetStringField(TEXT("content"), Message.Content);
-        Messages.Add(MakeShared<FJsonValueObject>(MessageJson));
+        Messages.Add(MakeShared<FJsonValueObject>(MessageJson(Message)));
     }
     Json->SetArrayField(TEXT("history"), Messages);
+
+    TArray<TSharedPtr<FJsonValue>> Results;
+    const int32 ResultStartIndex = FMath::Max(0, ResultEvents.Num() - 12);
+    TSet<FString> SeenResultIds;
+    for (int32 Index = ResultStartIndex; Index < ResultEvents.Num(); ++Index)
+    {
+        const FRenderMasterConversationResultEvent& Event = ResultEvents[Index];
+        if (SeenResultIds.Contains(Event.EventId)
+            || !IsValidToolResultEvent(Event, ConversationId))
+        {
+            OutError = TEXT("Conversation tool-result history contains an invalid event.");
+            return false;
+        }
+        SeenResultIds.Add(Event.EventId);
+        Results.Add(MakeShared<FJsonValueObject>(ResultEventJson(Event)));
+    }
+    Json->SetArrayField(TEXT("result_events"), Results);
 
     FString Text;
     const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Text);
@@ -502,6 +847,319 @@ bool FRenderMasterConversationAssistant::WriteRequest(
         OutError = TEXT("Could not write the Assistant conversation request.");
         return false;
     }
+    return true;
+}
+
+bool FRenderMasterConversationAssistant::WriteRequest(
+    const FString& Filename,
+    const FString& TurnId,
+    const FString& Request,
+    const FRenderMasterConversationContext& Context,
+    const TArray<FRenderMasterConversationMessage>& History,
+    const TArray<FRenderMasterConversationResultEvent>& ResultEvents,
+    FString& OutError) const
+{
+    return RenderMasterWriteConversationRequestFile(
+        Filename,
+        ConversationId,
+        TurnId,
+        Request,
+        Context,
+        History,
+        ResultEvents,
+        OutError);
+}
+
+bool RenderMasterWriteConversationSessionFile(
+    const FString& Filename,
+    const FString& ConversationId,
+    const FString& ProjectName,
+    const TArray<FRenderMasterConversationMessage>& History,
+    const TArray<FRenderMasterConversationResultEvent>& ResultEvents,
+    const TOptional<FRenderMasterConversationTaskState>& ActiveTask,
+    FString& OutError)
+{
+    if (Filename.IsEmpty()
+        || !IsContractIdentifier(ConversationId)
+        || ProjectName.TrimStartAndEnd().IsEmpty()
+        || ProjectName.Len() > 240
+        || History.Num() > 100
+        || ResultEvents.Num() > 100)
+    {
+        OutError = TEXT("Conversation session identity or bounds are invalid.");
+        return false;
+    }
+
+    TSet<FString> SeenMessageIds;
+    TArray<TSharedPtr<FJsonValue>> Messages;
+    for (const FRenderMasterConversationMessage& Message : History)
+    {
+        if (!IsContractIdentifier(Message.MessageId)
+            || SeenMessageIds.Contains(Message.MessageId)
+            || (Message.Role != TEXT("user") && Message.Role != TEXT("assistant"))
+            || Message.Content.TrimStartAndEnd().IsEmpty()
+            || Message.Content.Len() > 8000)
+        {
+            OutError = TEXT("Conversation session contains an invalid message.");
+            return false;
+        }
+        SeenMessageIds.Add(Message.MessageId);
+        Messages.Add(MakeShared<FJsonValueObject>(MessageJson(Message)));
+    }
+
+    TSet<FString> SeenResultIds;
+    TArray<TSharedPtr<FJsonValue>> Results;
+    FDateTime PreviousResultTime;
+    bool bHasPreviousResultTime = false;
+    for (const FRenderMasterConversationResultEvent& Event : ResultEvents)
+    {
+        FDateTime ResultTime;
+        if (SeenResultIds.Contains(Event.EventId)
+            || !IsValidToolResultEvent(Event, ConversationId)
+            || !FDateTime::ParseIso8601(*Event.CreatedAtUtc, ResultTime)
+            || (bHasPreviousResultTime && ResultTime < PreviousResultTime))
+        {
+            OutError = TEXT("Conversation session contains an invalid result event.");
+            return false;
+        }
+        SeenResultIds.Add(Event.EventId);
+        PreviousResultTime = ResultTime;
+        bHasPreviousResultTime = true;
+        Results.Add(MakeShared<FJsonValueObject>(ResultEventJson(Event)));
+    }
+    if (ActiveTask.IsSet()
+        && !IsValidConversationTask(ActiveTask.GetValue(), ResultEvents))
+    {
+        OutError = TEXT("Conversation session active task is invalid.");
+        return false;
+    }
+
+    TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+    Json->SetStringField(TEXT("schema_version"), TEXT("0.1"));
+    Json->SetStringField(TEXT("conversation_id"), ConversationId);
+    Json->SetStringField(TEXT("project_name"), ProjectName);
+    Json->SetArrayField(TEXT("history"), Messages);
+    Json->SetArrayField(TEXT("result_events"), Results);
+    if (ActiveTask.IsSet())
+        Json->SetObjectField(TEXT("active_task"), TaskJson(ActiveTask.GetValue()));
+    else
+        Json->SetField(TEXT("active_task"), MakeShared<FJsonValueNull>());
+    Json->SetStringField(
+        TEXT("updated_at_utc"),
+        FDateTime::UtcNow().ToIso8601());
+
+    FString Text;
+    const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Text);
+    if (!FJsonSerializer::Serialize(Json, Writer))
+    {
+        OutError = TEXT("Could not serialize the Assistant conversation session.");
+        return false;
+    }
+    const FString Directory = FPaths::GetPath(Filename);
+    if (!Directory.IsEmpty()) IFileManager::Get().MakeDirectory(*Directory, true);
+    const FString TemporaryPath = Filename + TEXT(".tmp");
+    if (!FFileHelper::SaveStringToFile(
+            Text,
+            *TemporaryPath,
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)
+        || !IFileManager::Get().Move(
+            *Filename,
+            *TemporaryPath,
+            true,
+            true,
+            true,
+            true))
+    {
+        IFileManager::Get().Delete(*TemporaryPath, false, true);
+        OutError = TEXT("Could not atomically write the Assistant conversation session.");
+        return false;
+    }
+    return true;
+}
+
+bool RenderMasterLoadConversationSessionFile(
+    const FString& Filename,
+    const FString& ExpectedProjectName,
+    FString& OutConversationId,
+    TArray<FRenderMasterConversationMessage>& OutHistory,
+    TArray<FRenderMasterConversationResultEvent>& OutResultEvents,
+    TOptional<FRenderMasterConversationTaskState>& OutActiveTask,
+    FString& OutError)
+{
+    FString Text;
+    if (!FFileHelper::LoadFileToString(Text, *Filename))
+    {
+        OutError = TEXT("Could not read the Assistant conversation session.");
+        return false;
+    }
+    TSharedPtr<FJsonObject> Json;
+    const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Text);
+    if (!FJsonSerializer::Deserialize(Reader, Json) || !Json.IsValid())
+    {
+        OutError = TEXT("Assistant conversation session is not a JSON object.");
+        return false;
+    }
+
+    FString SchemaVersion;
+    FString ConversationId;
+    FString ProjectName;
+    FString UpdatedAtUtc;
+    if (!ReadRequiredString(Json, TEXT("schema_version"), SchemaVersion, OutError)
+        || SchemaVersion != TEXT("0.1")
+        || !ReadRequiredString(
+            Json, TEXT("conversation_id"), ConversationId, OutError)
+        || !ReadRequiredString(Json, TEXT("project_name"), ProjectName, OutError)
+        || !ReadRequiredString(
+            Json, TEXT("updated_at_utc"), UpdatedAtUtc, OutError)
+        || !IsContractIdentifier(ConversationId)
+        || ProjectName != ExpectedProjectName
+        || !UpdatedAtUtc.EndsWith(TEXT("Z")))
+    {
+        if (OutError.IsEmpty())
+            OutError = TEXT("Assistant conversation session identity is invalid.");
+        return false;
+    }
+    FDateTime UpdatedAt;
+    if (!FDateTime::ParseIso8601(*UpdatedAtUtc, UpdatedAt))
+    {
+        OutError = TEXT("Assistant conversation session timestamp is invalid.");
+        return false;
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* MessageValues = nullptr;
+    const TArray<TSharedPtr<FJsonValue>>* ResultValues = nullptr;
+    if (!Json->TryGetArrayField(TEXT("history"), MessageValues)
+        || MessageValues == nullptr
+        || MessageValues->Num() > 100
+        || !Json->TryGetArrayField(TEXT("result_events"), ResultValues)
+        || ResultValues == nullptr
+        || ResultValues->Num() > 100)
+    {
+        OutError = TEXT("Assistant conversation session arrays are invalid.");
+        return false;
+    }
+
+    TArray<FRenderMasterConversationMessage> History;
+    TSet<FString> SeenMessageIds;
+    for (const TSharedPtr<FJsonValue>& Value : *MessageValues)
+    {
+        const TSharedPtr<FJsonObject>* MessageObject = nullptr;
+        FRenderMasterConversationMessage Message;
+        if (!Value.IsValid()
+            || !Value->TryGetObject(MessageObject)
+            || MessageObject == nullptr
+            || !MessageObject->IsValid()
+            || !ReadRequiredString(
+                *MessageObject, TEXT("message_id"), Message.MessageId, OutError)
+            || !ReadRequiredString(
+                *MessageObject, TEXT("role"), Message.Role, OutError)
+            || !ReadRequiredString(
+                *MessageObject, TEXT("content"), Message.Content, OutError)
+            || !IsContractIdentifier(Message.MessageId)
+            || SeenMessageIds.Contains(Message.MessageId)
+            || (Message.Role != TEXT("user") && Message.Role != TEXT("assistant"))
+            || Message.Content.Len() > 8000)
+        {
+            if (OutError.IsEmpty())
+                OutError = TEXT("Assistant conversation session message is invalid.");
+            return false;
+        }
+        SeenMessageIds.Add(Message.MessageId);
+        History.Add(MoveTemp(Message));
+    }
+
+    TArray<FRenderMasterConversationResultEvent> ResultEvents;
+    TSet<FString> SeenResultIds;
+    FDateTime PreviousResultTime;
+    bool bHasPreviousResultTime = false;
+    for (const TSharedPtr<FJsonValue>& Value : *ResultValues)
+    {
+        const TSharedPtr<FJsonObject>* ResultObject = nullptr;
+        FRenderMasterConversationResultEvent Event;
+        if (!Value.IsValid()
+            || !Value->TryGetObject(ResultObject)
+            || ResultObject == nullptr
+            || !ResultObject->IsValid()
+            || !ParseResultEventJson(
+                *ResultObject, ConversationId, Event, OutError)
+            || SeenResultIds.Contains(Event.EventId))
+        {
+            if (OutError.IsEmpty())
+                OutError = TEXT("Assistant conversation session result is invalid.");
+            return false;
+        }
+        FDateTime ResultTime;
+        if (!FDateTime::ParseIso8601(*Event.CreatedAtUtc, ResultTime)
+            || (bHasPreviousResultTime && ResultTime < PreviousResultTime)
+            || ResultTime > UpdatedAt)
+        {
+            OutError = TEXT("Assistant conversation session result order is invalid.");
+            return false;
+        }
+        SeenResultIds.Add(Event.EventId);
+        PreviousResultTime = ResultTime;
+        bHasPreviousResultTime = true;
+        ResultEvents.Add(MoveTemp(Event));
+    }
+
+    TOptional<FRenderMasterConversationTaskState> ActiveTask;
+    if (!Json->HasField(TEXT("active_task")))
+    {
+        OutError = TEXT("Assistant conversation session active_task is missing.");
+        return false;
+    }
+    if (!Json->HasTypedField<EJson::Null>(TEXT("active_task")))
+    {
+        const TSharedPtr<FJsonObject>* TaskObject = nullptr;
+        FRenderMasterConversationTaskState Task;
+        if (!Json->TryGetObjectField(TEXT("active_task"), TaskObject)
+            || TaskObject == nullptr
+            || !TaskObject->IsValid()
+            || !ReadRequiredString(
+                *TaskObject, TEXT("source_turn_id"), Task.SourceTurnId, OutError)
+            || !ReadRequiredString(
+                *TaskObject, TEXT("intent"), Task.Intent, OutError)
+            || !ReadRequiredString(
+                *TaskObject, TEXT("status"), Task.Status, OutError)
+            || !ReadOptionalString(
+                *TaskObject, TEXT("proposal_id"), Task.ProposalId, OutError))
+        {
+            if (OutError.IsEmpty())
+                OutError = TEXT("Assistant conversation active task is invalid.");
+            return false;
+        }
+        if (!(*TaskObject)->HasField(TEXT("proposal_evidence")))
+        {
+            OutError = TEXT("Assistant conversation task proposal_evidence is missing.");
+            return false;
+        }
+        if (!(*TaskObject)->HasTypedField<EJson::Null>(TEXT("proposal_evidence")))
+        {
+            const TSharedPtr<FJsonObject>* EvidenceObject = nullptr;
+            if (!(*TaskObject)->TryGetObjectField(
+                    TEXT("proposal_evidence"), EvidenceObject)
+                || EvidenceObject == nullptr
+                || !EvidenceObject->IsValid()
+                || !ParseEvidenceJson(
+                    *EvidenceObject, Task.ProposalEvidence, OutError))
+            {
+                if (OutError.IsEmpty())
+                    OutError = TEXT("Assistant conversation task evidence is invalid.");
+                return false;
+            }
+        }
+        if (!IsValidConversationTask(Task, ResultEvents))
+        {
+            OutError = TEXT("Assistant conversation active task failed validation.");
+            return false;
+        }
+        ActiveTask = MoveTemp(Task);
+    }
+
+    OutConversationId = MoveTemp(ConversationId);
+    OutHistory = MoveTemp(History);
+    OutResultEvents = MoveTemp(ResultEvents);
+    OutActiveTask = MoveTemp(ActiveTask);
     return true;
 }
 
@@ -524,6 +1182,20 @@ void FRenderMasterConversationAssistant::ResetConversation()
     ErrorText.Reset();
     ProcessLog.Reset();
     State = ERenderMasterConversationState::Ready;
+}
+
+bool FRenderMasterConversationAssistant::RestoreConversationId(
+    const FString& InConversationId)
+{
+    if (IsThinking() || !IsContractIdentifier(InConversationId)) return false;
+    ConversationId = InConversationId;
+    ActiveTurnId.Reset();
+    ActiveRequest.Reset();
+    TurnOutputPath.Reset();
+    ErrorText.Reset();
+    ProcessLog.Reset();
+    State = ERenderMasterConversationState::Ready;
+    return true;
 }
 
 bool FRenderMasterConversationAssistant::CanStart() const

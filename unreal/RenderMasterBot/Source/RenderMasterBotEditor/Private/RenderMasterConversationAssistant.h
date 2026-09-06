@@ -41,6 +41,67 @@ struct FRenderMasterConversationMessage
     FString Content;
 };
 
+struct FRenderMasterConversationEvidenceReference
+{
+    FString EvidenceId;
+    FString Kind;
+    FString Path;
+    FString Sha256;
+};
+
+struct FRenderMasterConversationResultEvent
+{
+    FString EventId;
+    FString ConversationId;
+    FString SourceTurnId;
+    FString Intent;
+    FString Phase;
+    FString Status;
+    FString Summary;
+    FString ProposalId;
+    FString ReportId;
+    TArray<FString> SubjectIds;
+    TArray<FRenderMasterConversationEvidenceReference> Evidence;
+    FString CreatedAtUtc;
+};
+
+struct FRenderMasterConversationTaskState
+{
+    FString SourceTurnId;
+    FString Intent;
+    FString Status;
+    FString ProposalId;
+    FRenderMasterConversationEvidenceReference ProposalEvidence;
+};
+
+bool RenderMasterWriteConversationRequestFile(
+    const FString& Filename,
+    const FString& ConversationId,
+    const FString& TurnId,
+    const FString& Request,
+    const FRenderMasterConversationContext& Context,
+    const TArray<FRenderMasterConversationMessage>& History,
+    const TArray<FRenderMasterConversationResultEvent>& ResultEvents,
+    FString& OutError);
+
+bool RenderMasterWriteConversationSessionFile(
+    const FString& Filename,
+    const FString& ConversationId,
+    const FString& ProjectName,
+    const TArray<FRenderMasterConversationMessage>& History,
+    const TArray<FRenderMasterConversationResultEvent>& ResultEvents,
+    const TOptional<FRenderMasterConversationTaskState>& ActiveTask,
+    FString& OutError);
+
+bool RenderMasterLoadConversationSessionFile(
+    const FString& Filename,
+    const FString& ExpectedProjectName,
+    FString& OutConversationId,
+    TArray<FRenderMasterConversationMessage>& OutHistory,
+    TArray<FRenderMasterConversationResultEvent>& OutResultEvents,
+    TOptional<FRenderMasterConversationTaskState>& OutActiveTask,
+    FString& OutError);
+
 struct FRenderMasterConversationTurn
 {
     FString ConversationId;
@@ -82,9 +143,11 @@ public:
     bool StartTurn(
         const FString& Request,
         const FRenderMasterConversationContext& Context,
-        const TArray<FRenderMasterConversationMessage>& History);
+        const TArray<FRenderMasterConversationMessage>& History,
+        const TArray<FRenderMasterConversationResultEvent>& ResultEvents);
     void Cancel();
     void ResetConversation();
+    bool RestoreConversationId(const FString& InConversationId);
 
     bool CanStart() const;
     bool IsThinking() const { return State == ERenderMasterConversationState::Thinking; }
@@ -109,6 +172,7 @@ private:
         const FString& Request,
         const FRenderMasterConversationContext& Context,
         const TArray<FRenderMasterConversationMessage>& History,
+        const TArray<FRenderMasterConversationResultEvent>& ResultEvents,
         FString& OutError) const;
     void CompleteProcess();
     void CloseProcessResources();

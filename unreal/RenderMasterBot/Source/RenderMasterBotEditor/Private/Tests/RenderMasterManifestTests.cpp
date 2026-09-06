@@ -11,6 +11,7 @@
 #include "Engine/World.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
+#include "Misc/App.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "RenderMasterManifest.h"
@@ -23,6 +24,7 @@
 #include "RenderMasterRuntimePerformanceAssistant.h"
 #include "RenderMasterInsightsGpuAssistant.h"
 #include "RenderMasterShadowOptimizationVerificationAssistant.h"
+#include "RenderMasterSha256.h"
 #include "RenderMasterLightAssistant.h"
 #include "RenderMasterLightingRigAssistant.h"
 #include "RenderMasterLightingRigReviewAssistant.h"
@@ -467,6 +469,134 @@ bool FRenderMasterTransformBatchApplyUndoTest::RunTest(const FString& Parameters
     TestTrue(TEXT("Undo restores second Actor"),
         Actors[1]->GetActorLocation().Equals(Before[1].Location, 0.01));
     for (AActor* Actor : Actors) World->DestroyActor(Actor, false, false);
+    return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FRenderMasterTransformProposalRestoreTest,
+    "RenderMasterBot.Editor.Assistant.TransformProposalRestore",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRenderMasterTransformProposalRestoreTest::RunTest(const FString& Parameters)
+{
+    if (GEditor == nullptr)
+    {
+        AddError(TEXT("Editor service is unavailable."));
+        return false;
+    }
+    UWorld* World = GEditor->GetEditorWorldContext(false).World();
+    if (World == nullptr)
+    {
+        AddError(TEXT("Editor world is unavailable."));
+        return false;
+    }
+
+    FActorSpawnParameters SpawnParameters;
+    SpawnParameters.Name = MakeUniqueObjectName(
+        World->PersistentLevel,
+        AStaticMeshActor::StaticClass(),
+        TEXT("RenderMasterTransformRestoreTest"));
+    SpawnParameters.ObjectFlags = RF_Transient | RF_Transactional;
+    SpawnParameters.SpawnCollisionHandlingOverride =
+        ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+    AStaticMeshActor* Actor = World->SpawnActor<AStaticMeshActor>(
+        AStaticMeshActor::StaticClass(),
+        FVector::ZeroVector,
+        FRotator::ZeroRotator,
+        SpawnParameters);
+    if (Actor == nullptr || Actor->GetRootComponent() == nullptr)
+    {
+        AddError(TEXT("Could not spawn the transient restore test Actor."));
+        return false;
+    }
+
+    const FString ActorName = Actor->GetActorLabel();
+    const FString ActorPath = Actor->GetPathName();
+    const FString ActorClass = Actor->GetClass()->GetName();
+    const FString ActorGuid = Actor->GetActorGuid().ToString(EGuidFormats::Digits);
+    const FString RootName = Actor->GetRootComponent()->GetName();
+    FString Mobility = TEXT("movable");
+    if (Actor->GetRootComponent()->Mobility == EComponentMobility::Static)
+        Mobility = TEXT("static");
+    else if (Actor->GetRootComponent()->Mobility == EComponentMobility::Stationary)
+        Mobility = TEXT("stationary");
+
+    const FString Target = FString::Printf(TEXT(R"JSON({
+        "schema_version":"0.1","project_name":"%s","level_path":"%s",
+        "actor_name":"%s","actor_path":"%s","actor_class":"%s",
+        "actor_guid":"%s","root_component_name":"%s","root_mobility":"%s",
+        "is_editable":true,"is_locked":false,
+        "transform":{"location_cm":{"x":0,"y":0,"z":0},"rotation_deg":{"x":0,"y":0,"z":0},"scale":{"x":1,"y":1,"z":1}}
+    })JSON"),
+        FApp::GetProjectName(),
+        *World->GetPackage()->GetName(),
+        *ActorName,
+        *ActorPath,
+        *ActorClass,
+        *ActorGuid,
+        *RootName,
+        *Mobility);
+    const FString ProposalJson = FString::Printf(TEXT(R"JSON({
+        "schema_version":"0.1","proposal_id":"transform_restore_001","status":"proposed",
+        "request":"Move the selected Actor 50 cm on world X.",
+        "selection":{"schema_version":"0.1","project_name":"%s","level_path":"%s","actors":[%s]},
+        "proposed_by":{"provider":"ollama","model":"gpt-oss:20b"},"coordinate_space":"world",
+        "actions":[{"target":%s,
+            "before":{"location_cm":{"x":0,"y":0,"z":0},"rotation_deg":{"x":0,"y":0,"z":0},"scale":{"x":1,"y":1,"z":1}},
+            "after":{"location_cm":{"x":50,"y":0,"z":0},"rotation_deg":{"x":0,"y":0,"z":0},"scale":{"x":1,"y":1,"z":1}},
+            "changes":[{"channel":"location","operation":"add","axes":["x"],"before":{"x":0,"y":0,"z":0},"after":{"x":50,"y":0,"z":0}}]}],
+        "rationale":"Apply the requested bounded world-space offset.",
+        "missing_capabilities":[],"modifies_editor_scene":true,"auto_save":false,"undo_supported":true
+    })JSON"),
+        FApp::GetProjectName(),
+        *World->GetPackage()->GetName(),
+        *Target,
+        *Target);
+    const FString Path = FPaths::CreateTempFilename(
+        *FPaths::ProjectIntermediateDir(),
+        TEXT("transform_restore_"),
+        TEXT(".json"));
+    TestTrue(
+        TEXT("Restore proposal fixture writes"),
+        FFileHelper::SaveStringToFile(ProposalJson, *Path));
+
+    FString ProposalSha256;
+    int64 ProposalSizeBytes = 0;
+    TestTrue(
+        TEXT("Restore proposal hash computes"),
+        RenderMasterSha256File(Path, ProposalSha256, &ProposalSizeBytes)
+            && ProposalSizeBytes > 0);
+
+    TSharedPtr<FRenderMasterTransformBatchAssistant> Assistant =
+        MakeShared<FRenderMasterTransformBatchAssistant>(
+            TSharedPtr<FRenderMasterWorkflowController>());
+    FString Error;
+    TestTrue(
+        TEXT("Hash-bound Transform proposal restores"),
+        Assistant->RestoreProposal(Path, ProposalSha256, Error));
+    TestTrue(TEXT("Restored Transform proposal can be reviewed"), Assistant->CanApply());
+    TestEqual(
+        TEXT("Restored proposal identity"),
+        Assistant->GetProposal().ProposalId,
+        FString(TEXT("transform_restore_001")));
+
+    Actor->SetActorLocation(
+        FVector(1.0, 0.0, 0.0),
+        false,
+        nullptr,
+        ETeleportType::TeleportPhysics);
+    Error.Reset();
+    TestFalse(
+        TEXT("Changed Actor state blocks restored proposal application"),
+        Assistant->ApplyProposal());
+    TestEqual(
+        TEXT("Stale restored proposal becomes failed"),
+        static_cast<uint8>(Assistant->GetState()),
+        static_cast<uint8>(ERenderMasterTransformAssistantState::Failed));
+
+    Assistant.Reset();
+    IFileManager::Get().Delete(*Path, false, true);
+    World->DestroyActor(Actor, false, false);
     return !HasAnyErrors();
 }
 

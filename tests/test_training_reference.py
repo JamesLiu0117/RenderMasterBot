@@ -20,7 +20,9 @@ from render_master_bot.serialization import canonical_sha256
 from render_master_bot.training_data import build_training_dataset
 from render_master_bot.training_reference import (
     REFERENCE_SNAPSHOT_FILENAME,
+    TrainingReferenceError,
     TrainingReferenceWorkflowResult,
+    compile_material_reference_suite,
     compile_single_asset_reference_suite,
     create_training_reference_campaign_plan,
     run_training_reference_workflow,
@@ -312,6 +314,197 @@ class TrainingReferenceTests(unittest.TestCase):
             self.assertEqual(camera.exposure.fixed_ev100, 11)
             self.assertEqual(len(first.cases[0].render_spec.lights), 2)
 
+    def test_lighting_recipes_vary_ratios_preserve_framing_and_reject_unknown_intents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project, catalog, suite_path, _, campaign, _ = self._inputs(root)
+            names = ["lighting_door_high_key", "lighting_pistol_dramatic",
+                     "lighting_rifle_rim", "lighting_target_contrast"]
+            payload = campaign.model_dump(mode="json")
+            template = payload["cases"][0]
+            payload["cases"] = [
+                {**template, "case_id": name, "category": "lighting", "prompt": f"Test {name}"}
+                for name in names
+            ]
+            _write_json(suite_path, payload)
+            args = build_parser().parse_args([
+                "training-reference", "compile-lighting", "--suite", str(suite_path),
+                "--path", str(project), "--assets", str(catalog),
+                "--reference-suite-id", "lighting_refs", "--output", str(root / "lighting.json"),
+            ])
+            self.assertEqual(args.handler(args), 0)
+            references = TrainingReferenceSuite.model_validate_json((root / "lighting.json").read_bytes())
+            specs = [reference.render_spec for reference in references.cases]
+            self.assertTrue(all(spec.camera == specs[0].camera for spec in specs))
+            self.assertTrue(all(spec.objects == specs[0].objects for spec in specs))
+            ratios = [spec.lights[0].intensity / spec.lights[1].intensity for spec in specs]
+            self.assertLess(ratios[0], ratios[1])
+            self.assertEqual(len(specs[0].lights), 2)
+            self.assertTrue(all(len(spec.lights) == 3 for spec in specs[1:]))
+            self.assertGreater(specs[2].lights[2].intensity, specs[2].lights[0].intensity)
+            report = validate_training_reference_suite(
+                reference_suite_path=root / "lighting.json", campaign_suite_path=suite_path,
+                project_path=project, asset_catalog_path=catalog,
+            )
+            self.assertEqual(report.ready_case_count, 4)
+            payload["cases"][0]["case_id"] = "unreviewed_lighting"
+            _write_json(suite_path, payload)
+            with self.assertRaisesRegex(TrainingReferenceError, "no reviewed lighting recipe"):
+                compile_single_asset_reference_suite(
+                    campaign_suite_path=suite_path, project_path=project, asset_catalog_path=catalog,
+                    output_path=root / "rejected.json", reference_suite_id="rejected",
+                    reference_category="lighting",
+                )
+            self.assertFalse((root / "rejected.json").exists())
+
+    def test_material_compiler_binds_exact_mesh_material_and_slot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "OptimizationPlugin.uproject"
+            project.write_text('{"FileVersion":3}\n', encoding="utf-8")
+            mesh = AssetCard(
+                asset_id="cube_asset",
+                engine_path="/Game/Test/SM_Cube",
+                display_name="SM_Cube",
+                asset_type="static_mesh",
+                dimensions_cm={"x": 100, "y": 100, "z": 100},
+                material_slots=["lambert1"],
+            )
+            material = AssetCard(
+                asset_id="grid_material",
+                engine_path="/Game/Test/M_Grid",
+                display_name="M_Grid",
+                asset_type="material",
+            )
+            catalog = root / "asset_cards.json"
+            _write_json(
+                catalog,
+                [mesh.model_dump(mode="json"), material.model_dump(mode="json")],
+            )
+            campaign = TrainingCampaignSuite(
+                suite_id="material_training_v1",
+                description="Synthetic material compiler suite",
+                project_name="OptimizationPlugin",
+                project_descriptor_sha256=_sha256_file(project),
+                asset_catalog_sha256=_sha256_file(catalog),
+                cases=[
+                    {
+                        "case_id": "material_cube_grid",
+                        "category": "material_assignment",
+                        "prompt": "Preview SM_Cube using M_Grid.",
+                        "expectation": {
+                            "required_scene_asset_ids": ["cube_asset"],
+                            "required_material_asset_ids": ["grid_material"],
+                            "minimum_object_count": 1,
+                            "maximum_object_count": 1,
+                            "minimum_material_assignment_count": 1,
+                            "maximum_material_assignment_count": 1,
+                        },
+                    }
+                ],
+            )
+            campaign_path = root / "campaign_suite.json"
+            _write_json(campaign_path, campaign.model_dump(mode="json"))
+            first_path = root / "compiled_first.json"
+            second_path = root / "compiled_second.json"
+
+            first = compile_material_reference_suite(
+                campaign_suite_path=campaign_path,
+                project_path=project,
+                asset_catalog_path=catalog,
+                output_path=first_path,
+                reference_suite_id="material_references_v1",
+            )
+            second = compile_material_reference_suite(
+                campaign_suite_path=campaign_path,
+                project_path=project,
+                asset_catalog_path=catalog,
+                output_path=second_path,
+                reference_suite_id="material_references_v1",
+            )
+            report = validate_training_reference_suite(
+                reference_suite_path=first_path,
+                campaign_suite_path=campaign_path,
+                project_path=project,
+                asset_catalog_path=catalog,
+            )
+
+            self.assertEqual(first_path.read_bytes(), second_path.read_bytes())
+            self.assertTrue(report.ready_to_run)
+            reference = first.cases[0]
+            self.assertEqual(
+                reference.retrieved_asset_ids,
+                ["cube_asset", "grid_material"],
+            )
+            scene_object = reference.render_spec.objects[0]
+            self.assertEqual(scene_object.asset.asset_id, "cube_asset")
+            self.assertEqual(scene_object.materials[0].slot_name, "lambert1")
+            self.assertEqual(
+                scene_object.materials[0].material.asset_id,
+                "grid_material",
+            )
+
+    def test_material_compiler_rejects_ambiguous_mesh_slots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "OptimizationPlugin.uproject"
+            project.write_text('{"FileVersion":3}\n', encoding="utf-8")
+            mesh = AssetCard(
+                asset_id="mesh_asset",
+                engine_path="/Game/Test/SM_MultiSlot",
+                display_name="SM_MultiSlot",
+                asset_type="static_mesh",
+                dimensions_cm={"x": 100, "y": 100, "z": 100},
+                material_slots=["Body", "Trim"],
+            )
+            material = AssetCard(
+                asset_id="material_asset",
+                engine_path="/Game/Test/M_Test",
+                display_name="M_Test",
+                asset_type="material",
+            )
+            catalog = root / "asset_cards.json"
+            _write_json(
+                catalog,
+                [mesh.model_dump(mode="json"), material.model_dump(mode="json")],
+            )
+            campaign = TrainingCampaignSuite(
+                suite_id="ambiguous_material_v1",
+                description="Ambiguous material slot suite",
+                project_name="OptimizationPlugin",
+                project_descriptor_sha256=_sha256_file(project),
+                asset_catalog_sha256=_sha256_file(catalog),
+                cases=[
+                    {
+                        "case_id": "material_multi_slot",
+                        "category": "material_assignment",
+                        "prompt": "Apply M_Test to SM_MultiSlot.",
+                        "expectation": {
+                            "required_scene_asset_ids": ["mesh_asset"],
+                            "required_material_asset_ids": ["material_asset"],
+                            "minimum_object_count": 1,
+                            "maximum_object_count": 1,
+                            "minimum_material_assignment_count": 1,
+                            "maximum_material_assignment_count": 1,
+                        },
+                    }
+                ],
+            )
+            campaign_path = root / "campaign_suite.json"
+            _write_json(campaign_path, campaign.model_dump(mode="json"))
+
+            with self.assertRaisesRegex(
+                TrainingReferenceError,
+                "requires exactly one mesh slot",
+            ):
+                compile_material_reference_suite(
+                    campaign_suite_path=campaign_path,
+                    project_path=project,
+                    asset_catalog_path=catalog,
+                    output_path=root / "references.json",
+                    reference_suite_id="ambiguous_material_references_v1",
+                )
+
     def test_reference_workflow_is_dataset_compatible_and_preserves_provenance(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -405,6 +598,22 @@ class TrainingReferenceTests(unittest.TestCase):
                 "references.json",
             ]
         )
+        compile_materials = parser.parse_args(
+            [
+                "training-reference",
+                "compile-materials",
+                "--suite",
+                "suite.json",
+                "--path",
+                "OptimizationPlugin.uproject",
+                "--assets",
+                "assets.json",
+                "--reference-suite-id",
+                "material_references_v1",
+                "--output",
+                "material_references.json",
+            ]
+        )
         plan = parser.parse_args(
             [
                 "training-reference",
@@ -446,6 +655,10 @@ class TrainingReferenceTests(unittest.TestCase):
         self.assertEqual(
             compile_references.training_reference_command,
             "compile-single-assets",
+        )
+        self.assertEqual(
+            compile_materials.training_reference_command,
+            "compile-materials",
         )
         self.assertEqual(plan.training_reference_command, "plan")
         self.assertEqual(run.training_reference_command, "run")

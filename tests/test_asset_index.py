@@ -1,6 +1,8 @@
 import json
 import tempfile
+import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 
 from render_master_bot.asset_index import (
@@ -11,6 +13,25 @@ from render_master_bot.asset_index import (
     open_persistent_asset_index,
 )
 from render_master_bot.contracts import AssetCard
+
+
+@contextmanager
+def temporary_chroma_directory():
+    """Allow bounded Windows handle-release latency after Chroma.close()."""
+    directory = tempfile.TemporaryDirectory()
+    try:
+        yield directory.name
+    finally:
+        for attempt in range(20):
+            try:
+                directory.cleanup()
+                break
+            except PermissionError as exc:
+                # Only retry Windows sharing violations. Permanent locks and
+                # other cleanup failures still fail the test, never get ignored.
+                if getattr(exc, "winerror", None) != 32 or attempt == 19:
+                    raise
+                time.sleep(0.05)
 
 
 def card(asset_id: str, name: str, asset_type: str, path: str) -> AssetCard:
@@ -87,7 +108,7 @@ class AssetIndexTests(unittest.TestCase):
         self.assertIn("Material slots: DoorSurface", context)
 
     def test_real_chroma_sync_search_and_stale_deletion(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with temporary_chroma_directory() as directory:
             first = [
                 card("sm_door", "SM_Door", "static_mesh", "/Game/Props/SM_Door"),
                 card(
@@ -125,7 +146,7 @@ class AssetIndexTests(unittest.TestCase):
                 self.batch_sizes.append(len(texts))
                 return super().embed_texts(model=model, texts=texts)
 
-        with tempfile.TemporaryDirectory() as directory:
+        with temporary_chroma_directory() as directory:
             embedder = CountingEmbedder()
             values = [card("sm_door", "SM_Door", "static_mesh", "/Game/SM_Door")]
             with open_persistent_asset_index(
@@ -142,7 +163,7 @@ class AssetIndexTests(unittest.TestCase):
         self.assertEqual(second.updated, 0)
 
     def test_collection_rejects_a_different_embedding_model(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with temporary_chroma_directory() as directory:
             first = open_persistent_asset_index(
                 directory,
                 SemanticFakeEmbedder(),
@@ -161,7 +182,7 @@ class AssetIndexTests(unittest.TestCase):
                 first.close()
 
     def test_search_can_be_restricted_to_assignable_materials(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with temporary_chroma_directory() as directory:
             values = [
                 card("sm_door", "SM_Door", "static_mesh", "/Game/Props/SM_Door"),
                 card("m_grid", "M_Grid", "material", "/Game/Materials/M_Grid"),
@@ -179,7 +200,7 @@ class AssetIndexTests(unittest.TestCase):
             self.assertTrue(all(hit.asset_type == "material" for hit in hits))
 
     def test_search_rejects_unknown_asset_types(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with temporary_chroma_directory() as directory:
             with open_persistent_asset_index(
                 directory,
                 SemanticFakeEmbedder(),

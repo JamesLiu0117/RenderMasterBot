@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,6 +16,8 @@ from render_master_bot.assistant_conversation import (
 from render_master_bot.cli import build_parser, cmd_assistant_conversation_turn
 from render_master_bot.contracts import (
     AssistantConversationRequest,
+    AssistantConversationSession,
+    AssistantToolResultEvent,
     ConversationRouteIntent,
     UnrealConversationContext,
 )
@@ -60,13 +63,40 @@ def selected_actor(name="RockA", kind="static_mesh"):
     }
 
 
-def request(context=None, history=None):
+def tool_result_event(**updates):
+    value = {
+        "event_id": "result_001",
+        "conversation_id": "conversation_001",
+        "source_turn_id": "turn_000",
+        "intent": "transform",
+        "phase": "proposal",
+        "status": "needs_review",
+        "summary": "Prepared a Transform proposal for RockA; it has not been applied.",
+        "proposal_id": "transform_001",
+        "report_id": None,
+        "subject_ids": [
+            "/Game/Maps/PerformanceTest:PersistentLevel.RockA",
+        ],
+        "evidence": [{
+            "evidence_id": "proposal_file_001",
+            "kind": "proposal",
+            "path": "C:/Runtime/transform_001.json",
+            "sha256": "a" * 64,
+        }],
+        "created_at_utc": datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc),
+    }
+    value.update(updates)
+    return AssistantToolResultEvent.model_validate(value)
+
+
+def request(context=None, history=None, result_events=None):
     return AssistantConversationRequest(
         conversation_id="conversation_001",
         turn_id="turn_001",
         request="Move the selected rock 100 cm upward.",
         context=context or unreal_context(selected_actor()),
         history=history or [],
+        result_events=result_events or [],
     )
 
 
@@ -129,6 +159,108 @@ class AssistantConversationTests(unittest.TestCase):
             "user",
         ])
         self.assertIn("current_unreal_context", messages[-1]["content"])
+
+    def test_host_tool_results_are_grounded_in_current_turn_payload(self):
+        current = request(result_events=[tool_result_event()])
+        client = FakeClient(decision(
+            outcome="respond",
+            intent="answer_question",
+            assistant_message=(
+                "The Transform proposal is ready for review and has not been applied."
+            ),
+            action_prompt=None,
+        ))
+        route_conversation_turn(request=current, client=client, model="planner")
+
+        prompt = client.requests[0]["messages"][-1]["content"]
+        payload = json.loads(prompt.split("instructions:\n", maxsplit=1)[1])
+        self.assertEqual(
+            payload["recent_tool_results"][0]["status"],
+            "needs_review",
+        )
+        self.assertEqual(
+            payload["recent_tool_results"][0]["proposal_id"],
+            "transform_001",
+        )
+        self.assertIn("host-authored records", client.requests[0]["messages"][0]["content"])
+
+    def test_tool_result_event_requires_phase_status_consistency(self):
+        with self.assertRaisesRegex(ValidationError, "cannot use status"):
+            tool_result_event(phase="proposal", status="applied")
+
+    def test_tool_result_event_requires_proposal_identity_for_review(self):
+        with self.assertRaisesRegex(ValidationError, "requires proposal_id"):
+            tool_result_event(proposal_id=None)
+
+    def test_tool_result_event_requires_explicit_utc_timestamp(self):
+        with self.assertRaisesRegex(ValidationError, "explicit UTC timezone"):
+            tool_result_event(created_at_utc=datetime(2026, 9, 5, 12, 0))
+
+    def test_request_rejects_tool_results_from_another_conversation(self):
+        with self.assertRaisesRegex(ValidationError, "match the request conversation ID"):
+            request(result_events=[tool_result_event(conversation_id="conversation_999")])
+
+    def test_request_rejects_duplicate_tool_result_events(self):
+        event = tool_result_event()
+        with self.assertRaisesRegex(ValidationError, "event IDs must be unique"):
+            request(result_events=[event, event])
+
+    def test_session_binds_reviewable_task_to_exact_proposal_evidence(self):
+        event = tool_result_event()
+        session = AssistantConversationSession(
+            conversation_id="conversation_001",
+            project_name="OptimizationPlugin",
+            history=[],
+            result_events=[event],
+            active_task={
+                "source_turn_id": "turn_000",
+                "intent": "transform",
+                "status": "needs_review",
+                "proposal_id": "transform_001",
+                "proposal_evidence": event.evidence[0],
+            },
+            updated_at_utc=datetime(2026, 9, 5, 12, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(session.active_task.proposal_id, "transform_001")
+
+    def test_session_rejects_review_task_without_matching_result(self):
+        event = tool_result_event()
+        with self.assertRaisesRegex(ValidationError, "proposal result event"):
+            AssistantConversationSession(
+                conversation_id="conversation_001",
+                project_name="OptimizationPlugin",
+                result_events=[],
+                active_task={
+                    "source_turn_id": "turn_000",
+                    "intent": "transform",
+                    "status": "needs_review",
+                    "proposal_id": "transform_001",
+                    "proposal_evidence": event.evidence[0],
+                },
+                updated_at_utc=datetime(
+                    2026, 9, 5, 12, 1, tzinfo=timezone.utc
+                ),
+            )
+
+    def test_session_rejects_changed_review_evidence(self):
+        event = tool_result_event()
+        changed = event.evidence[0].model_copy(update={"sha256": "b" * 64})
+        with self.assertRaisesRegex(ValidationError, "evidence must match"):
+            AssistantConversationSession(
+                conversation_id="conversation_001",
+                project_name="OptimizationPlugin",
+                result_events=[event],
+                active_task={
+                    "source_turn_id": "turn_000",
+                    "intent": "transform",
+                    "status": "needs_review",
+                    "proposal_id": "transform_001",
+                    "proposal_evidence": changed,
+                },
+                updated_at_utc=datetime(
+                    2026, 9, 5, 12, 1, tzinfo=timezone.utc
+                ),
+            )
 
     def test_host_converts_unsafe_missing_selection_route_to_clarification(self):
         client = FakeClient(decision())
@@ -262,6 +394,14 @@ class AssistantConversationTests(unittest.TestCase):
         self.assertEqual(
             contract_schema("assistant-conversation-turn")["title"],
             "AssistantConversationTurn",
+        )
+        self.assertEqual(
+            contract_schema("assistant-tool-result-event")["title"],
+            "AssistantToolResultEvent",
+        )
+        self.assertEqual(
+            contract_schema("assistant-conversation-session")["title"],
+            "AssistantConversationSession",
         )
 
     def test_cli_parser_exposes_conversation_boundary(self):

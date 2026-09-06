@@ -9,7 +9,6 @@
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
-#include "GenericPlatform/GenericPlatformMisc.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/App.h"
@@ -20,6 +19,7 @@
 #include "Modules/ModuleManager.h"
 #include "ProfilingDebugging/TraceAuxiliary.h"
 #include "RenderMasterWorkflowController.h"
+#include "RenderMasterSha256.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "TraceServices/AnalysisService.h"
@@ -129,23 +129,14 @@ bool HashInsightsFile(
     int64& OutSizeBytes,
     FString& OutError)
 {
-    TArray<uint8> Bytes;
-    if (!FFileHelper::LoadFileToArray(Bytes, *Filename) || Bytes.IsEmpty())
+    if (!RenderMasterSha256File(Filename, OutSha256, &OutSizeBytes)
+        || OutSizeBytes <= 0)
     {
         OutError = FString::Printf(
             TEXT("The evidence file is empty or unreadable: %s"),
             *Filename);
         return false;
     }
-    FSHA256Signature Signature;
-    if (!FPlatformMisc::GetSHA256Signature(
-            Bytes.GetData(), static_cast<uint32>(Bytes.Num()), Signature))
-    {
-        OutError = TEXT("The platform could not compute the evidence-file SHA-256.");
-        return false;
-    }
-    OutSizeBytes = Bytes.Num();
-    OutSha256 = Signature.ToString();
     return true;
 }
 

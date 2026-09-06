@@ -6,11 +6,11 @@
 #include "Dom/JsonObject.h"
 #include "Editor.h"
 #include "Engine/StaticMeshActor.h"
-#include "GenericPlatform/GenericPlatformMisc.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
 #include "Misc/Paths.h"
+#include "RenderMasterSha256.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 
@@ -41,21 +41,14 @@ bool HashVerificationFile(
     FString& OutSha256,
     FString& OutError)
 {
-    TArray<uint8> Bytes;
-    if (!FFileHelper::LoadFileToArray(Bytes, *Filename) || Bytes.IsEmpty())
+    int64 SizeBytes = 0;
+    if (!RenderMasterSha256File(Filename, OutSha256, &SizeBytes)
+        || SizeBytes <= 0)
     {
         OutError = FString::Printf(
             TEXT("Verification evidence is empty or unreadable: %s"), *Filename);
         return false;
     }
-    FSHA256Signature Signature;
-    if (!FPlatformMisc::GetSHA256Signature(
-            Bytes.GetData(), static_cast<uint32>(Bytes.Num()), Signature))
-    {
-        OutError = TEXT("The platform could not hash verification evidence.");
-        return false;
-    }
-    OutSha256 = Signature.ToString();
     return true;
 }
 

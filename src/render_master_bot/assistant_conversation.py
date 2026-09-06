@@ -27,7 +27,12 @@ CONVERSATION_SYSTEM_PROMPT = """You are the conversational front door for Render
 a local Unreal Engine graphics assistant. Reply in the user's language.
 
 You receive a bounded read-only snapshot of the current Unreal project, level, play mode,
-and selected Actors plus recent conversation history. Choose exactly one outcome:
+and selected Actors plus recent conversation history. You may also receive recent_tool_results,
+which are host-authored records from registered capabilities. Treat their status, identifiers,
+subjects, and hashed evidence references as ground truth. Distinguish carefully between a proposal
+that only needs review, a change that was actually applied, a rejected proposal, and a failed or
+unresolved attempt. Never invent details that are absent from these result records. Choose exactly
+one outcome:
 
 - respond: answer a greeting, a product/capability question, or a question that can be answered
   strictly from the supplied context. Never pretend you inspected assets, measurements, images,
@@ -118,6 +123,9 @@ def _model_messages(request: AssistantConversationRequest) -> list[dict[str, str
     current_payload = {
         "current_request": request.request,
         "current_unreal_context": request.context.model_dump(mode="json"),
+        "recent_tool_results": [
+            event.model_dump(mode="json") for event in request.result_events
+        ],
     }
     messages.append({
         "role": "user",

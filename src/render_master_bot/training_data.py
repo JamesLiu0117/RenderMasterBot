@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections import Counter
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -19,6 +19,7 @@ from render_master_bot.contracts import (
     TrainingArtifactReference,
     TrainingCampaignRun,
     TrainingDatasetAuditReport,
+    TrainingDatasetCampaignSource,
     TrainingDatasetManifest,
     TrainingDatasetSplit,
     TrainingExample,
@@ -64,6 +65,89 @@ class TrainingDatasetBuildResult:
     audit_path: Path
     manifest: TrainingDatasetManifest
     audit: TrainingDatasetAuditReport
+
+
+@dataclass(frozen=True)
+class _CampaignEvidence:
+    reference: TrainingDatasetCampaignSource
+    snapshot: bytes
+    allowed: dict[str, str]
+    groups: dict[str, str]
+
+
+def _campaign_membership(
+    run: TrainingCampaignRun, source_run_path: str,
+) -> tuple[dict[str, str], dict[str, str]]:
+    if run.status != "completed":
+        raise TrainingDataError("campaign eligibility requires a completed campaign run")
+    allowed: dict[str, str] = {}
+    groups: dict[str, str] = {}
+    for result in run.case_results:
+        if not result.training_eligible:
+            continue
+        attempt = result.attempts[-1]
+        if not attempt.workflow_manifest_path or not attempt.workflow_manifest_sha256:
+            raise TrainingDataError(f"eligible campaign case {result.case_id} has no manifest")
+        relative = str(PurePosixPath(source_run_path).parent / attempt.workflow_manifest_path)
+        if relative in allowed:
+            raise TrainingDataError(f"campaign eligibility repeats workflow manifest {relative}")
+        allowed[relative] = attempt.workflow_manifest_sha256
+        # A rerun of one suite case must stay in the same partition even when
+        # its campaign ID, workflow ID, or final model response changes.
+        groups[relative] = "case_" + canonical_sha256({
+            "project_descriptor_sha256": run.project_descriptor_sha256,
+            "asset_catalog_sha256": run.asset_catalog_sha256,
+            "case_id": result.case_id,
+        })[:32]
+    return allowed, groups
+
+
+def _load_campaign_sources(
+    paths: list[str | Path], source_root: Path,
+) -> list[_CampaignEvidence]:
+    if not paths or len(paths) > 256:
+        raise TrainingDataError("merge requires between 1 and 256 campaign manifests")
+    resolved = [Path(path).expanduser().resolve() for path in paths]
+    if len(set(resolved)) != len(resolved):
+        raise TrainingDataError("campaign manifest paths must be unique")
+    evidence: list[_CampaignEvidence] = []
+    identities: set[tuple[str, str, str]] = set()
+    campaign_ids: set[str] = set()
+    all_members: set[str] = set()
+    for index, path in enumerate(sorted(resolved, key=lambda p: str(p).casefold())):
+        relative = _portable_relative(path, source_root)
+        if any(path.parent == other.parent or path.parent.is_relative_to(other.parent)
+               or other.parent.is_relative_to(path.parent) for other in resolved if other != path):
+            raise TrainingDataError("campaign directories must be distinct and non-overlapping")
+        try:
+            snapshot = path.read_bytes()
+            run = TrainingCampaignRun.model_validate_json(snapshot)
+        except (OSError, ValueError) as exc:
+            raise TrainingDataError(f"invalid campaign eligibility run {path}: {exc}") from exc
+        if run.campaign_id in campaign_ids:
+            raise TrainingDataError(f"duplicate campaign identity: {run.campaign_id}")
+        campaign_ids.add(run.campaign_id)
+        identities.add((run.project_name, run.project_descriptor_sha256, run.asset_catalog_sha256))
+        if len(identities) > 1:
+            raise TrainingDataError("campaign project or asset catalog identities do not match")
+        allowed, groups = _campaign_membership(run, relative)
+        for member in allowed:
+            member_path = (source_root / member).resolve()
+            _portable_relative(member_path, path.parent)
+            if not member_path.is_file():
+                raise TrainingDataError(f"campaign eligible workflow manifest is missing: {member}")
+        if all_members.intersection(allowed):
+            raise TrainingDataError("campaigns repeat an eligible workflow manifest")
+        all_members.update(allowed)
+        evidence.append(_CampaignEvidence(
+            reference=TrainingDatasetCampaignSource(
+                source_run_path=relative,
+                snapshot_path=f"provenance/campaigns/{index + 1:03d}.json",
+                sha256=hashlib.sha256(snapshot).hexdigest(),
+            ),
+            snapshot=snapshot, allowed=allowed, groups=groups,
+        ))
+    return evidence
 
 
 def _sha256_file(path: Path) -> str:
@@ -125,6 +209,7 @@ def _load_campaign_eligibility(
                 f"eligible campaign case {result.case_id} has no workflow manifest"
             )
         manifest_path = (campaign_root / attempt.workflow_manifest_path).resolve()
+        _portable_relative(manifest_path, campaign_root)
         relative_manifest = _portable_relative(manifest_path, source_root)
         if relative_manifest in allowed:
             raise TrainingDataError(
@@ -223,6 +308,7 @@ def _build_planner_example(
     manifest_sha256: str,
     manifest: RenderWorkflowManifest,
     prefer_final_spec: bool = False,
+    source_group_id: str | None = None,
 ) -> TrainingExample:
     workflow_root = manifest_path.parent
     artifacts = {
@@ -313,7 +399,7 @@ def _build_planner_example(
         "schema_version": "0.1",
         "example_id": f"plan_{content_identity[:32]}",
         "task_type": "render_spec_planning",
-        "source_group_id": manifest.workflow_id,
+        "source_group_id": source_group_id or manifest.workflow_id,
         "source_manifest_path": _portable_relative(manifest_path, source_root),
         "source_manifest_sha256": manifest_sha256,
         "source_artifacts": [
@@ -401,6 +487,8 @@ def _readiness_reasons(
 
 def audit_training_dataset(
     manifest_path: str | Path,
+    *,
+    source_root: str | Path | None = None,
 ) -> TrainingDatasetAuditReport:
     """Verify split bytes, example contracts, grouping, membership, and readiness."""
 
@@ -423,6 +511,51 @@ def audit_training_dataset(
     split_example_ids: dict[str, list[str]] = {}
     split_group_ids: dict[str, set[str]] = {}
     actual_split_counts: dict[str, int] = {}
+    all_examples: list[TrainingExample] = []
+    source = Path(source_root).expanduser().resolve() if source_root is not None else None
+    campaign_allowed: dict[str, str] = {}
+    campaign_groups: dict[str, str] = {}
+    campaign_ids: set[str] = set()
+    campaign_identities: set[tuple[str, str, str]] = set()
+    if source is not None and manifest.campaign_run_path is not None:
+        try:
+            _, run_hash, campaign_allowed = _load_campaign_eligibility(
+                campaign_run_path=source / manifest.campaign_run_path, source_root=source,
+            )
+            if run_hash != manifest.campaign_run_sha256:
+                raise TrainingDataError("original campaign hash no longer matches the dataset")
+        except (OSError, ValueError, TrainingDataError) as exc:
+            file_hash_error_count += 1
+            issues.append(f"legacy campaign: {_bounded_detail(exc)}")
+    for reference in manifest.campaign_sources or []:
+        try:
+            snapshot_path = (root / reference.snapshot_path).resolve()
+            _portable_relative(snapshot_path, root)
+            snapshot = snapshot_path.read_bytes()
+            if hashlib.sha256(snapshot).hexdigest() != reference.sha256:
+                raise TrainingDataError("snapshot SHA-256 mismatch")
+            run = TrainingCampaignRun.model_validate_json(snapshot)
+            if run.campaign_id in campaign_ids:
+                raise TrainingDataError("duplicate campaign identity")
+            campaign_ids.add(run.campaign_id)
+            campaign_identities.add((
+                run.project_name, run.project_descriptor_sha256, run.asset_catalog_sha256,
+            ))
+            if len(campaign_identities) > 1:
+                raise TrainingDataError("campaign project or asset catalog identities disagree")
+            allowed, groups = _campaign_membership(run, reference.source_run_path)
+            if set(campaign_allowed).intersection(allowed):
+                raise TrainingDataError("campaigns repeat an eligible workflow manifest")
+            campaign_allowed.update(allowed)
+            campaign_groups.update(groups)
+            if source is not None:
+                original = (source / reference.source_run_path).resolve()
+                _portable_relative(original, source)
+                if _sha256_file(original) != reference.sha256:
+                    raise TrainingDataError("original campaign no longer matches its snapshot")
+        except (OSError, ValueError, TrainingDataError) as exc:
+            file_hash_error_count += 1
+            issues.append(f"campaign {reference.source_run_path}: {_bounded_detail(exc)}")
 
     for split in manifest.splits:
         split_path = (root / split.jsonl_path).resolve()
@@ -467,6 +600,7 @@ def audit_training_dataset(
                     f"{split.name} line {line_number} is invalid: {_bounded_detail(exc)}"
                 )
         ids = [example.example_id for example in examples]
+        all_examples.extend(examples)
         groups = {example.source_group_id for example in examples}
         task_counts = dict(Counter(example.task_type for example in examples))
         split_example_ids[split.name] = ids
@@ -484,6 +618,54 @@ def audit_training_dataset(
         if len(examples) != split.example_count:
             manifest_membership_error_count += 1
             issues.append(f"{split.name} example count does not match the manifest")
+
+    accepted = {item.path: item.sha256 for item in manifest.accepted_source_manifests}
+    if len(accepted) != len(manifest.accepted_source_manifests):
+        manifest_membership_error_count += 1
+        issues.append("accepted source manifests contain duplicate paths")
+    example_sources = {example.source_manifest_path for example in all_examples}
+    if example_sources != set(accepted):
+        manifest_membership_error_count += 1
+        issues.append("example source manifests do not match accepted source membership")
+    for example in all_examples:
+        relative = example.source_manifest_path
+        if accepted.get(relative) != example.source_manifest_sha256:
+            manifest_membership_error_count += 1
+            issues.append(f"{example.example_id} source hash disagrees with accepted membership")
+        content_id = "plan_" + canonical_sha256({
+            "task_type": example.task_type,
+            "messages": [message.model_dump(mode="json") for message in example.messages],
+        })[:32]
+        if example.example_id != content_id:
+            invalid_example_count += 1
+            issues.append(f"{example.example_id} does not match its content identity")
+        if manifest.campaign_sources or (source is not None and manifest.campaign_run_path):
+            if campaign_allowed.get(relative) != example.source_manifest_sha256:
+                manifest_membership_error_count += 1
+                issues.append(f"{relative} is not hash-approved by the campaign snapshots")
+            if manifest.campaign_sources and campaign_groups.get(relative) != example.source_group_id:
+                manifest_membership_error_count += 1
+                issues.append(f"{relative} does not use its campaign case group")
+        if source is not None:
+            try:
+                source_manifest = (source / relative).resolve()
+                _portable_relative(source_manifest, source)
+                if _sha256_file(source_manifest) != example.source_manifest_sha256:
+                    raise TrainingDataError("original workflow manifest hash mismatch")
+                workflow = RenderWorkflowManifest.model_validate_json(source_manifest.read_bytes())
+                for artifact in workflow.input_artifacts + workflow.output_artifacts:
+                    _verified_artifact_path(workflow_root=source_manifest.parent, artifact=artifact)
+                rebuilt = _build_planner_example(
+                    source_root=source, manifest_path=source_manifest,
+                    manifest_sha256=example.source_manifest_sha256, manifest=workflow,
+                    prefer_final_spec=bool(manifest.campaign_sources or manifest.campaign_run_path),
+                    source_group_id=campaign_groups.get(relative),
+                )
+                if rebuilt != example:
+                    raise TrainingDataError("example cannot be reproduced from original evidence")
+            except (OSError, ValueError, TrainingDataError, _SourceRejected) as exc:
+                file_hash_error_count += 1
+                issues.append(f"source {relative}: {_bounded_detail(exc)}")
 
     all_ids = [
         example_id
@@ -540,6 +722,8 @@ def audit_training_dataset(
         dataset_id=manifest.dataset_id,
         manifest_sha256=_sha256_file(path),
         dataset_sha256=manifest.dataset_sha256,
+        source_evidence_checked=source is not None,
+        campaign_snapshot_count=len(manifest.campaign_sources or []),
         integrity_status=integrity_status,
         split_counts={name: actual_split_counts.get(name, 0) for name in SPLIT_NAMES},
         valid_example_count=valid_example_count,
@@ -570,6 +754,7 @@ def build_training_dataset(
     validation_group_fraction: float = 0.1,
     test_group_fraction: float = 0.1,
     campaign_run_path: str | Path | None = None,
+    campaign_run_paths: list[str | Path] | None = None,
 ) -> TrainingDatasetBuildResult:
     """Build immutable JSONL splits and immediately audit the result."""
 
@@ -591,6 +776,13 @@ def build_training_dataset(
     if validation_group_fraction + test_group_fraction >= 1:
         raise TrainingDataError("validation and test fractions must leave room for training")
 
+    if campaign_run_path is not None and campaign_run_paths is not None:
+        raise TrainingDataError("choose legacy campaign_run_path or campaign_run_paths, not both")
+    campaign_evidence = (
+        _load_campaign_sources(campaign_run_paths, source)
+        if campaign_run_paths is not None else []
+    )
+    campaign_groups: dict[str, str] = {}
     campaign_run_relative: str | None = None
     campaign_run_sha256: str | None = None
     campaign_allowed: dict[str, str] | None = None
@@ -604,7 +796,18 @@ def build_training_dataset(
             source_root=source,
         )
 
-    manifest_paths = discover_workflow_manifests(source)
+    if campaign_evidence:
+        campaign_allowed = {}
+        manifest_paths = []
+        for item in campaign_evidence:
+            campaign_allowed.update(item.allowed)
+            campaign_groups.update(item.groups)
+            manifest_paths.extend(discover_workflow_manifests(
+                (source / item.reference.source_run_path).parent,
+            ))
+        manifest_paths.sort(key=lambda p: _portable_relative(p, source).casefold())
+    else:
+        manifest_paths = discover_workflow_manifests(source)
     if campaign_allowed is not None:
         discovered = {_portable_relative(path, source) for path in manifest_paths}
         missing_eligible = sorted(set(campaign_allowed) - discovered)
@@ -672,6 +875,7 @@ def build_training_dataset(
                 manifest_sha256=manifest_sha256,
                 manifest=manifest,
                 prefer_final_spec=campaign_allowed is not None,
+                source_group_id=campaign_groups.get(relative_manifest),
             )
         except _SourceRejected as exc:
             skipped_sources.append(
@@ -720,6 +924,10 @@ def build_training_dataset(
     }
 
     output.mkdir(parents=True, exist_ok=True)
+    for item in campaign_evidence:
+        snapshot_path = output / item.reference.snapshot_path
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        snapshot_path.write_bytes(item.snapshot)
     splits: list[TrainingDatasetSplit] = []
     for name in SPLIT_NAMES:
         relative_path = f"splits/{name}.jsonl"
@@ -745,7 +953,7 @@ def build_training_dataset(
 
     manifest_payload = {
         "schema_version": "0.1",
-        "builder_version": BUILDER_VERSION,
+        "builder_version": "0.3" if campaign_evidence else BUILDER_VERSION,
         "dataset_id": dataset_id,
         "split_strategy": "group_sha256_v1",
         "split_group_key": "source_group_id",
@@ -764,11 +972,17 @@ def build_training_dataset(
     if campaign_run_relative is not None and campaign_run_sha256 is not None:
         manifest_payload["campaign_run_path"] = campaign_run_relative
         manifest_payload["campaign_run_sha256"] = campaign_run_sha256
+    if campaign_evidence:
+        manifest_payload["campaign_sources"] = [
+            item.reference.model_dump(mode="json") for item in campaign_evidence
+        ]
     manifest_payload["dataset_sha256"] = canonical_sha256(manifest_payload)
     manifest = TrainingDatasetManifest.model_validate(manifest_payload)
     manifest_path = output / MANIFEST_FILENAME
     _write_json(manifest_path, manifest.model_dump(mode="json"))
-    audit = audit_training_dataset(manifest_path)
+    audit = audit_training_dataset(
+        manifest_path, source_root=source if campaign_evidence else None,
+    )
     audit_path = output / AUDIT_FILENAME
     _write_json(audit_path, audit.model_dump(mode="json"))
     return TrainingDatasetBuildResult(

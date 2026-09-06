@@ -11,15 +11,26 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "RenderMasterWorkflowController.h"
+#include "RenderMasterSha256.h"
 #include "ScopedTransaction.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "UObject/UObjectGlobals.h"
 
 namespace
 {
 FString QuoteTransformArgument(const FString& Value)
 {
     return FString::Printf(TEXT("\"%s\""), *Value);
+}
+
+bool HashTransformProposalFile(
+    const FString& Filename,
+    FString& OutSha256)
+{
+    int64 SizeBytes = 0;
+    return RenderMasterSha256File(Filename, OutSha256, &SizeBytes)
+        && SizeBytes > 0;
 }
 
 bool ReadObject(
@@ -774,6 +785,7 @@ void FRenderMasterTransformBatchAssistant::Shutdown()
     }
     if (ProcessHandle.IsValid()) FPlatformProcess::TerminateProc(ProcessHandle, true);
     CloseProcessResources();
+    OnResultReady.Unbind();
 }
 
 bool FRenderMasterTransformBatchAssistant::StartProposal(
@@ -991,6 +1003,85 @@ bool FRenderMasterTransformBatchAssistant::WriteSelectionContext(
         CapturedTargets.Reset();
         return false;
     }
+    return true;
+}
+
+bool FRenderMasterTransformBatchAssistant::RestoreProposal(
+    const FString& Filename,
+    const FString& ExpectedSha256,
+    FString& OutError)
+{
+    if (!CanStart())
+    {
+        OutError = TEXT("A Transform proposal process is already active.");
+        return false;
+    }
+    const FString ResolvedPath = FPaths::ConvertRelativePathToFull(Filename);
+    FString ActualSha256;
+    if (ExpectedSha256.Len() != 64
+        || !HashTransformProposalFile(ResolvedPath, ActualSha256)
+        || ActualSha256 != ExpectedSha256)
+    {
+        OutError = TEXT(
+            "The persisted Transform proposal file is missing or its SHA-256 changed.");
+        return false;
+    }
+
+    FRenderMasterTransformBatchProposal RestoredProposal;
+    if (!FRenderMasterTransformBatchProposal::LoadFromFile(
+            ResolvedPath,
+            RestoredProposal,
+            OutError)
+        || RestoredProposal.Status != TEXT("proposed"))
+    {
+        if (OutError.IsEmpty())
+            OutError = TEXT("The persisted Transform proposal is not reviewable.");
+        return false;
+    }
+
+    TArray<FRenderMasterCapturedTransformTarget> RestoredTargets;
+    RestoredTargets.Reserve(RestoredProposal.Actions.Num());
+    for (const FRenderMasterTransformProposal& Action : RestoredProposal.Actions)
+    {
+        AActor* Actor = FindObject<AActor>(nullptr, *Action.ActorPath);
+        if (Actor == nullptr)
+        {
+            OutError = FString::Printf(
+                TEXT("The persisted Transform target no longer exists: %s"),
+                *Action.ActorPath);
+            return false;
+        }
+        FRenderMasterCapturedTransformTarget Target;
+        Target.Actor = Actor;
+        Target.ActorName = Action.ActorName;
+        Target.ActorPath = Action.ActorPath;
+        Target.ActorClass = Action.ActorClass;
+        Target.ActorGuid = Action.ActorGuid;
+        Target.RootComponentName = Action.RootComponentName;
+        Target.RootMobility = Action.RootMobility;
+        Target.Transform = Action.Before;
+        RestoredTargets.Add(MoveTemp(Target));
+    }
+
+    Proposal = MoveTemp(RestoredProposal);
+    CapturedTargets = MoveTemp(RestoredTargets);
+    ProposalOutputPath = ResolvedPath;
+    ErrorText.Reset();
+    ProcessLog.Reset();
+    if (!RevalidateTargets(OutError))
+    {
+        Proposal = FRenderMasterTransformBatchProposal();
+        CapturedTargets.Reset();
+        ProposalOutputPath.Reset();
+        State = ERenderMasterTransformAssistantState::Failed;
+        ErrorText = OutError;
+        return false;
+    }
+    State = ERenderMasterTransformAssistantState::Proposed;
+    AppendLog(FString::Printf(
+        TEXT("Restored hash-verified Transform proposal %s for %d Actor(s)."),
+        *Proposal.ProposalId,
+        Proposal.Actions.Num()));
     return true;
 }
 
@@ -1260,6 +1351,7 @@ void FRenderMasterTransformBatchAssistant::FinishProcess()
     State = Proposal.Status == TEXT("proposed")
         ? ERenderMasterTransformAssistantState::Proposed
         : ERenderMasterTransformAssistantState::Unresolved;
+    OnResultReady.ExecuteIfBound();
 }
 
 void FRenderMasterTransformBatchAssistant::ReadProcessOutput()
@@ -1295,6 +1387,7 @@ void FRenderMasterTransformBatchAssistant::Fail(const FString& Error)
     ErrorText = Error;
     State = ERenderMasterTransformAssistantState::Failed;
     AppendLog(Error);
+    OnResultReady.ExecuteIfBound();
 }
 
 FRenderMasterTransformAssistant::FRenderMasterTransformAssistant(
