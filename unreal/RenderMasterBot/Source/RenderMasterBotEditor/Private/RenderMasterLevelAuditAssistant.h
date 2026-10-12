@@ -86,7 +86,7 @@ public:
 
     void Initialize();
     void Shutdown();
-    bool StartAudit(const FString& Prompt);
+    bool StartAudit(const FString& Prompt, bool bEvidenceOnly = false);
     bool ApplyActions();
     void Reject();
     void Cancel();

@@ -92,6 +92,7 @@ public:
     void Shutdown();
     bool Start(const FString& Prompt);
     void Cancel();
+    void SetOnResultReady(FSimpleDelegate InDelegate) { OnResultReady = MoveTemp(InDelegate); }
 
     bool CanStart() const;
     bool IsBusy() const;
@@ -103,6 +104,7 @@ public:
     FLinearColor GetStateColor() const;
 
 private:
+    FSimpleDelegate OnResultReady;
     struct FCandidate
     {
         FString AssessmentId;

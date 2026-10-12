@@ -2750,7 +2750,9 @@ class UnrealInsightsGpuCapture(StrictModel):
     capture_mode: Literal["pie", "simulate"]
     requested_duration_seconds: Annotated[float, Field(ge=1.0, le=30.0)]
     captured_duration_seconds: Annotated[float, Field(gt=0.0, le=60.0)]
-    analyzed_trace_duration_seconds: Annotated[float, Field(gt=0.0, le=120.0)]
+    # TraceServices duration is the session timeline endpoint, not the bounded
+    # capture window: late captures can start minutes into the Editor process.
+    analyzed_trace_duration_seconds: Annotated[float, Field(gt=0.0, allow_inf_nan=False)]
     viewport_width_px: Annotated[int, Field(ge=1, le=16384)]
     viewport_height_px: Annotated[int, Field(ge=1, le=16384)]
     gpu_name: ShortText

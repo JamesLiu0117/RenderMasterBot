@@ -52,6 +52,7 @@ private:
         const FRenderMasterConversationTurn& Turn);
     void HandleConversationTurnFailed(const FString& Error);
     void HandleTransformResultReady();
+    void HandleLevelProfilingResultReady();
     void DispatchConversationIntent(
         const FString& Intent,
         const FString& ActionPrompt);

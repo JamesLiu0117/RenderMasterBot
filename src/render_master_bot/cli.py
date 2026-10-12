@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from time import perf_counter
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -67,6 +68,7 @@ from render_master_bot.assistant_performance import (
     propose_performance_review,
 )
 from render_master_bot.assistant_level_audits import (
+    build_read_only_static_triage,
     LevelAuditError,
     load_level_audit_context,
     review_level_audit,
@@ -1445,6 +1447,7 @@ def cmd_assistant_material_propose(args: argparse.Namespace) -> int:
 def cmd_assistant_conversation_turn(args: argparse.Namespace) -> int:
     settings = _settings()
     model = args.model or settings.planner_model
+    started = perf_counter()
     try:
         request = load_conversation_request(args.request)
         result = route_conversation_turn(
@@ -1456,6 +1459,20 @@ def cmd_assistant_conversation_turn(args: argparse.Namespace) -> int:
         print(f"ERROR: assistant conversation turn failed: {exc}", file=sys.stderr)
         return 1
     _write_json(result.turn.model_dump(mode="json"), args.output)
+    if args.output:
+        _write_json({
+            "conversation_id": result.turn.conversation_id,
+            "turn_id": result.turn.turn_id,
+            "configured_model": model,
+            "resolved_model": result.response.model,
+            "route_source": "host_rules" if result.response.model.startswith("host-rules:") else "ollama",
+            "elapsed_seconds": round(perf_counter() - started, 6),
+            "model_duration_ns": result.response.total_duration_ns,
+            "prompt_tokens": result.response.prompt_tokens,
+            "output_tokens": result.response.output_tokens,
+            "done_reason": result.response.done_reason,
+            "attempt_count": result.attempt_count,
+        }, str(Path(args.output).with_suffix(".metrics.json")))
     print(
         "ASSISTANT CONVERSATION: "
         f"outcome={result.turn.outcome} intent={result.turn.intent} "
@@ -1730,12 +1747,15 @@ def cmd_assistant_level_audit(args: argparse.Namespace) -> int:
     try:
         prompt = _read_run_prompt(args.prompt, args.prompt_file)
         context = load_level_audit_context(args.context)
-        result = review_level_audit(
-            prompt=prompt,
-            context=context,
-            client=_client(settings),
-            model=model,
-        )
+        if getattr(args, "evidence_only", False):
+            result = build_read_only_static_triage(prompt=prompt, context=context)
+        else:
+            result = review_level_audit(
+                prompt=prompt,
+                context=context,
+                client=_client(settings),
+                model=model,
+            )
     except (LevelAuditError, OllamaError, ValueError, OSError) as exc:
         print(f"ERROR: level audit failed: {exc}", file=sys.stderr)
         return 1
@@ -2941,6 +2961,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--model", help="override the configured planner model"
     )
     assistant_level_audit.add_argument("--output", "-o", required=True)
+    assistant_level_audit.add_argument("--evidence-only", action="store_true", help="host-computed read-only triage without model inference")
     assistant_level_audit.set_defaults(handler=cmd_assistant_level_audit)
 
     assistant_runtime_performance = subparsers.add_parser(

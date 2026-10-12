@@ -12,12 +12,44 @@ from pydantic import ValidationError
 
 from render_master_bot.contracts import (
     AssistantInsightsGpuReport,
+    InsightsGpuFindingIntent,
     InsightsGpuReviewIntent,
     ModelIdentity,
     UnrealInsightsGpuCapture,
 )
 from render_master_bot.ollama import StructuredResponse
 from render_master_bot.schemas import ollama_model_schema
+
+
+HOST_SCOPE_RANKING_REQUEST = (
+    "Rank the measured inclusive GPU scopes in this fixed PIE/SIE workload. "
+    "Do not infer Actor, asset, material, shader, or draw attribution from scope names alone."
+)
+
+
+def rank_measured_gpu_scopes(*, capture, request, report_id, source_file_sha256):
+    """Deterministic ranking for the composite profiler's exact bounded request."""
+    ranked = sorted(capture.scopes, key=lambda scope: (-scope.total_inclusive_ms, scope.scope_id))
+    report = AssistantInsightsGpuReport(
+        report_id=report_id, status="review_complete", request=request, capture=capture,
+        capture_sha256=_canonical_capture_sha256(capture),
+        capture_file_sha256=source_file_sha256 or _canonical_capture_sha256(capture),
+        analyzed_by=ModelIdentity(provider="local", model="host-gpu-scope-ranking:v1"),
+        summary="Measured inclusive GPU scope ranking. Nested scopes overlap; this is not causal Actor or asset attribution.",
+        primary_scope_id=ranked[0].scope_id,
+        findings=[InsightsGpuFindingIntent(
+            severity="info", category="gpu_scope", evidence_scope_ids=[scope.scope_id],
+            observation=(f"Rank {index}: {scope.name}, {scope.total_inclusive_ms / capture.captured_duration_seconds:.3f} inclusive ms/s, "
+                         f"{scope.instance_count} instances. This scope may include nested work or waiting."),
+            recommendation="Inspect child scopes and a representative comparison before proposing any content change.",
+        ) for index, scope in enumerate(ranked[:10], start=1)],
+        missing_capabilities=[], modifies_editor_scene=False,
+    )
+    return InsightsGpuReviewResult(
+        report=report,
+        response=StructuredResponse(model="host-gpu-scope-ranking:v1", content=report.model_dump_json()),
+        attempt_count=1,
+    )
 
 
 SYSTEM_PROMPT = """You review one host-captured and Unreal-TraceServices-parsed GPU
@@ -182,6 +214,11 @@ def review_insights_gpu_capture(
     request = prompt.strip()
     if not request:
         raise InsightsGpuReviewError("GPU scope review request cannot be empty")
+    if request == HOST_SCOPE_RANKING_REQUEST:
+        return rank_measured_gpu_scopes(
+            capture=capture, request=request, report_id=report_id,
+            source_file_sha256=source_file_sha256,
+        )
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {

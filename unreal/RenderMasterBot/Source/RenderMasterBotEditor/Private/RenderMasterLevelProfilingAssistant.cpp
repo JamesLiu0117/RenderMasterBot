@@ -393,6 +393,7 @@ void FRenderMasterLevelProfilingAssistant::Initialize()
 
 void FRenderMasterLevelProfilingAssistant::Shutdown()
 {
+    OnResultReady.Unbind();
     if (TickHandle.IsValid())
     {
         FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
@@ -475,7 +476,7 @@ bool FRenderMasterLevelProfilingAssistant::Start(const FString& Prompt)
     const FString StaticPrompt = TEXT(
         "Perform a read-only whole-level static triage for a profiling run. "
         "Do not propose any setting changes. Rank only the next measurements and do not claim runtime cost.");
-    if (!LevelAuditAssistant->StartAudit(StaticPrompt))
+    if (!LevelAuditAssistant->StartAudit(StaticPrompt, true))
     {
         Fail(LevelAuditAssistant->GetSummaryText().ToString());
         return false;
@@ -815,6 +816,7 @@ void FRenderMasterLevelProfilingAssistant::CompleteSynthesisProcess()
     State = Report.Status == TEXT("complete")
         ? ERenderMasterLevelProfilingState::Complete
         : ERenderMasterLevelProfilingState::Partial;
+    OnResultReady.ExecuteIfBound();
 }
 
 void FRenderMasterLevelProfilingAssistant::Cancel()
@@ -831,6 +833,7 @@ void FRenderMasterLevelProfilingAssistant::Cancel()
     State = ERenderMasterLevelProfilingState::Cancelled;
     AppendLog(TEXT(
         "Profiling audit cancelled. Any temporary runtime Actor state was restored; no level content was saved."));
+    OnResultReady.ExecuteIfBound();
 }
 
 bool FRenderMasterLevelProfilingAssistant::CanStart() const
@@ -995,4 +998,5 @@ void FRenderMasterLevelProfilingAssistant::Fail(const FString& Error)
         ? TEXT("The profiling audit failed safely.")
         : Error;
     State = ERenderMasterLevelProfilingState::Failed;
+    OnResultReady.ExecuteIfBound();
 }

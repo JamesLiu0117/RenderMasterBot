@@ -80,21 +80,48 @@ Before/After evidence.
 - **Current Activity** shows live planning, capture, proposal, and workflow
   state from the active specialized capability.
 - **Send to Assistant** is the normal entry point.
-- **New Conversation** resets only in-memory conversation state.
+- **New Conversation** starts a new local conversation; archived request artifacts
+  are retained.
 - **Advanced Direct Tools** preserves the previous explicit capability buttons
   in a collapsed expert/debug area.
 - Existing proposal cards remain visible and keep their explicit approval,
   rejection, stale-state checking, no-auto-save, and Undo behavior.
 
+## Latency, provenance, and result delivery
+
+Common capability questions and exact profiling commands have a small,
+auditable host route (`host-rules:conversation-v1`). Matching uses the whole
+utterance, not keyword substrings: negations, quotations, and added constraints
+go through the local model. Both paths still enforce PIE/SIE prerequisites and
+pending-review boundaries. This shortcut is not a trained-model improvement.
+
+Free-form routing uses a 1,024-token generation budget. GPT-OSS defaults to
+`think: low`; explicit caller settings take precedence. Structured chat requests
+for Qwen 3.5 default to `think: false` to bound interactive reasoning overhead.
+Other model families retain their server default. Requests
+default to `keep_alive: 0`, releasing the model after inference rather than
+deliberately keeping its GPU allocation during subsequent Unreal captures.
+This trades warm-model reuse for reduced residency interference; it does not
+prove the absence of other GPU workloads.
+
+Every CLI conversation turn writes a sibling `.metrics.json` with routing
+source, elapsed routing time, model identity, and available token counts.
+Routing time excludes Editor polling and Python process startup.
+
+Profiling completion, partial completion, failure, and cancellation now return
+to the conversation timeline. Successful evidence events bind the report path
+and file hash; a missing report cannot be presented as a successful result.
+
 ## Current limits
 
-- The V1 timeline is in-memory for the lifetime of the Editor panel; individual
-  request and turn JSON artifacts remain in the configured workflow root.
+- The local session snapshot persists the timeline. Transform task recovery is
+  supported; an interrupted profiling capture is not resumable from a saved
+  conversation alone. Individual request, turn, and evidence artifacts remain
+  in the configured workflow root.
 - The router receives bounded live context, not the complete asset catalog,
   source tree, or profiler history. Detailed questions that need those sources
   must route to the appropriate evidence-producing tool.
 - Only the most recent 24 messages are sent to the local model. The visible
   timeline retains up to 100 messages.
-- Rich inline action cards and explicit tool-result messages in the timeline are
-  the next UI refinement; existing action cards currently remain beside the
-  conversation.
+- Existing action cards remain beside the conversation. Completion events are
+  connected for Transform and profiling, not yet every specialized workflow.

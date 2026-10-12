@@ -23,6 +23,7 @@ from render_master_bot.contracts import (
 )
 from render_master_bot.ollama import StructuredResponse
 from render_master_bot.schemas import contract_schema
+from render_master_bot.conversation_rules import PROFILING_PROMPT
 
 
 class FakeClient:
@@ -117,6 +118,48 @@ def decision(**updates):
 
 
 class AssistantConversationTests(unittest.TestCase):
+    def test_explicit_profile_preflight_does_not_call_model(self):
+        current = request().model_copy(update={"request": PROFILING_PROMPT})
+        client = FakeClient([])
+        result = route_conversation_turn(request=current, client=client, model="planner")
+        self.assertEqual(result.turn.outcome, "clarify")
+        self.assertEqual(result.turn.required_context, ["active_pie_or_sie"])
+        self.assertEqual(result.turn.model, "host-rules:conversation-v1")
+        self.assertFalse(client.requests)
+
+    def test_explicit_profile_preserves_constraints_and_pending_review_gate(self):
+        for mode in ("pie", "sie"):
+            with self.subTest(mode=mode):
+                current = request(context=unreal_context(play_mode=mode)).model_copy(
+                    update={"request": PROFILING_PROMPT}
+                )
+                result = route_conversation_turn(request=current, client=FakeClient([]), model="planner")
+                self.assertEqual(result.turn.intent, "level_profiling")
+                self.assertEqual(result.turn.action_prompt, PROFILING_PROMPT)
+                pending = current.model_copy(update={"context": unreal_context(
+                    play_mode=mode, pending_action_intent="transform",
+                )})
+                result = route_conversation_turn(request=pending, client=FakeClient([]), model="planner")
+                self.assertEqual(result.turn.required_context, ["pending_action_decision"])
+
+    def test_capability_question_has_explicit_host_provenance(self):
+        for text in ("你能做什么？", "What can you do?"):
+            current = request().model_copy(update={"request": text})
+            result = route_conversation_turn(request=current, client=FakeClient([]), model="planner")
+            self.assertEqual(result.turn.outcome, "respond")
+            self.assertEqual(result.turn.model, "host-rules:conversation-v1")
+
+    def test_negated_quoted_and_extended_requests_are_not_keyword_routed(self):
+        for text in (
+            "Do not profile the current level", 'Explain "profile the current level"',
+            "Can you profile the current level?", "Profile the current level and delete actors",
+        ):
+            with self.subTest(text=text):
+                client = FakeClient(decision(outcome="respond", intent="answer_question", action_prompt=None))
+                route_conversation_turn(request=request().model_copy(update={"request": text}), client=client, model="planner")
+                self.assertEqual(len(client.requests), 1)
+                self.assertEqual(client.requests[0]["num_predict"], 1024)
+
     def test_route_preserves_ids_and_emits_only_registered_intent(self):
         client = FakeClient(decision())
         result = route_conversation_turn(

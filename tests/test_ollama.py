@@ -5,6 +5,35 @@ from render_master_bot.ollama import InstalledModel, OllamaClient, OllamaError
 
 
 class OllamaEmbeddingTests(unittest.TestCase):
+    def test_qwen35_defaults_to_no_thinking_but_honors_override(self):
+        response = Mock()
+        response.json.return_value = {"message": {"content": "{}"}}
+        with patch("render_master_bot.ollama.httpx.post", return_value=response) as post:
+            for override, expected in ((None, False), (True, True)):
+                OllamaClient().chat_structured(
+                    model="qwen3.5:9b", messages=[], json_schema={}, think=override,
+                )
+                self.assertIs(post.call_args.kwargs["json"]["think"], expected)
+
+    def test_gpt_oss_defaults_to_low_thinking_and_releases_residency(self):
+        response = Mock()
+        response.json.return_value = {"message": {"content": "{}"}}
+        with patch("render_master_bot.ollama.httpx.post", return_value=response) as post:
+            OllamaClient().chat_structured(
+                model="gpt-oss:20b", messages=[], json_schema={}, num_predict=1024,
+            )
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["think"], "low")
+        self.assertEqual(payload["keep_alive"], 0)
+        self.assertEqual(payload["options"]["num_predict"], 1024)
+
+    def test_invalid_generation_budget_never_calls_ollama(self):
+        with patch("render_master_bot.ollama.httpx.post") as post:
+            for limit in (0, -1, True, 1.5):
+                with self.assertRaises(OllamaError):
+                    OllamaClient().chat_structured(model="fake", messages=[], json_schema={}, num_predict=limit)
+        post.assert_not_called()
+
     def test_model_details_preserve_digest_and_size(self):
         response = Mock()
         response.raise_for_status.return_value = None

@@ -160,6 +160,8 @@ void SRenderMasterWorkspace::Construct(const FArguments& InArgs)
         LevelAuditAssistant,
         RuntimePerformanceAssistant,
         InsightsGpuAssistant);
+    LevelProfilingAssistant->SetOnResultReady(FSimpleDelegate::CreateSP(
+        this, &SRenderMasterWorkspace::HandleLevelProfilingResultReady));
     LevelProfilingAssistant->Initialize();
     ShadowVerificationAssistant =
         MakeShared<FRenderMasterShadowOptimizationVerificationAssistant>(
@@ -1582,7 +1584,7 @@ void SRenderMasterWorkspace::HandleConversationTurnCompleted(
     AddConversationMessage(TEXT("assistant"), Turn.AssistantMessage);
     if (Turn.Outcome == TEXT("route"))
     {
-        if (Turn.Intent == TEXT("transform"))
+        if (Turn.Intent == TEXT("transform") || Turn.Intent == TEXT("level_profiling"))
         {
             ActiveConversationActionTurnId = Turn.TurnId;
             ActiveConversationActionIntent = Turn.Intent;
@@ -1601,6 +1603,37 @@ void SRenderMasterWorkspace::HandleConversationTurnFailed(const FString& Error)
     AddConversationMessage(TEXT("assistant"), FString::Printf(
         TEXT("I could not complete that local conversation turn: %s"),
         *Error));
+}
+
+void SRenderMasterWorkspace::HandleLevelProfilingResultReady()
+{
+    if (ActiveConversationActionIntent != TEXT("level_profiling")
+        || ActiveConversationActionTurnId.IsEmpty() || !LevelProfilingAssistant.IsValid()) return;
+    const ERenderMasterLevelProfilingState State = LevelProfilingAssistant->GetState();
+    const FString Summary = LevelProfilingAssistant->GetSummaryText().ToString();
+    if (State == ERenderMasterLevelProfilingState::Failed)
+    {
+        RecordConversationActionFailure(TEXT("level_profiling"), Summary);
+        return;
+    }
+    const bool bCancelled = State == ERenderMasterLevelProfilingState::Cancelled;
+    const FString Path = bCancelled ? FString() : LevelProfilingAssistant->GetReportOutputPath();
+    FString Hash;
+    if (!bCancelled && !HashConversationEvidenceFile(Path, Hash))
+    {
+        RecordConversationActionFailure(TEXT("level_profiling"),
+            TEXT("The profiling report could not be hashed; its result is not available as verified conversation evidence."));
+        return;
+    }
+    AddConversationResultEvent(
+        TEXT("level_profiling"), bCancelled ? TEXT("cancellation") : TEXT("analysis"),
+        bCancelled ? TEXT("cancelled") : (State == ERenderMasterLevelProfilingState::Complete
+            ? TEXT("succeeded") : TEXT("unresolved")),
+        Summary, FString(), TArray<FString>(),
+        bCancelled ? FString() : TEXT("report"), Path);
+    AssistantReply = Summary;
+    AddConversationMessage(TEXT("assistant"), Summary);
+    ClearActiveConversationAction();
 }
 
 void SRenderMasterWorkspace::HandleTransformResultReady()

@@ -128,14 +128,27 @@ class OllamaClient:
         messages: list[dict[str, Any]],
         json_schema: dict[str, Any],
         think: bool | str | None = None,
+        num_predict: int | None = None,
+        keep_alive: int | str = 0,
     ) -> StructuredResponse:
         payload = {
             "model": model,
             "messages": messages,
             "format": json_schema,
             "stream": False,
+            "keep_alive": keep_alive,
             "options": {"temperature": 0, "num_ctx": self.num_ctx},
         }
+        if num_predict is not None:
+            if isinstance(num_predict, bool) or not isinstance(num_predict, int) or num_predict <= 0:
+                raise OllamaError("num_predict must be a positive integer")
+            payload["options"]["num_predict"] = num_predict
+        family = model.split(":", 1)[0].rsplit("/", 1)[-1]
+        if think is None:
+            if family == "gpt-oss":
+                think = "low"
+            elif family == "qwen3.5":
+                think = False
         if think is not None:
             payload["think"] = think
         try:

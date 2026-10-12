@@ -11,7 +11,9 @@ whether an optimization improved rendering cost.
 ## What one run does
 
 1. Captures the complete Full Level Audit static funnel without allowing level
-   actions.
+   actions. Profiling uses host-computed `--evidence-only` triage: no model is
+   needed to recompute static scores or select the fixed candidates. Standalone
+   natural-language level audits retain their model review path.
 2. Discards exactly 30 warmup frames and records exactly 120 consecutive
    runtime frame/thread/GPU samples.
 3. Records and preserves one five-second Unreal Insights CPU/GPU/frame/bookmark
@@ -74,7 +76,8 @@ candidate order, count summaries, or unrestored runtime state.
 
 1. Start a representative PIE/SIE session.
 2. Set the desired camera and workload, then leave them unchanged.
-3. Press **Run Profiling-First Level Audit**.
+3. Send **Run a profiling-first level audit** in Conversation (or use the
+   equivalent Advanced Direct Tools button).
 4. Let the static audit, baseline, GPU trace, and up to two Actor studies finish.
 5. Review the composite result and open preserved child traces when deeper
    inspection is needed.
@@ -121,3 +124,43 @@ workload, and compares the fresh result with fixed retain/rollback guards.
 Images remain auxiliary visual-regression guards and cannot award a performance
 win. See
 [assistant_shadow_optimization_verification.md](assistant_shadow_optimization_verification.md).
+
+## Public evidence export
+
+The composite profiler's exact internal GPU-ranking request is fulfilled by
+`host-gpu-scope-ranking:v1`: validated numeric totals are sorted without a model
+call. Provenance is `local`, never `ollama`. Modified and free-form GPU questions
+still use the model. This removes generative uncertainty from arithmetic and
+ranking, but does not add Actor, material, shader or causal attribution.
+
+The UE 5.7 integration reuses TraceServices' shared analysis service and reads
+session duration inside an analysis read scope. Both requirements were verified
+against real Editor trace captures, not just synthetic aggregation tests.
+`analyzed_trace_duration_seconds` is a finite positive session timeline endpoint,
+which can exceed the capture window when the Editor has been open for a while.
+It is not capped at 120 seconds. The requested and actual capture windows remain
+bounded at 30 and 60 seconds respectively.
+
+After completing a real run, export a portable English HTML report and a
+whitelisted JSON summary:
+
+```powershell
+python -m render_master_bot.profiling_export `
+  --report <path-to-level_profiling_report.json> `
+  --trace <path-to-the-matching-baseline.utrace> `
+  --output-dir <new-empty-public-output-directory>
+```
+
+The exporter validates the full report contract and checks the supplied trace's
+size and SHA-256 before writing anything. It omits local file paths, prompts,
+and Actor paths. Inspect scope names and GPU identity before publication; these
+are intentionally retained. A hash binds a file to a report, not proof that the
+benchmark represents a production workload. Raw traces remain private and are
+not copied. Existing nonempty output directories are refused.
+
+On a shared 16 GB GPU, the 20B planner and Unreal may compete for memory.
+The validated interactive configuration should specify a model that fits both
+workloads, rather than assuming standalone inference latency applies in PIE.
+`RENDERMASTER_PLANNER_MODEL=qwen3.5:9b` selects the installed smaller planner;
+its structured calls default to non-thinking mode. Model residency is released
+after structured chat. Keep other GPU applications idle during measurements.

@@ -712,7 +712,11 @@ bool FRenderMasterConversationAssistant::StartTurn(
         TEXT("assistant-conversations"),
         ConversationId,
         ActiveTurnId);
-    IFileManager::Get().MakeDirectory(*RequestDirectory, true);
+    if (!IFileManager::Get().MakeDirectory(*RequestDirectory, true))
+    {
+        Fail(FString::Printf(TEXT("Cannot create the conversation output directory: %s. Check the workflow root and Windows Controlled Folder Access for this UnrealEditor.exe."), *RequestDirectory));
+        return false;
+    }
     const FString RequestPath = FPaths::Combine(
         RequestDirectory,
         TEXT("conversation_request.json"));
@@ -844,7 +848,7 @@ bool RenderMasterWriteConversationRequestFile(
             *Filename,
             FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
     {
-        OutError = TEXT("Could not write the Assistant conversation request.");
+        OutError = FString::Printf(TEXT("Could not write the Assistant conversation request: %s. Check directory permissions and Windows Controlled Folder Access."), *Filename);
         return false;
     }
     return true;

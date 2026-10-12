@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from render_master_bot.assistant_insights_gpu import (
     InsightsGpuReviewError,
+    HOST_SCOPE_RANKING_REQUEST,
     hash_insights_gpu_capture_file,
     load_insights_gpu_capture,
     review_insights_gpu_capture,
@@ -65,6 +66,43 @@ def review_json(**updates):
 
 
 class AssistantInsightsGpuTests(unittest.TestCase):
+    def test_late_editor_trace_timeline_is_not_capture_duration(self):
+        value = json.loads(example_path().read_text(encoding="utf-8"))
+        value["analyzed_trace_duration_seconds"] = 3600.0
+        current = UnrealInsightsGpuCapture.model_validate(value)
+        self.assertEqual(current.analyzed_trace_duration_seconds, 3600.0)
+        value["captured_duration_seconds"] = 3600.0
+        with self.assertRaises(ValidationError):
+            UnrealInsightsGpuCapture.model_validate(value)
+
+    def test_trace_timeline_rejects_nonfinite_values(self):
+        for invalid in (float("inf"), float("nan"), -1.0):
+            value = json.loads(example_path().read_text(encoding="utf-8"))
+            value["analyzed_trace_duration_seconds"] = invalid
+            with self.assertRaises(ValidationError):
+                UnrealInsightsGpuCapture.model_validate(value)
+
+    def test_exact_composite_request_ranks_without_model(self):
+        client = FakeClient([])
+        result = review_insights_gpu_capture(
+            prompt=HOST_SCOPE_RANKING_REQUEST, capture=capture(), client=client,
+            model="unused", report_id="host_rank",
+        )
+        self.assertEqual(client.requests, [])
+        self.assertEqual(result.report.status, "review_complete")
+        self.assertEqual(result.report.analyzed_by.provider, "local")
+        self.assertEqual(result.report.primary_scope_id, "scope_000")
+        self.assertIn("not causal", result.report.summary)
+        self.assertFalse(result.report.modifies_editor_scene)
+
+    def test_modified_ranking_request_still_uses_model(self):
+        client = FakeClient(review_json())
+        review_insights_gpu_capture(
+            prompt=HOST_SCOPE_RANKING_REQUEST + " Explain the causes.",
+            capture=capture(), client=client, model="test", report_id="model_rank",
+        )
+        self.assertEqual(len(client.requests), 1)
+
     def test_repository_capture_recomputes_and_validates(self):
         current = capture()
         self.assertEqual(current.gpu_queue_count, 2)

@@ -252,6 +252,29 @@ def _parse_intent_conservatively(
     return LevelAuditReviewIntent.model_validate(raw), recovery_reason
 
 
+def build_read_only_static_triage(
+    *, prompt: str, context: UnrealLevelAuditContext,
+) -> LevelAuditResult:
+    """Profiling candidates are deterministic evidence, not an LLM decision."""
+    if not prompt.strip():
+        raise LevelAuditError("level audit request cannot be empty")
+    assessments = build_level_audit_assessments(context)
+    report = AssistantLevelAuditReport(
+        audit_id=context.audit_id, status="review_only", request=prompt.strip(),
+        context=context, context_sha256=_canonical_context_sha256(context),
+        statistics=build_level_audit_statistics(context), assessments=assessments,
+        analyzed_by=ModelIdentity(provider="local", model="host-static-triage:v1"),
+        summary="Deterministic static triage completed. Risk scores prioritize measurements; they do not prove runtime bottlenecks.",
+        primary_assessment_id=assessments[0].assessment_id if assessments else None,
+        modifies_editor_scene=False,
+    )
+    return LevelAuditResult(
+        report=report,
+        response=StructuredResponse(content=report.model_dump_json(), model="host-static-triage:v1"),
+        attempt_count=1,
+    )
+
+
 def review_level_audit(
     *,
     prompt: str,

@@ -21,6 +21,7 @@ from render_master_bot.contracts import (
 from render_master_bot.ollama import OllamaClient, StructuredResponse
 from render_master_bot.schemas import ollama_model_schema
 from render_master_bot.serialization import canonical_sha256
+from render_master_bot.conversation_rules import explicit_conversation_decision
 
 
 CONVERSATION_SYSTEM_PROMPT = """You are the conversational front door for RenderMasterBot,
@@ -291,11 +292,26 @@ def route_conversation_turn(
     if not model.strip():
         raise ConversationRoutingError("conversation router model cannot be empty")
 
+    shortcut = explicit_conversation_decision(request.request)
+    if shortcut is not None:
+        decision = _enforce_host_context(shortcut, request.context)
+        response = StructuredResponse(
+            content=decision.model_dump_json(), model="host-rules:conversation-v1",
+        )
+        turn = AssistantConversationTurn(
+            **decision.model_dump(),
+            conversation_id=request.conversation_id, turn_id=request.turn_id,
+            request=request.request, context_sha256=canonical_sha256(request.context),
+            model=response.model, attempt_count=1,
+        )
+        return ConversationRoutingResult(turn=turn, response=response, attempt_count=1)
+
     messages = _model_messages(request)
     response = client.chat_structured(
         model=model,
         messages=messages,
         json_schema=ollama_model_schema(ConversationRouteIntent),
+        num_predict=1024,
     )
     attempt_count = 1
     recovery_reason: str | None = None
@@ -317,6 +333,7 @@ def route_conversation_turn(
             model=model,
             messages=retry_messages,
             json_schema=ollama_model_schema(ConversationRouteIntent),
+            num_predict=1024,
         )
         attempt_count = 2
         try:

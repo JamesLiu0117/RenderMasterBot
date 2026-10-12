@@ -616,7 +616,7 @@ void FRenderMasterLevelAuditAssistant::Shutdown()
     CloseProcessResources();
 }
 
-bool FRenderMasterLevelAuditAssistant::StartAudit(const FString& Prompt)
+bool FRenderMasterLevelAuditAssistant::StartAudit(const FString& Prompt, const bool bEvidenceOnly)
 {
     if (!CanStart()) return false;
     const FString CleanPrompt = Prompt.TrimStartAndEnd().IsEmpty()
@@ -669,10 +669,11 @@ bool FRenderMasterLevelAuditAssistant::StartAudit(const FString& Prompt)
     }
 
     const FString Arguments = FString::Printf(
-        TEXT("-m render_master_bot assistant-level-audit --prompt-file %s --context %s --output %s"),
+        TEXT("-m render_master_bot assistant-level-audit --prompt-file %s --context %s --output %s%s"),
         *QuoteArgument(PromptPath),
         *QuoteArgument(ContextPath),
-        *QuoteArgument(ReportOutputPath));
+        *QuoteArgument(ReportOutputPath),
+        bEvidenceOnly ? TEXT(" --evidence-only") : TEXT(""));
     if (!FPlatformProcess::CreatePipe(StdOutRead, StdOutWrite)
         || !FPlatformProcess::CreatePipe(StdErrRead, StdErrWrite))
     {

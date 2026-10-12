@@ -4,6 +4,19 @@ RenderMasterBot is a local-first graphics planning system. It turns a natural-la
 
 The integration remains schema-gated: a language model is not allowed to run arbitrary engine code; it must return a versioned JSON document with known fields and constraints.
 
+## Measured profiling milestone
+
+The Unreal conversation panel can run a bounded profiling-first audit, collect
+runtime frame samples and GPU trace evidence, and return a hashed result to the
+conversation. A real UE 5.7 PIE run completed on September 17, 2026: 120 runtime
+frames and a 5.004-second GPU trace containing 116,066 timed GPU events. This is
+an end-to-end integration result, not proof of an optimization speedup; no Actor
+impact study qualified in that small scene and no production level was changed.
+
+See [profiling workflow and public HTML/JSON export](docs/assistant_level_profiling.md)
+for reproducible usage and measurement boundaries. Private raw traces and local
+portfolio exports are deliberately not committed to this repository.
+
 ## Final product vision
 
 RenderMasterBot is intended to become a local graphics AI agent, not a single

@@ -2165,7 +2165,9 @@ bool FRenderMasterInsightsGpuAssistant::BeginTraceAnalysis(FString& OutError)
         OutError = TEXT("The Unreal TraceServices module is unavailable in this Editor build.");
         return false;
     }
-    AnalysisService = TraceServicesModule->CreateAnalysisService();
+    // TraceServices owns a process-wide service. Insights may have initialized
+    // it already; CreateAnalysisService asserts when a service exists.
+    AnalysisService = TraceServicesModule->GetAnalysisService();
     if (!AnalysisService.IsValid())
     {
         OutError = TEXT("Could not create an Unreal trace analysis service.");
@@ -2189,7 +2191,10 @@ bool FRenderMasterInsightsGpuAssistant::FinalizeTraceAnalysis(FString& OutError)
         OutError = TEXT("The Unreal trace analysis session is unavailable.");
         return false;
     }
-    Capture.AnalyzedTraceDurationSeconds = AnalysisSession->GetDurationSeconds();
+    {
+        TraceServices::FAnalysisSessionReadScope ReadScope(*AnalysisSession);
+        Capture.AnalyzedTraceDurationSeconds = AnalysisSession->GetDurationSeconds();
+    }
     if (!FMath::IsFinite(Capture.AnalyzedTraceDurationSeconds)
         || Capture.AnalyzedTraceDurationSeconds
             < MinimumAnalyzedTraceDurationSeconds)
